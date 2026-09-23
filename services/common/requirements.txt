@@ -1,0 +1,7 @@
+# What the shared library itself needs. The service image installs
+# services/requirements.txt, which includes this file and adds the web layer.
+pika==1.3.2
+psycopg[binary]==3.2.3
+pydantic==2.9.2
+PyYAML==6.0.2
+requests==2.32.3

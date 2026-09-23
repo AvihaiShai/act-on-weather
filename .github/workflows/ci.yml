@@ -1,0 +1,124 @@
+name: ci
+
+# CI has the internet. The runtime does not -- that asymmetry is deliberate and
+# is stated in the README. The `guard` job below is what keeps it honest: it
+# fails the build if a hosted-model SDK, endpoint or credential ever appears in
+# the source.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.8.4
+      - run: ruff check services tests
+      - run: ruff format --check services tests
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Run in the same image the project ships, so a test that passes here
+      # passes on the reviewer's machine for the same reasons.
+      - name: Build the test image
+        run: docker build -f tests/Dockerfile -t aow/tests:ci .
+      - name: Unit tests
+        run: docker run --rm --network none aow/tests:ci
+
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: No hosted LLM anywhere in the source
+        run: |
+          set -o pipefail
+          PATTERN='openai|anthropic|api\.openai|gemini|generativelanguage|cohere|mistral\.ai|together\.ai|groq|replicate|bedrock'
+          if grep -rInE "$PATTERN" \
+               --include='*.py' --include='*.txt' --include='*.yml' \
+               --include='*.yaml' --include='*.toml' --include='*.sql' \
+               services tests db data 2>/dev/null; then
+            echo "::error::a hosted model SDK or endpoint appears in the source"
+            exit 1
+          fi
+          echo "clean: the only model client is services/common/llm.py -> llm:8080"
+
+      - name: No .env committed, and .env.example has no real secret
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env is tracked by git"; exit 1
+          fi
+          test -f .env.example || { echo "::error::.env.example is missing"; exit 1; }
+          if grep -vE '^\s*#|^\s*$' .env.example | grep -viE '=(change-me|aow|Qwen3-1.7B|4096|4|60|8)' ; then
+            echo "::error::.env.example looks like it contains a real value"; exit 1
+          fi
+          echo "clean"
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Images are pinned by digest
+        run: |
+          # A floating tag is the one thing that can quietly break an
+          # air-gapped rebuild, so it fails the build rather than being a note.
+          if grep -nE '^\s+image:.*:(latest|[0-9._a-z-]+)\s*$' compose.yml; then
+            echo "::error::an image is pinned by tag only; add its @sha256 digest"
+            exit 1
+          fi
+          echo "every image in compose.yml carries a digest"
+
+  build-and-scan:
+    runs-on: ubuntu-latest
+    needs: [lint, unit, guard]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the service image
+        run: docker build -f services/Dockerfile -t aow/services:ci .
+
+      - name: Build the UI image
+        run: docker build -f services/ui/Dockerfile -t aow/ui:ci .
+
+      - name: Trivy -- services
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: aow/services:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Trivy -- ui
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: aow/ui:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Trivy -- the repository itself (config and dependencies)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table

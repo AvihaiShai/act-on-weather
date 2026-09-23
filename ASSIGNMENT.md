@@ -154,7 +154,7 @@ These are readings of the brief. Where the brief leaves something open, the note
 
 ## 5. Design choices (ours, not required by the brief)
 
-The brief does not require any of these. They are our decisions, recorded here so the README and the plan can point at one list. Items marked TBD are not decided yet.
+The brief does not require any of these. They are our decisions, recorded here so the README and the plan can point at one list. Items marked TBD are not decided yet. The reasoning, alternatives, current working selections, and validation gates are in [TECHNICAL_DECISIONS.md](TECHNICAL_DECISIONS.md).
 
 **Runtime and packaging**
 
@@ -173,7 +173,7 @@ The brief does not require any of these. They are our decisions, recorded here s
 
 **Content and language**
 
-- **Cities.** Five, including Rome and London so both illustrative questions work as written, and preferably one coastal city so a surfing recommendation has marine data. Final list TBD in planning.
+- **Cities.** Current working selection: Rome, London, Lisbon, Tel Aviv and Reykjavík. Rome and London make both illustrative questions work as written; the two coastal cities support marine activity examples, and Reykjavík adds a contrasting daylight/weather case. Verify source coverage before treating the list as final.
 - **E1 and E2 as acceptance tests.** The brief offers them as usage examples (§3); adopting them as pass/fail criteria for our own build is our choice.
 - **Nothing is invented.** No fabricated events, concerts or fixtures. Every record carries a source and an as-of date; a question outside the data coverage gets an explicit "no data for that date" answer; curated sample data is labelled as samples in the UI and in agent answers.
 - **Every answer and chart shows its as-of timestamp** and the coverage window of the data behind it. The brief does not ask for this; stored data goes stale offline, and an answer that hides its age is misleading rather than merely incomplete.

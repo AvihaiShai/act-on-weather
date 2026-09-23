@@ -1,0 +1,38 @@
+# The five cities. Coordinates are committed, never geocoded at runtime.
+# Rome and London make the brief's two example questions work as written.
+cities:
+  - slug: rome
+    name: Rome
+    country: Italy
+    lat: 41.8933
+    lon: 12.4829
+    timezone: Europe/Rome
+    aliases: [rome, roma]
+  - slug: london
+    name: London
+    country: United Kingdom
+    lat: 51.5074
+    lon: -0.1278
+    timezone: Europe/London
+    aliases: [london]
+  - slug: lisbon
+    name: Lisbon
+    country: Portugal
+    lat: 38.7223
+    lon: -9.1393
+    timezone: Europe/Lisbon
+    aliases: [lisbon, lisboa]
+  - slug: tel-aviv
+    name: Tel Aviv
+    country: Israel
+    lat: 32.0853
+    lon: 34.7818
+    timezone: Asia/Jerusalem
+    aliases: ["tel aviv", "tel-aviv", telaviv]
+  - slug: reykjavik
+    name: Reykjavik
+    country: Iceland
+    lat: 64.1466
+    lon: -21.9426
+    timezone: Atlantic/Reykjavik
+    aliases: [reykjavik, "reykjavík"]

@@ -1,0 +1,6 @@
+# What the service image installs. Pinned, and installed at build time: the
+# runtime never reaches a package index.
+-r common/requirements.txt
+
+fastapi==0.115.5
+uvicorn[standard]==0.32.1

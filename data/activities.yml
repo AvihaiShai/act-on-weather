@@ -1,0 +1,44 @@
+# Deterministic suitability rules. The score is the source of truth (M2);
+# the LLM only phrases what these rules decided.
+# score: 0-100, computed by services/common/rules.py. rule_version is bumped
+# whenever any threshold below changes.
+rule_version: 1
+
+activities:
+  running:
+    label: Running
+    indoor: false
+    ideal_temp_c: [8, 20]
+    max_precip_mm: 2.0
+    max_precip_prob: 40
+    max_wind_kmh: 30
+    max_uv: 8
+  sunset_watching:
+    label: Watching the sunset
+    indoor: false
+    ideal_temp_c: [10, 30]
+    max_precip_mm: 1.0
+    max_precip_prob: 30
+    max_wind_kmh: 35
+    min_sunshine_hours: 3
+  sightseeing:
+    label: Sightseeing on foot
+    indoor: false
+    ideal_temp_c: [12, 26]
+    max_precip_mm: 4.0
+    max_precip_prob: 55
+    max_wind_kmh: 40
+    max_uv: 9
+  beach_day:
+    label: A day at the beach
+    indoor: false
+    ideal_temp_c: [24, 34]
+    max_precip_mm: 0.5
+    max_precip_prob: 20
+    max_wind_kmh: 25
+    min_sunshine_hours: 5
+  indoor_gaming:
+    label: Staying in to play computer games
+    indoor: true
+    # Inverted on purpose: bad weather outside is a good day to stay in.
+    # The brief names this one explicitly.

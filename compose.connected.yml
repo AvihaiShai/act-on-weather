@@ -1,0 +1,22 @@
+# Connected mode. Overlaid on compose.yml ONLY for staging and for a refresh:
+#
+#   docker compose -f compose.yml -f compose.connected.yml up -d ingestor
+#
+# It attaches the ingestor -- and nothing else -- to the `egress` bridge. Every
+# other service stays on `backend`, which Docker itself keeps unrouted, so the
+# LLM, the agent, the queue and the database have no way out even while this
+# overlay is active.
+#
+# The default `docker compose up -d` does not include this file, which is why
+# the normal run has no egress at all.
+services:
+  ingestor:
+    networks: [backend, egress]
+    environment:
+      INGEST_MODE: ${INGEST_MODE:-snapshot}
+      FORECAST_DAYS: ${FORECAST_DAYS:-16}
+    volumes:
+      - ingestor_outbox:/outbox
+      # Writable here, so `python -m services.ingestor.fetch_content` can write
+      # the snapshot back into the repo. Read-only in the offline run.
+      - ./data:/app/data

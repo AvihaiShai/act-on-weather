@@ -1,3 +1,21 @@
+# Private planning material — never commit
 .private/
-.env
 CLAUDE.md
+
+# Secrets
+.env
+
+# Staged artefacts: fetched by `make stage`, never committed
+models/
+bundle/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Editor config (local only)
+.vscode/

@@ -1,0 +1,12 @@
+# Maps the words a user actually types onto places.category values.
+# Applied by the ingestor at insert time, and by the agent's router at query time.
+# Exists so E2 ("concerts, shopping and fine dining") can be answered from stored rows.
+interests:
+  concerts: [theatre, concert_hall, nightclub]
+  shopping: [shopping, market]
+  fine_dining: [restaurant]
+  dining: [restaurant, cafe]
+  history: [museum, monument, attraction]
+  museums: [museum, gallery]
+  outdoors: [park, viewpoint, garden]
+  sports: [stadium, sports_centre]

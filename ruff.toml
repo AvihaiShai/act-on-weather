@@ -1,0 +1,15 @@
+# Lint settings. Deliberately close to the defaults: the value here is a
+# consistent style across five small services, not a house style.
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+  "E501",   # length is the formatter's job; enforcing it twice just fights it
+  "B008",   # FastAPI's Query()/Body() defaults are the documented idiom
+  "SIM108", # an if/else is often clearer here than a ternary
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E402"]
