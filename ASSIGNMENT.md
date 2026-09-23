@@ -1,7 +1,7 @@
 # Take-home assignment — source of truth
 
 Section 1 is the reviewer's original brief, verbatim. Section 2 is a faithful English translation.
-Sections 3–4 are OUR decomposition and interpretation, not the reviewer's wording.
+Sections 3–5 are OUR decomposition, interpretation and design choices, not the reviewer's wording.
 If the translation and the Hebrew original ever differ, the Hebrew wins.
 
 ---
@@ -94,6 +94,8 @@ Usage examples:
 
 ## 3. Requirement checklist (our decomposition — every plan must trace to these IDs)
 
+### Explicit requirements
+
 | ID | Requirement |
 |----|-------------|
 | M1 | Weather for five chosen cities from an external API (OpenWeather or other) |
@@ -110,23 +112,74 @@ Usage examples:
 | M12 | Ability to update information already stored |
 | S1 | Git repo with all code, configuration files, CI/CD definitions, README |
 | S2 | README: how to start, architecture, technical choices and the reasoning |
-| B1 | Bonus: full tests for all components |
-| B2 | Bonus: LLM observability metrics (request count, errors, latency, etc.) |
-| B3 | Bonus: automatic recovery from failures |
-| E1 | Acceptance: "What is the weather tomorrow in Rome?" |
-| E2 | Acceptance: "What activities can I do with my wife this week in London? We like concerts, shopping and fine dining." |
+
+### Bonuses (the brief lists these as bonuses, not requirements)
+
+| ID | Requirement |
+|----|-------------|
+| B1 | Full tests for all components |
+| B2 | LLM observability metrics (request count, errors, latency, etc.) |
+| B3 | Automatic recovery from failures |
+
+### Illustrative usage examples from the brief
+
+The brief lists these under "דוגמאות לשימוש" (usage examples). They are illustrative usage questions from the brief; the cities are not mandated. Choosing to treat them as acceptance tests is ours (§5).
+
+| ID | Example |
+|----|---------|
+| E1 | "What is the weather tomorrow in Rome?" |
+| E2 | "What activities can I do with my wife this week in London? We like concerts, shopping and fine dining." |
 
 ---
 
 ## 4. Interpretation notes (ours, not the reviewer's)
 
-- On-prem: the brief says explicitly "ללא גישה מלאה לאינטרנט" — "without FULL internet access". Design choice (stricter than the brief): we treat on-prem as zero internet at runtime, because partial access is unspecified and cannot be tested. The system must work fully air-gapped from pre-staged images, model weights, dependencies, UI assets and stored data. The preparation step, and exactly what keeps working offline, are documented. New external data can be fetched only while a connection exists; on-prem, every answer is based on the stored data and shows its as-of timestamp.
-- "להזרים ולאגור" = data streaming and storage: the collected data is streamed from the message queue into the database and stored there.
-- Update ("שתייצר יכול לעשות update" — typo for "יכולת"): build the ability to update the data collected so far.
-  - Connected: re-fetch from the external sources and update the stored records (e.g. newer forecasts revise existing ones).
-  - On-prem, no internet: no new external data; answers rely on the stored data. Local updates still work: re-run the local LLM recommendations on stored data, and correct or edit stored records.
-- "בזמן אמת" (real time) refers to the agent: it answers varied questions about weather and sports activities in the selected cities interactively, at question time, based on the stored data — not through live external lookups.
-- "תנגיש את המידע במערכת הטיולים שלך" = expose the information in your travel-planning system: a user-facing app where the user gets recommendations and builds an itinerary for the selected destinations. Good data visualization is a separate requirement (M10); both are needed.
-- "אירועי ספורט מגניבים בקרבת מקום" = cool sports events nearby (matches, races, tournaments) — events, not only sports activities.
-- The brief sets no time limit and mandates no specific technology. The example questions are in English, so the system is queried in English.
-- Context from the company (verbal, not in the written brief): the task is expected to take about half a day. This is expected effort, not a written deadline.
+These are readings of the brief. Where the brief leaves something open, the note says so and points to §5, where our own decision is recorded.
+
+- **On-prem (M6).** The brief says "ללא גישה מלאה לאינטרנט" — "without FULL internet access", and does not define how much access remains. What follows regardless: new external data can be fetched only while a connection exists, so on-prem every answer comes from the stored data. How strictly we demonstrate this, and what we show about the data's age, is our choice (§5).
+- **"להזרים ולאגור" (M4).** Stream and store: the collected data is streamed from the queue service into the database and stored there.
+- **"כל הנתונים שאספת" (M4).** "All the data you collected" plainly covers what the system acquires from outside: weather and tourism/place/event records. The brief does not define whether data the system *generates* — the LLM recommendations — or data the user creates or edits counts as collected data that must travel through the queue. Our decisions are in §5.
+- **Update (M12).** "שתייצר יכול לעשות update" is a typo for "יכולת" — build the ability to update the data collected so far. The brief prescribes no method; ours are in §5.
+- **Temporary failures (M11).** "חשוב שהתשתית תדע להתמודד עם תקלות זמניות ללא איבוד מידע" — the infrastructure must cope with temporary failures without losing data. The brief names no failure modes, no mechanism, and no boundary for the claim. What we guarantee, from which point, and by what means are our choices (§5).
+- **"בזמן אמת" (M7).** Real time refers to the agent: it answers varied questions about weather and sports activities in the selected cities interactively, at question time, from the stored data — not through live external lookups.
+- **"תנגיש את המידע במערכת הטיולים שלך" (M9).** Expose the information in your travel-planning system: a user-facing app where the user gets recommendations and builds an itinerary for the selected destinations. Good data visualization is a separate requirement (M10); both are needed.
+- **"אירועי ספורט מגניבים בקרבת מקום" (M8).** Cool sports events nearby — matches, races, tournaments. Events, not only sports activities.
+- **Tourism topics are open-ended (M8).** The brief says "כמו היסטוריה מקומית, מקומות מעניינים, אירועי ספורט מגניבים" — "such as", so the three topics are examples, not an exhaustive list. E2 asks about concerts, shopping and fine dining, which shows the breadth the brief expects.
+- **The activity is a parameter (M2).** The brief's own examples span outdoor and indoor ("לגלוש, לרוץ, לראות את השקיעה, להישאר בבית לשחק במחשב או כל דבר אחר"), so the recommendation is made for an activity the user picks, not for one fixed activity.
+- **Forecast horizon (M1).** The brief says only "מזג האוויר", but its examples ask about "tomorrow" (E1) and "this week" (E2), so the stored weather has to cover a forward-looking window, not only current conditions.
+- **Language.** The example questions are in English. The brief sets no language requirement; which languages we support is our choice (§5).
+- **No deadline in the written brief, no mandated technology.** The written brief sets no submission deadline, and leaves the direction open: "חלקים רבים בתרגיל כלליים ומאפשרים לך לקחת אותם לכיוונים או לטכנולוגיות שמתאימות לך."
+
+---
+
+## 5. Design choices (ours, not required by the brief)
+
+The brief does not require any of these. They are our decisions, recorded here so the README and the plan can point at one list. Items marked TBD are not decided yet.
+
+**Runtime and packaging**
+
+- **Zero-internet runtime.** Stricter than the brief's "without full internet access": after a one-time connected staging step (container images, model weights, dependencies, UI assets and a data snapshot), the whole stack starts and answers questions with no internet at all. We document the staging step and exactly what keeps working offline. Reason: partial access is unspecified and cannot be tested, while zero internet can be demonstrated.
+- **Docker Compose is the run path**, one command per mode, identical on Linux, macOS and Windows. Kubernetes/OpenShift appears in the README as a production path, not as code.
+- **CPU by default**; the GPU is an optional Compose override file, never required.
+- **Local model.** The brief requires only that the model be local and open-weights (M3). Which model and which size is ours to choose — TBD, decided in planning after measuring CPU latency.
+
+**Data flow and integrity**
+
+- **Everything goes through the queue**, and only the consumer writes to the database. That covers the records we acquire (weather, tourism, places, events) and, by our choice, the two cases the brief leaves open (§4): the **LLM recommendations the system generates**, which re-enter the queue rather than being written straight to the database, and **records the user creates or edits**. If we relax either, the exception is documented.
+- **When a record counts as accepted.** A record is accepted once it is durably written to the producer's spool on a persistent volume and acknowledged to the caller. Before that — a fetch that never completed, or a write rejected because the spool is full — nothing was accepted, and we claim nothing about it.
+- **Guarantee boundary (M11).** Accepted records survive temporary LLM, broker, consumer and database outages and are eventually stored. The means: a durable producer spool/outbox so a broker outage cannot drop an accepted record, publisher confirms, at-least-once delivery, and idempotent writes where the consumer commits to the database before acknowledging. Outside the boundary: destroyed volumes, exhausted disk or a full spool, and external data that was never accepted — weather that was never accepted can be re-fetched while connected. This is at-least-once eventual storage, not exactly-once delivery, and not uninterrupted answers during an outage.
+- **Recommendation grounding (M2).** A deterministic, rule-based suitability score per activity is the source of truth; the LLM writes the recommendation grounded on that score. If the LLM is unavailable or slow, the weather record is published with `recommendation_status=pending` and re-enriched later, so an LLM failure never blocks or loses weather data.
+- **Update paths (M12).** Connected: re-fetch from the external sources and update the stored records, so newer forecasts revise existing ones. Offline: re-run the local LLM recommendations over stored data, and correct or edit stored records. The last two also work on-prem.
+
+**Content and language**
+
+- **Cities.** Five, including Rome and London so both illustrative questions work as written, and preferably one coastal city so a surfing recommendation has marine data. Final list TBD in planning.
+- **E1 and E2 as acceptance tests.** The brief offers them as usage examples (§3); adopting them as pass/fail criteria for our own build is our choice.
+- **Nothing is invented.** No fabricated events, concerts or fixtures. Every record carries a source and an as-of date; a question outside the data coverage gets an explicit "no data for that date" answer; curated sample data is labelled as samples in the UI and in agent answers.
+- **Every answer and chart shows its as-of timestamp** and the coverage window of the data behind it. The brief does not ask for this; stored data goes stale offline, and an answer that hides its age is misleading rather than merely incomplete.
+- **English-first.** UI, agent and stored content are in English.
+
+**Security and repository hygiene**
+
+- Secrets live only in a gitignored `.env`; a `.env.example` is committed.
+- Pinned image versions (digests where practical), containers run as non-root where the image allows, no published ports beyond the UI, API and Grafana, and an image scan in CI.
