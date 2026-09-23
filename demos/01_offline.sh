@@ -54,10 +54,13 @@ hr "3. No cloud LLM anywhere in the repo"
 note "Searching the source, the dependency pins and the compose files for any"
 note "hosted-model SDK or endpoint:"
 PATTERN='openai|anthropic|api\.openai|claude-|gemini|generativelanguage|cohere|mistral\.ai|huggingface\.co|together\.ai|groq|replicate|bedrock|azure.*openai'
+# Scoped to the application, the way the CI guard job is: this file and
+# .github/workflows/ci.yml both contain the pattern itself, and a check that
+# fails on its own definition is a check nobody trusts.
 HITS=$(grep -rInE "$PATTERN" \
         --include='*.py' --include='*.txt' --include='*.yml' --include='*.yaml' \
-        --include='*.toml' --include='*.sh' --include='*.sql' . 2>/dev/null \
-      | grep -v '^\./demos/01_offline.sh' || true)
+        --include='*.toml' --include='*.sql' \
+        services tests db data compose.yml compose.connected.yml 2>/dev/null || true)
 if [ -z "$HITS" ]; then
   pass "nothing matched -- the only model client is services/common/llm.py, pointed at llm:8080"
 else
