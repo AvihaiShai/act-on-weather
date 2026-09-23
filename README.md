@@ -309,11 +309,14 @@ There is exactly one write path into this database.
 make test     # unit tests, in a container, with --network none
 ```
 
-Forty tests covering the rule engine's truth table (including that indoor
+Fifty-seven tests covering the rule engine's truth table (including that indoor
 activities really are scored as the inverse of outdoor ones), envelope
 round-tripping and rejection of malformed messages, payload validation, and the
 outbox's two load-bearing properties: accepting the same message twice is a
-no-op, and an accepted-but-unpublished record survives the process dying.
+no-op, and an accepted-but-unpublished record survives the process dying. Also
+the agent's date parsing and its word-boundary intent matching — the latter has
+a test named after the bug that caused it, because `"eat"` is inside
+`"weather"`, so every weather question was silently running a restaurant lookup.
 
 CI (`.github/workflows/ci.yml`) runs lint → unit → guard → build → Trivy. CI
 has the internet; the runtime does not. That asymmetry is deliberate, and the
