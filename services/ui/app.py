@@ -110,10 +110,10 @@ def banner(cov) -> None:
                     ),
                 }
             )
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
         st.caption(
-            "Sources: Open-Meteo (weather, CC BY 4.0) · OpenStreetMap contributors "
-            "(places, ODbL) · Wikipedia (background, CC BY-SA 4.0) · venue listings "
+            "Sources: Open-Meteo (weather, CC BY 4.0) · Wikidata (places, CC0; "
+            "OpenStreetMap when selected, ODbL) · Wikipedia (background, CC BY-SA 4.0) · venue listings "
             "(events, each row carries its own source URL). Rows marked *sample* are "
             "labelled as such wherever they appear."
         )
@@ -181,7 +181,7 @@ def page_forecast(cov) -> None:
         },
         legend={"orientation": "h", "y": 1.12},
     )
-    st.plotly_chart(figure, width="stretch")
+    st.plotly_chart(figure, use_container_width=True)
 
     st.caption(
         f"Provider: {rows[0]['provider']} · row as of {fmt_ts(rows[0]['as_of'])} · "
@@ -204,7 +204,7 @@ def page_forecast(cov) -> None:
                 ]
             ],
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
         )
 
 
@@ -249,7 +249,7 @@ def page_heatmap(cov) -> None:
         labels={"color": "score"},
     )
     figure.update_layout(height=60 + 36 * len(pivot), margin={"l": 10, "r": 10, "t": 20, "b": 10})
-    st.plotly_chart(figure, width="stretch")
+    st.plotly_chart(figure, use_container_width=True)
 
     pending = sum(1 for r in rows if r["status"] == "pending")
     failed = sum(1 for r in rows if r["status"] == "failed")
@@ -269,7 +269,7 @@ def page_heatmap(cov) -> None:
                 ["forecast_date", "city_id", "activity_label", "score", "band", "text", "model"]
             ],
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
             height=260,
         )
     else:
@@ -472,7 +472,7 @@ def page_planner(cov) -> None:
     saved_rows = api_get("/itineraries", city=plan["city"])
     if saved_rows:
         st.markdown("**Saved itineraries**")
-        st.dataframe(pd.DataFrame(saved_rows), hide_index=True, width="stretch")
+        st.dataframe(pd.DataFrame(saved_rows), hide_index=True, use_container_width=True)
 
 
 # --------------------------------------------------------------- 5. edit ----
