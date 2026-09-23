@@ -75,13 +75,37 @@ jobs:
 
       - name: Images are pinned by digest
         run: |
-          # A floating tag is the one thing that can quietly break an
-          # air-gapped rebuild, so it fails the build rather than being a note.
-          if grep -nE '^\s+image:.*:(latest|[0-9._a-z-]+)\s*$' compose.yml; then
-            echo "::error::an image is pinned by tag only; add its @sha256 digest"
-            exit 1
-          fi
-          echo "every image in compose.yml carries a digest"
+          # Locally built images use :dev labels. Images pulled from a registry
+          # must carry a digest so a later offline rebuild uses the same bytes.
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          service = None
+          image = None
+          built = False
+          errors = []
+
+          def check():
+              if service and image and not built and not re.fullmatch(r".+@sha256:[0-9a-f]{64}", image):
+                  errors.append(f"{service}: {image}")
+
+          for line in Path("compose.yml").read_text().splitlines():
+              match = re.fullmatch(r"  ([a-z][a-z0-9_-]*):", line)
+              if match:
+                  check()
+                  service, image, built = match.group(1), None, False
+              elif service:
+                  match = re.match(r"    image:\s*(\S+)", line)
+                  if match:
+                      image = match.group(1)
+                  if re.match(r"    build:", line):
+                      built = True
+          check()
+          if errors:
+              raise SystemExit("::error::unpinned pulled images: " + ", ".join(errors))
+          print("every pulled image in compose.yml carries a digest")
+          PY
 
   build-and-scan:
     runs-on: ubuntu-latest
