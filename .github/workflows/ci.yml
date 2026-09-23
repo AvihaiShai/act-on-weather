@@ -120,7 +120,7 @@ jobs:
         run: docker build -f services/ui/Dockerfile -t aow/ui:ci .
 
       - name: Trivy -- services
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: aow/services:ci
           severity: HIGH,CRITICAL
@@ -129,7 +129,7 @@ jobs:
           format: table
 
       - name: Trivy -- ui
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: aow/ui:ci
           severity: HIGH,CRITICAL
@@ -138,7 +138,7 @@ jobs:
           format: table
 
       - name: Trivy -- the repository itself (config and dependencies)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           scan-type: fs
           scan-ref: .
