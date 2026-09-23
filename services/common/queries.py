@@ -16,19 +16,54 @@ import psycopg
 
 # ------------------------------------------------------------- coverage ----
 
+# `kind` says what a date range means for that entity, which is the difference
+# between "this table has no coverage" and "this table is not date-scoped".
+# Places and facts genuinely have no window -- a museum is not valid between
+# two dates -- and the UI used to render that as a bare "-", which reads as
+# missing data. They report their as-of and their city spread instead.
 COVERAGE_SQL = """
-SELECT 'weather'  AS entity, MAX(as_of) AS as_of, COUNT(*) AS rows,
+SELECT 'weather' AS entity, 'forecast window' AS kind,
+       MAX(as_of) AS as_of, COUNT(*) AS rows,
+       COUNT(DISTINCT city_id) AS cities, 0 AS samples,
        MIN(forecast_date)::text AS first_date, MAX(forecast_date)::text AS last_date
   FROM weather_daily
 UNION ALL
-SELECT 'places', MAX(as_of), COUNT(*), NULL, NULL FROM places
+SELECT 'recommendations', 'forecast window', MAX(updated_at), COUNT(*),
+       COUNT(DISTINCT city_id), 0,
+       MIN(forecast_date)::text, MAX(forecast_date)::text
+  FROM recommendations
 UNION ALL
-SELECT 'facts', MAX(as_of), COUNT(*), NULL, NULL FROM facts
+SELECT 'events', 'event window', MAX(as_of), COUNT(*),
+       COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample),
+       MIN(starts_at)::date::text, MAX(starts_at)::date::text
+  FROM events
 UNION ALL
-SELECT 'events', MAX(as_of), COUNT(*),
-       MIN(starts_at)::date::text, MAX(starts_at)::date::text FROM events
+SELECT 'places', 'not date-scoped', MAX(as_of), COUNT(*),
+       COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample), NULL, NULL
+  FROM places
 UNION ALL
-SELECT 'recommendations', MAX(updated_at), COUNT(*), NULL, NULL FROM recommendations
+SELECT 'facts', 'not date-scoped', MAX(as_of), COUNT(*),
+       COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample), NULL, NULL
+  FROM facts
+UNION ALL
+SELECT 'itineraries', 'saved by users', MAX(updated_at), COUNT(*),
+       COUNT(DISTINCT city_id), 0,
+       MIN(start_date)::text, MAX(end_date)::text
+  FROM itineraries
+"""
+
+# Which cities actually hold what. Without this the row counts above hide the
+# shape of the data -- "7 events" looks like coverage until you see they are
+# all in one city.
+BY_CITY_SQL = """
+SELECT c.id AS city_id, c.name, c.coastal,
+       (SELECT COUNT(*) FROM weather_daily w WHERE w.city_id = c.id)   AS weather,
+       (SELECT COUNT(*) FROM recommendations r WHERE r.city_id = c.id) AS recommendations,
+       (SELECT COUNT(*) FROM places p WHERE p.city_id = c.id)          AS places,
+       (SELECT COUNT(*) FROM facts f WHERE f.city_id = c.id)           AS facts,
+       (SELECT COUNT(*) FROM events e WHERE e.city_id = c.id)          AS events,
+       (SELECT COUNT(*) FROM events e WHERE e.city_id = c.id AND e.is_sample) AS sample_events
+  FROM cities c ORDER BY c.name
 """
 
 
@@ -43,13 +78,46 @@ def coverage(conn: psycopg.Connection) -> dict[str, Any]:
     weather = entities.get("weather") or {}
     return {
         "entities": rows,
+        "by_city": conn.execute(BY_CITY_SQL).fetchall(),
         "weather_first_date": weather.get("first_date"),
         "weather_last_date": weather.get("last_date"),
         "weather_as_of": weather.get("as_of"),
         "cities": conn.execute(
-            "SELECT id, name, country, lat, lon, timezone FROM cities ORDER BY name"
+            "SELECT id, name, country, lat, lon, timezone, coastal FROM cities ORDER BY name"
         ).fetchall(),
     }
+
+
+# ------------------------------------------------------------ activities ----
+
+ACTIVITY_CATALOGUE_SQL = """
+SELECT activity, MIN(activity_label) AS label,
+       COUNT(*) AS scored_days,
+       COUNT(*) FILTER (WHERE status = 'ready')    AS worded,
+       COUNT(*) FILTER (WHERE status = 'pending')  AS pending,
+       COUNT(*) FILTER (WHERE status = 'deferred') AS deferred,
+       BOOL_OR(requested) AS user_requested,
+       MAX(score) AS best_score, ROUND(AVG(score))::int AS avg_score
+  FROM recommendations
+ -- Cast, or Postgres cannot infer the parameter's type from a bare
+ -- comparison against NULL and refuses the whole statement.
+ WHERE (%(city)s::text IS NULL OR city_id = %(city)s::text)
+ GROUP BY activity
+ ORDER BY MIN(activity_label)
+"""
+
+
+def activity_catalogue(
+    conn: psycopg.Connection, city_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Every activity that has a stored score, with how far its wording got.
+
+    Deliberately read from the recommendations table rather than from
+    data/activities.yml: the UI must offer what the system actually scored,
+    not what the catalogue file aspires to. It is also how the coastal gate
+    becomes visible -- an inland city simply has no surfing row.
+    """
+    return conn.execute(ACTIVITY_CATALOGUE_SQL, {"city": city_id}).fetchall()
 
 
 def in_coverage(cov: dict[str, Any], day: date) -> bool:
@@ -244,5 +312,6 @@ def history(conn: psycopg.Connection, entity: str, entity_id: str) -> list[dict[
 
 def cities(conn: psycopg.Connection) -> list[dict[str, Any]]:
     return conn.execute(
-        "SELECT id, name, country, lat, lon, timezone, aliases FROM cities ORDER BY name"
+        "SELECT id, name, country, lat, lon, timezone, aliases, coastal"
+        "  FROM cities ORDER BY name"
     ).fetchall()

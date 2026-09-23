@@ -128,6 +128,22 @@ class Itinerary(_Payload):
     as_of: datetime
 
 
+class ReenrichRequest(_Payload):
+    """M12, third update path: re-word stored recommendations.
+
+    Every field is optional and narrows the selection; an empty request means
+    "everything". `include_deferred` is what promotes rows the consumer ranked
+    out of the wording queue, so an activity nobody has asked about can still
+    be worded on demand.
+    """
+
+    city_id: str | None = None
+    forecast_date: date | None = None
+    activity: str | None = None
+    include_deferred: bool = False
+    requested_by: str = "ui"
+
+
 class RecordPatch(_Payload):
     """M12: a user correction to a stored record, travelling like any other."""
 
@@ -146,6 +162,7 @@ PAYLOAD_MODELS: dict[str, type[_Payload]] = {
     config.RK_LLM_RECOMMENDATION: LlmRecommendation,
     config.RK_ITINERARY: Itinerary,
     config.RK_PATCH: RecordPatch,
+    config.RK_REENRICH: ReenrichRequest,
 }
 
 

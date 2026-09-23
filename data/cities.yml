@@ -1,5 +1,12 @@
 # The five cities. Coordinates are committed, never geocoded at runtime.
 # Rome and London make the brief's two example questions work as written.
+#
+# `coastal` gates the activities that carry `requires_coast` in
+# data/activities.yml -- surfing, swimming, the beach, fishing, a boat ride.
+# A city marked false gets no row for them at all, which is the honest answer:
+# the forecast for an inland city says nothing about surf.
+# Rome is true because Lido di Ostia is inside Roma Capitale and on the metro;
+# London is false -- the Thames is tidal, but it is not a coast.
 cities:
   - slug: rome
     name: Rome
@@ -8,6 +15,7 @@ cities:
     lon: 12.4829
     timezone: Europe/Rome
     aliases: [rome, roma]
+    coastal: true
   - slug: london
     name: London
     country: United Kingdom
@@ -15,6 +23,7 @@ cities:
     lon: -0.1278
     timezone: Europe/London
     aliases: [london]
+    coastal: false
   - slug: lisbon
     name: Lisbon
     country: Portugal
@@ -22,6 +31,7 @@ cities:
     lon: -9.1393
     timezone: Europe/Lisbon
     aliases: [lisbon, lisboa]
+    coastal: true
   - slug: tel-aviv
     name: Tel Aviv
     country: Israel
@@ -29,6 +39,7 @@ cities:
     lon: 34.7818
     timezone: Asia/Jerusalem
     aliases: ["tel aviv", "tel-aviv", telaviv]
+    coastal: true
   - slug: reykjavik
     name: Reykjavik
     country: Iceland
@@ -36,3 +47,4 @@ cities:
     lon: -21.9426
     timezone: Atlantic/Reykjavik
     aliases: [reykjavik, "reykjavík"]
+    coastal: true

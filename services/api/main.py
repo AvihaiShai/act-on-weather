@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
@@ -75,6 +76,17 @@ def _start_publisher() -> None:
     threading.Thread(target=_publisher_loop, name="outbox-publisher", daemon=True).start()
 
 
+@lru_cache(maxsize=1)
+def _activity_meta() -> dict[str, dict[str, Any]]:
+    """Presentation metadata for the activity catalogue -- icon, indoor flag,
+    interest tags -- read from the same data/activities.yml the rule engine
+    scores from, so the two cannot describe different activities."""
+    from ..common import rules
+
+    _version, activities = rules.load_activities(config.DATA_DIR / "activities.yml")
+    return activities
+
+
 def accept(routing_key: str, payload: dict[str, Any], city: str | None = None) -> str:
     """Validate, then durably accept. Returns the message_id the caller can follow."""
     try:
@@ -123,6 +135,35 @@ def get_coverage() -> dict[str, Any]:
 @app.get("/cities")
 def get_cities() -> list[dict[str, Any]]:
     return queries.cities(pool.conn)
+
+
+@app.get("/activities")
+def get_activities(city: str | None = None) -> list[dict[str, Any]]:
+    """The activity catalogue, as the rule engine actually scored it.
+
+    Read from `recommendations`, not from data/activities.yml, so what the UI
+    offers is exactly what has a stored score behind it. Filtering by city is
+    what makes the coastal gate visible: Tel Aviv lists surfing, London does
+    not, because London has no surfing row to list.
+    """
+    meta = _activity_meta()
+    out = []
+    for row in queries.activity_catalogue(pool.conn, city):
+        cfg = meta.get(row["activity"]) or {}
+        out.append(
+            {
+                **row,
+                "icon": cfg.get("icon"),
+                "indoor": bool(cfg.get("indoor")),
+                "interests": cfg.get("interests") or [],
+                "requires_coast": bool(cfg.get("requires_coast")),
+                # No block in activities.yml means a user typed this one in on
+                # the Suitability page; it was scored against general outdoor
+                # comfort, and saying so is the point.
+                "in_catalogue": row["activity"] in meta,
+            }
+        )
+    return out
 
 
 @app.get("/weather/{city}")
@@ -259,6 +300,59 @@ def request_recommendation(body: RecommendationRequestIn) -> dict[str, Any]:
     }
 
 
+class ReenrichIn(BaseModel):
+    city: str | None = None
+    forecast_date: date | None = None
+    activity: str | None = None
+    include_deferred: bool = False
+
+
+@app.post("/reenrich", status_code=202)
+def reenrich(body: ReenrichIn) -> dict[str, Any]:
+    """M12's third update path: re-word stored recommendations.
+
+    This is the update that needs no connectivity. It resets the wording, not
+    the score -- the score came from the rule engine and only a weather
+    refresh changes it -- and the enricher picks the rows up on its next poll.
+    Set `include_deferred` to pull in activities the consumer ranked out of
+    the wording queue for that day.
+    """
+    message_id = accept(
+        config.RK_REENRICH,
+        {
+            "city_id": body.city,
+            "forecast_date": body.forecast_date.isoformat() if body.forecast_date else None,
+            "activity": body.activity,
+            "include_deferred": body.include_deferred,
+            "requested_by": "api",
+        },
+        city=body.city,
+    )
+    return {"accepted": True, "message_id": message_id, "follow": f"/outbox/{message_id}"}
+
+
+@app.get("/enrichment")
+def enrichment_status(city: str | None = None) -> dict[str, Any]:
+    """How far the local model has got through the wording queue.
+
+    Surfaced because with 18 activities the queue is long enough to be worth
+    watching, and because `deferred` needs explaining: those rows are scored
+    and charted, they were simply never sent to the model.
+    """
+    rows = pool.conn.execute(
+        "SELECT status, COUNT(*) AS rows FROM recommendations"
+        " WHERE (%(city)s::text IS NULL OR city_id = %(city)s::text)"
+        " GROUP BY status ORDER BY status",
+        {"city": city},
+    ).fetchall()
+    counts = {r["status"]: r["rows"] for r in rows}
+    return {
+        "counts": counts,
+        "total": sum(counts.values()),
+        "top_n_worded_per_day": config.ENRICH_TOP_N,
+    }
+
+
 class ItineraryIn(BaseModel):
     city: str
     title: str
@@ -346,6 +440,8 @@ class ItineraryRequestIn(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     interests: list[str] = Field(default_factory=list)
+    activities: list[str] = Field(default_factory=list)
+    pace: str = Field(default="varied", pattern="^(varied|best)$")
 
 
 @app.post("/agent/itinerary")
@@ -359,5 +455,7 @@ def build_itinerary(body: ItineraryRequestIn) -> JSONResponse:
             "start_date": body.start_date.isoformat() if body.start_date else None,
             "end_date": body.end_date.isoformat() if body.end_date else None,
             "interests": body.interests,
+            "activities": body.activities,
+            "pace": body.pace,
         },
     )

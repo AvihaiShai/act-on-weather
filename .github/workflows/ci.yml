@@ -23,8 +23,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff==0.8.4
-      - run: ruff check services tests
-      - run: ruff format --check services tests
+      - run: ruff check services tests scripts
+      - run: ruff format --check services tests scripts
 
   unit:
     runs-on: ubuntu-latest
@@ -107,17 +107,40 @@ jobs:
           print("every pulled image in compose.yml carries a digest")
           PY
 
+      - name: Docker base images are pinned by digest
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          files = [Path("services/Dockerfile"), Path("services/ui/Dockerfile"), Path("tests/Dockerfile")]
+          for path in files:
+              for line in path.read_text().splitlines():
+                  if line.startswith("FROM ") and not re.fullmatch(r"FROM \S+@sha256:[0-9a-f]{64}(?: AS \S+)?", line):
+                      raise SystemExit(f"::error file={path}::unpinned base image: {line}")
+          print("all Dockerfile base images carry a digest")
+          PY
+
+      - name: Validate delivery scripts and Compose overlay
+        run: |
+          bash -n scripts/*.sh
+          docker compose -f compose.yml -f compose.ci.yml --env-file .env.example config --quiet
+          AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml --env-file .env.example config --quiet
+
   build-and-scan:
     runs-on: ubuntu-latest
     needs: [lint, unit, guard]
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Build the service image
-        run: docker build -f services/Dockerfile -t aow/services:ci .
+        run: docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" -f services/Dockerfile -t aow/services:ci .
 
       - name: Build the UI image
-        run: docker build -f services/ui/Dockerfile -t aow/ui:ci .
+        run: docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" -f services/ui/Dockerfile -t aow/ui:ci .
 
       - name: Trivy -- services
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
@@ -144,5 +167,40 @@ jobs:
           scan-ref: .
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "0"
+          exit-code: "1"
           format: table
+
+      - name: Compose integration test
+        run: bash scripts/ci-integration.sh
+
+      # Publish only after the exact images above have passed scans and the
+      # running-stack test. Pull requests never receive publication credentials.
+      - name: Publish tested images by commit SHA
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image_root="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="sha-${GITHUB_SHA}"
+          mkdir -p release
+          printf 'commit %s\n' "$GITHUB_SHA" > release/images.lock
+          for component in services ui; do
+            image="$image_root/$component:$version"
+            docker tag "aow/$component:ci" "$image"
+            docker push "$image"
+            docker pull "$image" >/dev/null
+            digest_ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" | grep -F -m1 "$image_root/$component@sha256:")"
+            test -n "$digest_ref"
+            echo "$component $digest_ref" | tee -a release/images.lock "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Keep the release digest manifest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aow-images-${{ github.sha }}
+          path: release/images.lock
+          if-no-files-found: error
+          retention-days: 30

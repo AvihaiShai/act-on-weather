@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 import yaml
@@ -121,6 +122,29 @@ def _mentions(text: str, phrase: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text) is not None
 
 
+@lru_cache(maxsize=1)
+def activity_meta() -> dict[str, dict[str, Any]]:
+    """data/activities.yml, read once. Same file the rule engine scores from,
+    so the router cannot describe an activity the scorer does not have."""
+    with open(config.DATA_DIR / "activities.yml", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)["activities"]
+
+
+def load_activity_keywords(path) -> dict[str, list[str]]:
+    """activity slug -> the words a user types for it, from activities.yml.
+
+    Sorted longest first, so "a long walk" is matched before "walk" and the
+    question is attributed to hiking rather than to whichever activity happens
+    to share a shorter word with it.
+    """
+    with open(path, encoding="utf-8") as fh:
+        activities = yaml.safe_load(fh)["activities"]
+    return {
+        key: sorted(cfg.get("keywords") or [], key=len, reverse=True)
+        for key, cfg in activities.items()
+    }
+
+
 @dataclass
 class Resolution:
     question: str
@@ -130,6 +154,9 @@ class Resolution:
     intents: list[str] = field(default_factory=list)
     interests: list[str] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)
+    # Activity slugs the question actually named, e.g. {"surfing"} for
+    # "can I surf in London?". Used to notice when the answer is missing.
+    activities: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +170,12 @@ class Retrieval:
     events: list[dict[str, Any]] = field(default_factory=list)
     facts: list[dict[str, Any]] = field(default_factory=list)
     refusal: str | None = None
+    # Activities the question named that this city has no scored row for --
+    # almost always a coastal activity asked about an inland city. Reported to
+    # the model explicitly, because the failure mode otherwise is not silence:
+    # asked "is it good for surfing in London?" with no surfing row in front of
+    # it, the model helpfully invents a weather-based reason why it is not.
+    unscored_activities: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any((self.forecast, self.recommendations, self.places, self.events, self.facts))
@@ -152,6 +185,7 @@ class Router:
     def __init__(self, conn):
         self.conn = conn
         self.interests = load_interests(config.DATA_DIR / "interests.yml")
+        self.activity_keywords = load_activity_keywords(config.DATA_DIR / "activities.yml")
 
     # -- resolving ---------------------------------------------------------
     def resolve(self, question: str) -> Resolution:
@@ -188,6 +222,15 @@ class Router:
                 resolution.categories.extend(categories)
         # "fine dining" and "restaurants" are the same rows; do not ask twice.
         resolution.categories = sorted(set(resolution.categories))
+
+        for activity, keywords in self.activity_keywords.items():
+            if any(_mentions(text, word) for word in keywords):
+                resolution.activities.append(activity)
+        # Naming an activity is asking whether to do it, whatever else the
+        # sentence looks like. Without this, "can I surf tomorrow?" carries no
+        # activity intent and never retrieves the verdict it is asking for.
+        if resolution.activities and "activities" not in resolution.intents:
+            resolution.intents.append("activities")
         return resolution
 
     # -- retrieving --------------------------------------------------------
@@ -237,6 +280,13 @@ class Router:
             result.recommendations = queries.recommendations(
                 self.conn, city_id, start=start, end=end
             )
+            if resolution.activities:
+                # A named activity is the subject of the question, not one
+                # option among the catalogue. Keep every covered day for it.
+                named = set(resolution.activities)
+                result.recommendations = [
+                    row for row in result.recommendations if row["activity"] in named
+                ]
         if "places" in resolution.intents or resolution.categories:
             result.places = queries.places(
                 self.conn, city_id, categories=resolution.categories or None, limit=18
@@ -247,6 +297,12 @@ class Router:
             )
         if "facts" in resolution.intents:
             result.facts = queries.facts(self.conn, city_id, limit=3)
+
+        # The activity coverage gate, and the sibling of the date gate above.
+        # An activity the question named but this city holds no row for is
+        # recorded here so `context_block` can say so in as many words.
+        scored = {row["activity"] for row in result.recommendations}
+        result.unscored_activities = [a for a in resolution.activities if a not in scored]
 
         return result
 
@@ -282,9 +338,28 @@ def context_block(result: Retrieval) -> str:
                 parts.append(f"sun {row['sunshine_hours']:.1f}h")
             lines.append(" ".join(parts))
 
+    if result.unscored_activities:
+        # Stated before the scores, and in the blunt language the model is
+        # least able to soften. This is the line that stops "is it good for
+        # surfing in London?" being answered with an invented weather reason.
+        meta = activity_meta()
+        lines.append("\nASKED ABOUT BUT NOT ON RECORD -- say this plainly and explain nothing:")
+        for key in result.unscored_activities:
+            cfg = meta.get(key) or {}
+            label = cfg.get("label", key.replace("_", " "))
+            if cfg.get("requires_coast") and not city.get("coastal"):
+                why = f"{city['name']} has no coast on record, so this is never scored there"
+            else:
+                why = "no suitability score is stored for it in this city"
+            lines.append(f"  {label}: NO DATA -- {why}.")
+        lines.append(
+            "  Do not give a verdict on these, and do not reason from the weather "
+            "to one. State that there is no record and move on."
+        )
+
     if result.recommendations:
         lines.append("\nSuitability scores from the rule engine (these are the verdicts):")
-        for row in result.recommendations[:40]:
+        for row in context_recommendations(result):
             text = f" -- {row['text']}" if row.get("text") else ""
             lines.append(
                 f"  {row['forecast_date']} {row['activity_label']}: "
@@ -317,6 +392,29 @@ def context_block(result: Retrieval) -> str:
             lines.append(f"  {row['title']}: {row['summary'][:400]}")
 
     return "\n".join(lines)
+
+
+def context_recommendations(result: Retrieval) -> list[dict[str, Any]]:
+    """Fit the prompt while retaining every date in a multi-day question.
+
+    Named activities already have a small, focused result set. For an open
+    question, take the best rows from each day in rounds instead of taking
+    forty rows from the start of the date range.
+    """
+    rows = result.recommendations
+    if result.resolution.activities or len(rows) <= 40:
+        return rows
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_day.setdefault(str(row["forecast_date"]), []).append(row)
+    for day_rows in by_day.values():
+        day_rows.sort(key=lambda row: (-(row["score"] or 0), row["activity"]))
+    selected: list[dict[str, Any]] = []
+    while len(selected) < 40 and any(by_day.values()):
+        for day_rows in by_day.values():
+            if day_rows and len(selected) < 40:
+                selected.append(day_rows.pop(0))
+    return sorted(selected, key=lambda row: (row["forecast_date"], row["activity"]))
 
 
 def footer(result: Retrieval) -> str:

@@ -13,9 +13,13 @@ Sources and licences (repeated in the README):
   * places   Wikidata SPARQL (CC0) by default; OpenStreetMap via Overpass
              (ODbL) with --places-source osm. See `fetch_places` for why the
              default is the narrower of the two.
-  * facts    Wikipedia REST summaries, CC BY-SA 4.0
-  * events   data/events.seed.jsonl -- hand-verified, each row carrying its own
-             source URL. Nothing here is generated, and nothing is invented.
+  * facts    Wikipedia REST summaries, CC BY-SA 4.0 -- the city article plus
+             one article per venue in the places snapshot, resolved through
+             its Wikidata sitelink
+  * events   data/events.seed.jsonl -- hand-verified real listings, each row
+             carrying its own source URL, plus data/events.samples.jsonl,
+             whose rows are all is_sample=true and titled "Sample: ...".
+             Nothing is fetched, and nothing is passed off as real.
 
 Every row it writes carries `source`, `source_url` and `as_of`.
 """
@@ -52,6 +56,7 @@ OVERPASS_URLS = [
 ]
 OVERPASS_URL = OVERPASS_URLS[0]
 WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
+WIKI_GEOSEARCH = "https://en.wikipedia.org/w/api.php"
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 
 # Wikidata classes worth collecting, mapped onto the same category vocabulary
@@ -69,7 +74,7 @@ WIKIDATA_CLASSES: list[tuple[str, str]] = [
     ("Q4989906", "monument"),
     ("Q570116", "attraction"),  # tourist attraction
 ]
-USER_AGENT = "act-on-weather/1.0 (take-home project; contact via repository)"
+USER_AGENT = "act-on-weather/1.0 (take-home project; https://github.com/; contact via repository)"
 
 # OSM tag -> the category vocabulary in data/interests.yml. Only these are
 # collected; anything else in the area is ignored rather than guessed at.
@@ -92,7 +97,7 @@ OSM_CATEGORIES: list[tuple[str, str, str]] = [
     ("shop", "mall", "shopping"),
 ]
 
-PER_CATEGORY_LIMIT = 6
+PER_CATEGORY_LIMIT = 10
 
 
 def now_iso() -> str:
@@ -364,69 +369,260 @@ def fetch_places(
 # ---------------------------------------------------------------- facts ----
 
 
-def fetch_facts(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    as_of = now_iso()
-    rows: list[dict[str, Any]] = []
-    for city in cities:
-        title = city.get("wikipedia", city["name"]).replace(" ", "_")
+def wiki_get(url: str, params: dict[str, Any] | None = None, attempts: int = 5):
+    """GET from Wikipedia, honouring its rate limit.
+
+    Wikipedia answers a burst with HTTP 429 and a Retry-After. Treating that as
+    a failure is how the first run of this produced one landmark for Rome and
+    none for anywhere else: a 429 means "slow down", not "this city has no
+    landmarks". Backs off and retries, and returns None only once it really
+    cannot get an answer.
+    """
+    wait = 5.0
+    for attempt in range(attempts):
         try:
             response = requests.get(
-                WIKI_SUMMARY.format(title=title),
+                url,
+                params=params,
                 headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-                timeout=30,
+                timeout=45,
             )
+        except requests.RequestException as exc:
+            log.warning("wikipedia request failed (%s); retrying", exc)
+            time.sleep(wait)
+            wait = min(wait * 2, 60)
+            continue
+        if response.status_code == 429:
+            retry_after = float(response.headers.get("Retry-After", 0)) or wait
+            log.info("wikipedia rate-limited; waiting %.0fs (attempt %d)", retry_after, attempt + 1)
+            time.sleep(retry_after)
+            wait = min(wait * 2, 60)
+            continue
+        if response.status_code == 404:
+            return None
+        try:
             response.raise_for_status()
-            body = response.json()
+            return response.json()
         except (requests.RequestException, ValueError) as exc:
-            log.error("wikipedia failed for %s: %s", city["slug"], exc)
+            log.warning("wikipedia returned %s: %s", response.status_code, exc)
+            return None
+    log.error("wikipedia gave up after %d attempts: %s", attempts, url)
+    return None
+
+
+def wikipedia_summary(title: str, city_slug: str, topic: str, as_of: str) -> dict[str, Any] | None:
+    """One Wikipedia article -> one fact row, or None if it has no summary.
+
+    A redirect or a disambiguation page comes back with a `type` that is not
+    `standard`; those are skipped rather than stored, because "Rome (disambig)"
+    is not a fact about anywhere.
+    """
+    body = wiki_get(WIKI_SUMMARY.format(title=title.replace(" ", "_")))
+    if body is None:
+        return None
+
+    if body.get("type") not in (None, "standard"):
+        return None
+    summary = (body.get("extract") or "").strip()
+    # Under ~120 characters it is a stub, and a stub in the agent's context
+    # window costs a reviewer's attention without telling them anything.
+    if len(summary) < 120:
+        return None
+
+    canonical = body.get("titles", {}).get("canonical", title)
+    return {
+        "id": f"wikipedia:{canonical}",
+        "city_id": city_slug,
+        "title": body.get("title", title),
+        "summary": summary,
+        "topic": topic,
+        "source": "Wikipedia (CC BY-SA 4.0)",
+        "source_url": (
+            body.get("content_urls", {})
+            .get("desktop", {})
+            .get("page", f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}")
+        ),
+        "is_sample": False,
+        "as_of": as_of,
+    }
+
+
+def wikipedia_titles_for(qids: list[str]) -> dict[str, str]:
+    """Wikidata QID -> English Wikipedia article title, via the sitelink.
+
+    Wikipedia's own geosearch was tried first and rejected. Geographically it
+    is correct and editorially it is not: within 6km of a city centre it
+    returns administrative divisions ("Province of Rome"), list articles, and
+    -- for Tel Aviv -- a run of articles about shootings and bombings. All of
+    that is true, none of it is background for a trip planner, and a keyword
+    blocklist over article titles is a guess dressed up as a filter.
+
+    Going through the places snapshot instead means every landmark fact is
+    about a venue the system already holds, selected by its Wikidata P31 class
+    (museum, theatre, monument, park...), not by its distance from a point.
+    """
+    titles: dict[str, str] = {}
+    # SPARQL VALUES clauses get slow and occasionally 500 past a few hundred
+    # entries, so this goes in batches.
+    for start in range(0, len(qids), 80):
+        batch = qids[start : start + 80]
+        values = " ".join(f"wd:{q}" for q in batch)
+        query = f"""
+        SELECT ?item ?article WHERE {{
+          VALUES ?item {{ {values} }}
+          ?article schema:about ?item ;
+                   schema:isPartOf <https://en.wikipedia.org/> .
+        }}
+        """
+        # Retried, because a single 429 or timeout here silently costs a whole
+        # city its landmark facts -- which is exactly what happened to Lisbon
+        # the first time this ran.
+        bindings = None
+        for attempt in range(4):
+            try:
+                response = requests.get(
+                    WIKIDATA_SPARQL,
+                    params={"query": query, "format": "json"},
+                    headers={
+                        "User-Agent": USER_AGENT,
+                        "Accept": "application/sparql-results+json",
+                    },
+                    timeout=120,
+                )
+                if response.status_code == 429:
+                    wait = int(response.headers.get("Retry-After", 0)) or 20 * (attempt + 1)
+                    log.info("wikidata rate-limited on sitelinks; waiting %ds", wait)
+                    time.sleep(wait)
+                    continue
+                response.raise_for_status()
+                bindings = response.json()["results"]["bindings"]
+                break
+            except (requests.RequestException, ValueError, KeyError) as exc:
+                log.warning(
+                    "sitelink lookup attempt %d failed for a batch of %d: %s",
+                    attempt + 1,
+                    len(batch),
+                    exc,
+                )
+                time.sleep(15 * (attempt + 1))
+        if bindings is None:
+            log.error("sitelink lookup gave up on a batch of %d QIDs", len(batch))
             continue
-        summary = (body.get("extract") or "").strip()
-        if not summary:
-            log.warning("wikipedia returned no summary for %s", city["slug"])
-            continue
-        rows.append(
-            {
-                "id": f"wikipedia:{body.get('titles', {}).get('canonical', title)}",
-                "city_id": city["slug"],
-                "title": body.get("title", city["name"]),
-                "summary": summary,
-                "topic": "history",
-                "source": "Wikipedia (CC BY-SA 4.0)",
-                "source_url": (
-                    body.get("content_urls", {})
-                    .get("desktop", {})
-                    .get("page", f"https://en.wikipedia.org/wiki/{title}")
-                ),
-                "is_sample": False,
-                "as_of": as_of,
-            }
+        for binding in bindings:
+            qid = binding["item"]["value"].rsplit("/", 1)[-1]
+            url = binding["article"]["value"]
+            titles[qid] = requests.utils.unquote(url.rsplit("/", 1)[-1]).replace("_", " ")
+        time.sleep(2)
+    return titles
+
+
+def fetch_facts(
+    cities: list[dict[str, Any]],
+    places: list[dict[str, Any]],
+    per_city: int = 14,
+) -> list[dict[str, Any]]:
+    """The city article, plus background on the places the system recommends.
+
+    One summary per city was technically sourced and practically useless: the
+    agent could say what Rome is and nothing about anything in it. This keeps
+    the city article as `topic='history'` and adds up to `per_city` landmark
+    articles as `topic='landmark'` -- one per venue already in
+    data/snapshot/places.jsonl, so the itinerary and the background describe
+    the same city.
+    """
+    as_of = now_iso()
+    rows: list[dict[str, Any]] = []
+
+    by_city: dict[str, list[dict[str, Any]]] = {}
+    for place in places:
+        if place["id"].startswith("wikidata:"):
+            by_city.setdefault(place["city_id"], []).append(place)
+
+    for city in cities:
+        seen: set[str] = set()
+
+        city_title = city.get("wikipedia", city["name"])
+        row = wikipedia_summary(city_title, city["slug"], "history", as_of)
+        if row:
+            rows.append(row)
+            seen.add(row["id"])
+        else:
+            log.error("no city summary for %s", city["slug"])
+
+        candidates = by_city.get(city["slug"], [])
+        titles = wikipedia_titles_for([p["id"].split(":", 1)[1] for p in candidates])
+
+        kept = 0
+        for place in candidates:
+            if kept >= per_city:
+                break
+            title = titles.get(place["id"].split(":", 1)[1])
+            if not title or title == city_title:
+                continue
+            landmark = wikipedia_summary(title, city["slug"], "landmark", as_of)
+            time.sleep(1.2)
+            if landmark is None or landmark["id"] in seen:
+                continue
+            seen.add(landmark["id"])
+            rows.append(landmark)
+            kept += 1
+        log.info(
+            "facts: %s -> 1 city article + %d landmarks (of %d places)",
+            city["slug"],
+            kept,
+            len(candidates),
         )
-        log.info("facts: %s", city["slug"])
-        time.sleep(1)
     return rows
 
 
 # --------------------------------------------------------------- events ----
 
 
-def load_events(seed: Path) -> list[dict[str, Any]]:
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("//")
+    ]
+
+
+def load_events(seed: Path, samples: Path | None = None) -> list[dict[str, Any]]:
     """Events are not fetched. They are hand-verified and committed.
 
     There is no free, licensable, offline-stageable feed of concerts and
     fixtures for five cities, and the brief's rule against inventing events is
-    absolute. So this reads a small file whose every row was checked against
-    its own source URL by hand, and copies it through unchanged.
+    absolute. So this reads files, and copies their rows through unchanged.
+
+    Two files, kept separate on purpose:
+
+      * `seed` -- real listings, each row checked against its own source URL by
+        hand. `is_sample: false`. These are the only events the system claims
+        are real, and there are seven of them, all in London.
+      * `samples` -- the output of `services.ingestor.make_samples`. Every row
+        is `is_sample: true` and titled "Sample: ...". They exist so the
+        planner and the agent can be exercised in all five cities, and they
+        are labelled everywhere they surface.
+
+    A row in the sample file that does not admit to being a sample is dropped
+    here rather than trusted: the labelling is a property of the data, so it is
+    checked at the boundary and not merely assumed.
     """
-    if not seed.exists():
+    real = read_jsonl(seed)
+    if not real:
         log.error("no event seed at %s", seed)
-        return []
-    rows = []
-    for line in seed.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("//"):
-            rows.append(json.loads(line))
-    log.info("events: %d hand-verified rows", len(rows))
-    return rows
+    log.info("events: %d hand-verified rows", len(real))
+
+    sampled = []
+    for row in read_jsonl(samples) if samples else []:
+        if not row.get("is_sample"):
+            log.error("dropping %s: it is in the sample file but not marked is_sample", row["id"])
+            continue
+        sampled.append(row)
+    if sampled:
+        log.info("events: %d labelled sample rows", len(sampled))
+    return real + sampled
 
 
 # ----------------------------------------------------------------- main ----
@@ -441,7 +637,13 @@ def main(argv: list[str] | None = None) -> int:
         help="fetch just these; repeatable. Default: all.",
     )
     parser.add_argument("--days", type=int, default=16)
-    parser.add_argument("--radius", type=int, default=2500, help="metres around the city centre")
+    parser.add_argument("--radius", type=int, default=4000, help="metres around the city centre")
+    parser.add_argument(
+        "--facts-per-city",
+        type=int,
+        default=14,
+        help="how many nearby Wikipedia landmark articles to store per city",
+    )
     parser.add_argument(
         "--places-source",
         choices=["wikidata", "osm"],
@@ -459,9 +661,27 @@ def main(argv: list[str] | None = None) -> int:
     if "places" in wanted:
         write_jsonl(out / "places.jsonl", fetch_places(cities, args.radius, args.places_source))
     if "facts" in wanted:
-        write_jsonl(out / "facts.jsonl", fetch_facts(cities))
+        # Landmark facts are looked up from the places snapshot, so read
+        # back whatever is on disk when this run did not fetch places itself.
+        places_path = out / "places.jsonl"
+        places_rows = (
+            [
+                json.loads(line)
+                for line in places_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if places_path.exists()
+            else []
+        )
+        write_jsonl(out / "facts.jsonl", fetch_facts(cities, places_rows, args.facts_per_city))
     if "events" in wanted:
-        write_jsonl(out / "events.jsonl", load_events(config.DATA_DIR / "events.seed.jsonl"))
+        write_jsonl(
+            out / "events.jsonl",
+            load_events(
+                config.DATA_DIR / "events.seed.jsonl",
+                config.DATA_DIR / "events.samples.jsonl",
+            ),
+        )
 
     log.info("snapshot written to %s -- commit it", out)
     return 0

@@ -1,0 +1,15 @@
+# Use the exact locally built images that CI scanned. A separate Compose
+# project gives the integration test fresh networks and volumes.
+services:
+  ingestor:
+    image: aow/services:ci
+  consumer:
+    image: aow/services:ci
+  enricher:
+    image: aow/services:ci
+  agent:
+    image: aow/services:ci
+  api:
+    image: aow/services:ci
+  ui:
+    image: aow/ui:ci

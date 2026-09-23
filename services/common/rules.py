@@ -34,6 +34,21 @@ def load_activities(path) -> tuple[int, dict[str, dict[str, Any]]]:
     return int(doc.get("rule_version", 1)), doc["activities"]
 
 
+def activities_for_city(
+    activities: dict[str, dict[str, Any]], *, coastal: bool
+) -> dict[str, dict[str, Any]]:
+    """The activities that are meaningful for one city.
+
+    An activity carrying `requires_coast` is dropped for an inland city rather
+    than scored from its forecast. Surfing in London would otherwise get a
+    number, and a number the system cannot stand behind is worse than a gap
+    the UI can explain.
+    """
+    if coastal:
+        return dict(activities)
+    return {k: v for k, v in activities.items() if not v.get("requires_coast")}
+
+
 def band_for(score: int) -> str:
     for name, floor in BANDS:
         if score >= floor:
@@ -85,20 +100,23 @@ def score_activity(activity: str, cfg: dict[str, Any], weather: dict[str, Any]) 
     """Score one (activity, day). `cfg` is that activity's block in activities.yml."""
     if cfg.get("indoor"):
         comfort, comfort_reasons = outdoor_comfort(weather)
-        # Deliberately floored: an indoor day is never a bad option, it is only
-        # a less compelling one when the weather outside is good.
-        value = _clamp(max(25, 100 - comfort))
+        # Two knobs, because without them every indoor activity scored
+        # identically on a given day and the trip planner had nothing to
+        # choose between a museum, a mall and a games console.
+        #   indoor_floor  -- how good this is on a perfect day outside
+        #   indoor_weight -- how much bad weather improves its case
+        # A museum is worth a morning whatever the sky is doing; staying in to
+        # play computer games only really competes once outside is unpleasant.
+        floor = float(cfg.get("indoor_floor", 25))
+        weight = float(cfg.get("indoor_weight", 0.75))
+        value = _clamp(int(round(floor + weight * (100 - comfort))))
         band = band_for(value)
         # The reasons have to agree with the band, or the model is handed a
         # contradiction and will faithfully write one.
-        if band == "poor":
-            reasons = ["the weather outside is good, so indoors is the weaker choice"]
-            if comfort_reasons:
-                reasons.append("though note: " + ", ".join(comfort_reasons))
-        elif comfort_reasons:
-            reasons = [f"a good day to stay in: {r}" for r in comfort_reasons]
+        if not comfort_reasons:
+            reasons = ["the weather outside is fine, so this is a choice rather than a refuge"]
         else:
-            reasons = ["nothing outside is compelling enough to leave for"]
+            reasons = [f"a good day to be indoors: {r}" for r in comfort_reasons]
         return Score(value, band, reasons)
 
     penalty = 0
@@ -127,10 +145,16 @@ def score_activity(activity: str, cfg: dict[str, Any], weather: dict[str, Any]) 
         reasons.append(f"{prob:.0f}% chance of rain")
 
     max_wind = cfg.get("max_wind_kmh")
+    min_wind = cfg.get("min_wind_kmh")
     wind = _num(weather, "wind_kmh")
     if wind is not None and max_wind is not None and wind > max_wind:
         penalty += int(min(30, (wind - max_wind) * 1.5))
         reasons.append(f"wind {wind:.0f}km/h, over the {max_wind}km/h limit")
+    # Surfing is the one activity that wants wind rather than tolerating it:
+    # a flat, windless day has no swell, and calling that ideal would be wrong.
+    elif wind is not None and min_wind is not None and wind < min_wind:
+        penalty += int(min(30, (min_wind - wind) * 2.5))
+        reasons.append(f"only {wind:.0f}km/h of wind, too flat for this")
 
     max_uv = cfg.get("max_uv")
     uv = _num(weather, "uv_index")

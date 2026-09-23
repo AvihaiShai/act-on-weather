@@ -1,44 +1,250 @@
 # Deterministic suitability rules. The score is the source of truth (M2);
 # the LLM only phrases what these rules decided.
+#
 # score: 0-100, computed by services/common/rules.py. rule_version is bumped
-# whenever any threshold below changes.
-rule_version: 1
+# whenever any threshold below changes, which re-scores and re-words every
+# stored recommendation on the next ingest.
+#
+# Keys an activity may carry:
+#   label            what the UI and the agent call it
+#   icon             a unicode glyph; no webfont, so it renders air-gapped
+#   keywords         the words a user actually types for this activity. The
+#                    agent's router matches on them so it can tell when a
+#                    question asks about an activity it holds no row for,
+#                    and say so instead of letting the model improvise one.
+#   indoor           true -> scored as the inverse of outdoor comfort
+#   interests        which data/interests.yml keys this activity serves. The
+#                    trip planner uses it to weight the day's pick towards
+#                    what the traveller actually asked for.
+#   requires_coast   only scored for cities with `coastal: true` in cities.yml.
+#                    A city with no coast gets no row at all, rather than a
+#                    surfing score invented from an inland forecast.
+#   ideal_temp_c     [lo, hi]
+#   min_wind_kmh     wind the activity NEEDS (surfing); too calm is penalised
+#   max_wind_kmh / max_precip_mm / max_precip_prob / max_uv / min_sunshine_hours
+#   indoor_floor / indoor_weight   see rules.outdoor_comfort; they are what
+#                    stops every indoor activity scoring identically on a day
+rule_version: 2
 
 activities:
+
+  # ------------------------------------------------------------- outdoor --
+
   running:
     label: Running
+    keywords: ["running", "run", "jog", "jogging", "a run"]
+    icon: "\U0001F3C3"
     indoor: false
+    interests: [sports, outdoors]
     ideal_temp_c: [8, 20]
     max_precip_mm: 2.0
     max_precip_prob: 40
     max_wind_kmh: 30
     max_uv: 8
-  sunset_watching:
-    label: Watching the sunset
+
+  hiking:
+    label: Hiking or a long walk
+    keywords: ["hiking", "hike", "a long walk", "walking", "walk", "trek", "trekking", "ramble"]
+    icon: "\U0001F97E"
     indoor: false
-    ideal_temp_c: [10, 30]
-    max_precip_mm: 1.0
-    max_precip_prob: 30
+    interests: [outdoors]
+    ideal_temp_c: [6, 24]
+    max_precip_mm: 3.0
+    max_precip_prob: 45
     max_wind_kmh: 35
-    min_sunshine_hours: 3
+    max_uv: 9
+
+  outdoor_workout:
+    label: An outdoor workout
+    keywords: ["outdoor workout", "workout", "exercise", "training", "calisthenics"]
+    icon: "\U0001F4AA"
+    indoor: false
+    interests: [sports]
+    ideal_temp_c: [10, 26]
+    max_precip_mm: 1.0
+    max_precip_prob: 35
+    max_wind_kmh: 30
+    max_uv: 8
+
+  soccer:
+    label: A game of football
+    keywords: ["football", "soccer", "a kickabout", "five a side"]
+    icon: "⚽"
+    indoor: false
+    interests: [sports]
+    ideal_temp_c: [6, 26]
+    max_precip_mm: 4.0
+    max_precip_prob: 55
+    max_wind_kmh: 35
+
   sightseeing:
     label: Sightseeing on foot
+    keywords: ["sightseeing", "sights", "walking tour", "explore the city"]
+    icon: "\U0001F5FA"
     indoor: false
+    interests: [history, outdoors]
     ideal_temp_c: [12, 26]
     max_precip_mm: 4.0
     max_precip_prob: 55
     max_wind_kmh: 40
     max_uv: 9
+
+  sunset_watching:
+    label: Watching the sunset
+    keywords: ["sunset", "sunsets", "watch the sunset", "golden hour"]
+    icon: "\U0001F305"
+    indoor: false
+    interests: [outdoors]
+    ideal_temp_c: [10, 30]
+    max_precip_mm: 1.0
+    max_precip_prob: 30
+    max_wind_kmh: 35
+    min_sunshine_hours: 3
+
+  farmers_market:
+    label: An open-air farmers' market
+    keywords: ["farmers market", "farmers' market", "market", "markets", "street market"]
+    icon: "\U0001F9FA"
+    indoor: false
+    interests: [shopping, dining]
+    ideal_temp_c: [8, 28]
+    max_precip_mm: 2.0
+    max_precip_prob: 45
+    max_wind_kmh: 30
+
+  music_festival:
+    label: An open-air music festival
+    keywords: ["festival", "festivals", "open air concert", "outdoor concert"]
+    icon: "\U0001F3AA"
+    indoor: false
+    interests: [concerts]
+    ideal_temp_c: [12, 30]
+    max_precip_mm: 2.0
+    max_precip_prob: 40
+    max_wind_kmh: 30
+    min_sunshine_hours: 2
+
+  # --------------------------------------------------- outdoor, on a coast --
+  # Scored only where there is a coast. See `requires_coast` above: the
+  # alternative -- scoring surfing in London from an inland forecast -- is a
+  # number the system cannot stand behind.
+
   beach_day:
     label: A day at the beach
+    keywords: ["beach", "the beach", "sunbathing", "sunbathe"]
+    icon: "\U0001F3D6"
     indoor: false
+    requires_coast: true
+    interests: [outdoors]
     ideal_temp_c: [24, 34]
     max_precip_mm: 0.5
     max_precip_prob: 20
     max_wind_kmh: 25
     min_sunshine_hours: 5
+
+  swimming:
+    label: Swimming in the sea
+    keywords: ["swimming", "swim", "a swim", "sea swim", "bathing"]
+    icon: "\U0001F3CA"
+    indoor: false
+    requires_coast: true
+    interests: [sports, outdoors]
+    ideal_temp_c: [24, 36]
+    max_precip_mm: 1.0
+    max_precip_prob: 25
+    max_wind_kmh: 22
+    min_sunshine_hours: 4
+
+  surfing:
+    label: Surfing
+    keywords: ["surfing", "surf", "a surf", "surfs", "waves", "bodyboarding"]
+    icon: "\U0001F3C4"
+    indoor: false
+    requires_coast: true
+    interests: [sports, outdoors]
+    ideal_temp_c: [16, 32]
+    max_precip_mm: 5.0
+    max_precip_prob: 60
+    # Surfing is the one activity here that wants wind rather than merely
+    # tolerating it: a flat, windless day has no swell.
+    min_wind_kmh: 12
+    max_wind_kmh: 45
+
+  fishing:
+    label: Fishing
+    keywords: ["fishing", "fish", "angling", "to fish"]
+    icon: "\U0001F3A3"
+    indoor: false
+    requires_coast: true
+    interests: [outdoors]
+    ideal_temp_c: [8, 30]
+    max_precip_mm: 3.0
+    max_precip_prob: 50
+    max_wind_kmh: 25
+
+  boat_ride:
+    label: A boat ride
+    keywords: ["boat ride", "boat", "boating", "sailing", "sail", "cruise", "kayak"]
+    icon: "⛵"
+    indoor: false
+    requires_coast: true
+    interests: [outdoors]
+    ideal_temp_c: [16, 32]
+    max_precip_mm: 1.0
+    max_precip_prob: 30
+    max_wind_kmh: 20
+    min_sunshine_hours: 3
+
+  # -------------------------------------------------------------- indoor --
+  # Inverted on purpose: bad weather outside is a good day to be indoors.
+  # `indoor_floor` is how good the activity is on a perfect day outside, and
+  # `indoor_weight` is how much bad weather improves its case. Without those
+  # two, every indoor activity scored identically and the planner had nothing
+  # to choose between them.
+
+  museums:
+    label: Visiting a museum
+    keywords: ["museum", "museums"]
+    icon: "\U0001F3DB"
+    indoor: true
+    interests: [museums, history]
+    indoor_floor: 55
+    indoor_weight: 0.45
+
+  art_gallery:
+    label: An art gallery
+    keywords: ["gallery", "galleries", "art gallery", "art"]
+    icon: "\U0001F5BC"
+    indoor: true
+    interests: [museums]
+    indoor_floor: 50
+    indoor_weight: 0.45
+
+  standup_comedy:
+    label: A stand-up comedy show
+    keywords: ["stand up", "stand-up", "standup", "comedy", "comedy show"]
+    icon: "\U0001F3A4"
+    indoor: true
+    interests: [concerts]
+    indoor_floor: 45
+    indoor_weight: 0.5
+
+  mall:
+    label: Shopping at the mall
+    keywords: ["mall", "malls", "shopping centre", "shopping center", "shopping mall"]
+    icon: "\U0001F6CD"
+    indoor: true
+    interests: [shopping]
+    indoor_floor: 40
+    indoor_weight: 0.6
+
   indoor_gaming:
     label: Staying in to play computer games
+    keywords: ["computer games", "video games", "gaming", "console", "stay in"]
+    icon: "\U0001F3AE"
     indoor: true
-    # Inverted on purpose: bad weather outside is a good day to stay in.
-    # The brief names this one explicitly.
+    interests: []
+    # The brief names this one explicitly. Lowest floor of the five: it is
+    # only a compelling plan when outside is genuinely unpleasant.
+    indoor_floor: 25
+    indoor_weight: 0.75

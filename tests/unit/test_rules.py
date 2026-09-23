@@ -132,3 +132,85 @@ def test_requested_activity_is_scored_and_labelled():
 
 def test_rule_version_is_an_int(rule_version):
     assert isinstance(rule_version, int) and rule_version >= 1
+
+
+# ---------------------------------------------- the wider catalogue (v2) ----
+
+
+def test_coastal_activities_are_dropped_inland(activities):
+    """An inland city gets no surfing row at all, rather than a surfing score
+    derived from a forecast that says nothing about surf."""
+    inland = rules.activities_for_city(activities, coastal=False)
+    coastal = rules.activities_for_city(activities, coastal=True)
+
+    assert coastal == activities
+    assert set(inland) < set(activities)
+    for key in ("surfing", "swimming", "beach_day", "fishing", "boat_ride"):
+        assert key in coastal
+        assert key not in inland
+    # The land-based ones must survive the filter, or an inland city would
+    # lose its whole catalogue.
+    for key in ("running", "museums", "sightseeing"):
+        assert key in inland
+
+
+def test_surfing_wants_wind_and_a_flat_day_is_penalised(activities):
+    """`min_wind_kmh` is the one rule that penalises too *little* of something."""
+    flat = {**HOT_BEACH_DAY, "wind_kmh": 2.0}
+    blowing = {**HOT_BEACH_DAY, "wind_kmh": 22.0}
+
+    assert score(activities, "surfing", flat).score < score(activities, "surfing", blowing).score
+    assert any("flat" in r for r in score(activities, "surfing", flat).reasons)
+    # The same flat day must not be penalised for a boat ride, which wants calm.
+    assert score(activities, "boat_ride", flat).score == 100
+
+
+def test_indoor_activities_do_not_all_score_alike(activities):
+    """The bug this fixed: every indoor activity returned the same number, so
+    the planner had nothing to choose between a museum and a games console."""
+    indoor = [k for k, cfg in activities.items() if cfg.get("indoor")]
+    assert len(indoor) >= 4
+
+    for weather in (PERFECT_SPRING_DAY, COLD_STORM):
+        scores = {k: score(activities, k, weather).score for k in indoor}
+        assert len(set(scores.values())) > 1, f"all indoor scores identical for {weather}"
+
+    # A museum outranks staying in to game whatever the weather; the gap is
+    # what narrows when the weather turns.
+    nice_gap = (
+        score(activities, "museums", PERFECT_SPRING_DAY).score
+        - score(activities, "indoor_gaming", PERFECT_SPRING_DAY).score
+    )
+    storm_gap = (
+        score(activities, "museums", COLD_STORM).score
+        - score(activities, "indoor_gaming", COLD_STORM).score
+    )
+    assert nice_gap > storm_gap > 0
+
+
+def test_every_activity_has_a_label_and_an_icon(activities):
+    """Both are rendered by the UI; a missing one shows up as a blank cell."""
+    for key, cfg in activities.items():
+        assert cfg.get("label"), f"{key} has no label"
+        assert cfg.get("icon"), f"{key} has no icon"
+        assert isinstance(cfg.get("interests", []), list)
+
+
+def test_catalogue_covers_the_requested_activities(activities):
+    """The activities this build was asked for, indoor and out."""
+    expected = {
+        "surfing",
+        "fishing",
+        "hiking",
+        "swimming",
+        "boat_ride",
+        "soccer",
+        "farmers_market",
+        "outdoor_workout",
+        "music_festival",
+        "museums",
+        "art_gallery",
+        "mall",
+        "standup_comedy",
+    }
+    assert expected <= set(activities)

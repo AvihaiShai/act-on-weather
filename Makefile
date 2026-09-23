@@ -9,7 +9,7 @@ MODEL_URL      := https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3
 
 .PHONY: help stage stage-fetch stage-build up down logs ps test demo \
         offline no-data-loss update reenrich questions refresh snapshot \
-        redrive dlq clean
+        samples redrive dlq clean
 
 help:
 	@echo "Staging (needs the internet, once):"
@@ -32,6 +32,7 @@ help:
 	@echo "Connected maintenance:"
 	@echo "  make refresh        re-fetch the forecast (extends the coverage window)"
 	@echo "  make snapshot       rebuild data/snapshot/ from source"
+	@echo "  make samples        regenerate the labelled sample events (no network)"
 	@echo ""
 	@echo "Operations:"
 	@echo "  make dlq            list what is quarantined"
@@ -102,6 +103,16 @@ snapshot:
 	$(COMPOSE) $(CONNECTED) run --rm --no-deps ingestor \
 	  python -m services.ingestor.fetch_content
 	@echo "data/snapshot/ rebuilt -- review the diff and commit it."
+
+# The labelled sample events. Needs no network: it reads the places snapshot
+# and writes data/events.samples.jsonl, which `make snapshot` then folds into
+# data/snapshot/events.jsonl alongside the hand-verified rows. Every row it
+# writes is is_sample=true and titled "Sample: ...". See
+# services/ingestor/make_samples.py for why they exist at all.
+samples:
+	$(COMPOSE) run --rm --no-deps ingestor \
+	  python -m services.ingestor.make_samples
+	@echo "data/events.samples.jsonl rebuilt -- run 'make snapshot' to fold it in."
 
 # -------------------------------------------------------------- operations --
 dlq:

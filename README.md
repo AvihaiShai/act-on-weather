@@ -55,21 +55,94 @@ model weights, not map tiles, not fonts, not a CDN script.
 
 | | |
 |---|---|
-| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; places, background and a small verified event set |
-| **Decides** | a deterministic suitability score per (city, day, activity), from rules in `data/activities.yml` |
+| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 272 places, 81 background articles and an event set that separates verified listings from labelled samples |
+| **Decides** | a deterministic suitability score per (city, day, activity) across **18 activities**, from rules in `data/activities.yml` |
 | **Words** | a local Qwen3-1.7B writes one or two sentences about each score |
 | **Answers** | an agent resolves the question in code and answers from stored rows only |
 | **Plans** | a day-by-day itinerary assembled from rows that actually exist |
 | **Updates** | corrections and refreshes, both travelling through the queue |
 
-### Pages
+### Tabs
+
+Seven, across the top of the page. Each one draws under the coverage strip in the
+header, which carries the as-of stamp and the forecast window.
 
 * **Forecast** — temperature and rainfall per city, with the stored rows behind it.
-* **Suitability** — a city × day × activity heatmap, plus a box to ask about
-  *any* activity you type, not just the five that have rules.
+* **Suitability** — a city × day × activity heatmap over all 18 activities, plus
+  a box to ask about *any* activity you type, not just the ones with rules.
+* **Trip planner** — a day-by-day plan with three suggestions per day, weighted
+  by the interests and activities you pick. See
+  [Choosing a day's activity](#choosing-a-days-activity).
+* **Places map** — filter stored places by city, category or name; inspect their
+  coordinates and source links, and highlight stops from the current itinerary.
+  The coastline is bundled locally, so pan and zoom work without map tiles.
 * **Ask the agent** — chat, with a panel showing exactly which rows the answer used.
-* **Trip planner** — build a plan, then save it through the queue.
-* **Correct a record** — edit a stored row and watch the revision advance.
+* **Update data** — all three M12 update paths in one place: connected refresh,
+  correcting a stored record, and re-wording with the local model.
+* **Data coverage** — what is held, per record type and per city, which rows are
+  labelled samples, and how far the wording queue has got.
+
+The UI is Streamlit. Its own toolbar is switched off in
+`services/ui/.streamlit/config.toml` (`toolbarMode = "minimal"`): that toolbar's
+"Deploy" button offers to publish the app to Streamlit Community Cloud, which is
+not ours, does nothing useful here, and in an air-gapped demo reads as an offer
+to deploy this stack.
+
+The styling (`services/ui/theme.py`) is one inline stylesheet — no CSS file to
+serve, no webfont, no icon set, no CDN, because the runtime rule is zero network
+calls. Icons are unicode glyphs from `data/activities.yml`. If the stylesheet
+failed to apply, every number and timestamp would still be on the page.
+
+### Choosing a day's activity
+
+The rule engine gives every (city, day, activity) a score, and that score is the
+source of truth everywhere — the heatmap, the API and the agent all report it
+unmodified. The trip planner applies two adjustments **on top of it**, purely to
+order a day's suggestions (`services/agent/planning.py`):
+
+* an activity matching a stated interest gains `INTEREST_BONUS` (15)
+* an activity already used on an earlier day loses `REPEAT_PENALTY` (18) per use
+
+Both are small enough that the weather still decides: ticking "museums" does not
+beat a perfect beach day. The repeat penalty exists because without it a warm,
+dry city returns the same answer every day — a week in Tel Aviv in September
+came back as "a day at the beach" seven times, since it scores 100 on all seven.
+The **Vary the plan across days** toggle turns the penalty off, so the raw
+ranking can be seen side by side. Both modes are deterministic: the same request
+rebuilds the same plan.
+
+### Activities that are not scored everywhere
+
+Five activities — surfing, swimming, the beach, fishing and a boat ride — carry
+`requires_coast` in `data/activities.yml` and are only scored for cities marked
+`coastal` in `data/cities.yml`. London is not, so it has 13 activities scored
+rather than 18, and **no surfing row at all**. A score for surf derived from an
+inland forecast is a number the system cannot stand behind.
+
+The agent enforces the same boundary. It matches the activity a question names
+against the `keywords` in `data/activities.yml`, and any named activity with no
+stored row for that city is put in front of the model as `NOT ON RECORD`. This
+is not belt-and-braces: asked *"is it a good day for surfing in London?"* with
+no surfing row in front of it, the model does not stay silent — it invents a
+weather-based reason why the surf is poor. The gate is what turns that into
+*"no record of surfing in London — there is no coast there."*
+
+### What gets worded, and what does not
+
+Scoring 18 activities for 5 cities over 16 days is ~1,300 rows and costs
+microseconds. Asking a CPU-bound 1.7B model to write a sentence about each of
+them is ~1,300 generations through a slot the agent also shares — hours.
+
+So the consumer ranks each city-day and marks only the top `ENRICH_TOP_N`
+(default 6) as `pending`; the rest are stored `deferred`. A deferred row is
+scored, charted and answerable — it was simply never queued for prose. Asking
+about that activity by name promotes it back to `pending`, and so does the
+**Re-word with the model** control on the Update tab. The UI says which is
+which rather than showing a blank explanation.
+
+The `llm` service runs with `--parallel 2` for the same reason: with one slot an
+interactive question queued behind an enrichment batch and timed out as though
+the model were down.
 
 ---
 
@@ -200,7 +273,7 @@ deliberately not the assertion: a loss and a duplicate cancel out in a count.
 | **Deterministic score, model phrases it** | the verdict is reproducible, testable and defensible; a model outage degrades the wording, never the content | **LLM decides suitability** — unrepeatable, untestable, and it would put a 1.7B model on the critical path |
 | **Router-first agent** | city, dates and coverage resolved in readable code; one model call to phrase retrieved rows. E1 answers in ~5 s | **model tool-calling** — 3–4 sequential generations on CPU (30–90 s), non-deterministic in front of a reviewer, and silent when it goes wrong |
 | **Qwen3-1.7B Q4_K_M** | runs on CPU at ~1.2 s per call, Apache-2.0, 1.2 GB on disk, reliable under a JSON-schema grammar | a 3–4 B model — better prose, but 3–4× the latency on the reviewer's likely CPU-only machine |
-| **Streamlit** | five working pages in the time a hand-written SPA would take to scaffold, and it bundles its own assets, so it works offline | a React SPA — more polish, but the brief weighs the pipeline more heavily |
+| **Streamlit** | seven working tabs in the time a hand-written SPA would take to scaffold, and it bundles its own assets, so it works offline | a React SPA — more polish, but the brief weighs the pipeline more heavily |
 | **Docker Compose** | one command, identical on Linux, macOS and Windows | Kubernetes — the production path, described below, not the demo path |
 
 **Thinking mode is disabled on the model** (`enable_thinking: false`). Left on,
@@ -245,8 +318,10 @@ chart carries the as-of stamp that says how old it is.
 |---|---|---|---|
 | Weather | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0 | fetched by `services/ingestor/fetch_content.py`, committed to `data/snapshot/weather.jsonl` |
 | Places | **Wikidata** (default) or OpenStreetMap via Overpass | CC0 / ODbL © OpenStreetMap contributors | same script; every row keeps its own source URL |
-| Background | Wikipedia REST summaries | CC BY-SA 4.0 | same script; every row keeps its article URL |
-| Events | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl` |
+| Map coastline | [Natural Earth 1:10m](https://www.naturalearthdata.com/downloads/10m-physical-vectors/) | public domain | bundled in `data/map/`; source revision and checksum in `data/map/SOURCE.md` |
+| Background | Wikipedia REST summaries | CC BY-SA 4.0 | same script; the city article plus one article per venue, resolved through its Wikidata sitelink |
+| Events (real) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl` |
+| Events (samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …* |
 
 **Why Wikidata and not OpenStreetMap for places.** OSM is the better source and
 the code for it is still there (`--places-source osm`). It is not the default
@@ -258,12 +333,44 @@ and Harrods, not every café on the street. Each row records which source it
 came from, and the agent's footer names it, so nothing here is guesswork about
 provenance.
 
-**Nothing is invented.** There is no free, licensable, offline-stageable feed of
-concerts and fixtures for five cities, and fabricating them was not an option —
-so the event set is small, hand-checked against its own sources, and honest
-about its size. Rows marked `is_sample` are labelled as samples in the UI and
-in the agent's answers. A city with no events on record produces "none on
-record", never a plausible-sounding invention.
+**Why the background data is tied to the places.** The first attempt used
+Wikipedia's geosearch, which is geographically correct and editorially useless:
+within 6km of a city centre it returns administrative divisions ("Province of
+Rome"), list articles, and — for Tel Aviv — a run of articles about shootings
+and bombings. All true, none of it background for a trip planner, and a keyword
+blocklist over article titles is a guess dressed up as a filter. Resolving the
+Wikidata sitelink for each venue already in `places.jsonl` instead means every
+landmark article is about somewhere the planner can actually send you, selected
+by its Wikidata P31 class rather than by its distance from a point.
+
+**Nothing is passed off as real.** There is no free, licensable,
+offline-stageable feed of concerts and fixtures for five cities, and fabricating
+them was not an option. So there are two event files, kept apart on purpose:
+
+* `data/events.seed.jsonl` — seven **real** listings, each checked by hand
+  against its own source URL. `is_sample: false`. These are the only events the
+  system claims are real, and they are all in London, because that is how far
+  hand-verification got.
+* `data/events.samples.jsonl` — generated by
+  `services/ingestor/make_samples.py`. Every row is `is_sample: true`, its title
+  begins with **"Sample:"**, and its `source` says in words that it is not a
+  real listing. The venue in each row is real — it comes from the places
+  snapshot — and the `source_url` points at that venue's own record, because
+  there is no listing to point at. Generation is deterministic, so the committed
+  file is reproducible.
+
+They exist because with events in one city out of five, the planner and the
+agent could not be exercised anywhere else, and a reviewer could not see how a
+sourced event and a sample are told apart — which is the interesting part. The
+loader drops any row in the sample file that does not admit to being a sample,
+so the labelling is checked at the boundary rather than assumed. Samples are
+marked in the UI, in the agent's prompt, in its footer, and counted separately
+in the coverage tab. **If you would rather ship without them**, delete
+`data/events.samples.jsonl`, re-run `make snapshot --only events`, and the
+system falls back to the seven verified rows.
+
+A city with no events on record produces "none on record", never a
+plausible-sounding invention.
 
 Re-fetch the whole snapshot with `make snapshot`, review the diff, and commit it.
 
@@ -278,9 +385,17 @@ Three paths, two of which work offline:
    `make update` demonstrates it end to end.
 2. **A connected refresh** — `make refresh` re-fetches the forecast and moves
    the coverage window forward. Needs connectivity, by definition.
-3. **Re-enrichment** — when the weather behind a recommendation changes, the
-   consumer resets that row to `pending` and the enricher rewords it. Works
-   offline. `make reenrich` demonstrates it, including a full model outage.
+3. **Re-enrichment** — `POST /reenrich` → 202 → queue → consumer flips the
+   selected recommendations back to `pending`, and the enricher rewords them.
+   Scores are untouched: they are the rule engine's output, and only a weather
+   refresh changes them. Set `include_deferred` to pull in the activities the
+   consumer ranked out of the wording queue. Works offline. This also happens
+   on its own whenever a refresh changes the weather behind a row.
+   `make reenrich` demonstrates it, including a full model outage.
+
+All three are on the **Update data** tab in the UI, which is where a reviewer
+should look first: it names each path, says which work air-gapped, and shows
+the exact command for the one that cannot.
 
 A user edit is accepted, not applied: `202`, never `200`. The UI says so too.
 There is exactly one write path into this database.
@@ -289,7 +404,7 @@ There is exactly one write path into this database.
 
 ## Security
 
-* Every image is pinned **by digest** (`IMAGES.lock`, enforced in CI).
+* Every upstream image and Dockerfile base is pinned **by digest** (`IMAGES.lock`, enforced in CI).
 * The model is verified against `models.lock` before it is used.
 * Containers run as **uid 10001** wherever the base image allows.
 * **Three database roles**: the owner runs migrations; `aow_writer` (consumer
@@ -297,7 +412,7 @@ There is exactly one write path into this database.
   enricher) may only `SELECT`. Enforced by grants, not convention.
 * Secrets live only in a gitignored `.env`; `.env.example` is committed.
 * Only 8080 and 8000 are published.
-* CI runs **Trivy** (`HIGH,CRITICAL`) on both images and the filesystem,
+* CI runs blocking **Trivy** (`HIGH,CRITICAL`) on both images and the filesystem,
   **gitleaks**, and a guard that fails the build if a hosted-model SDK or
   endpoint ever appears in the source.
 
@@ -309,7 +424,7 @@ There is exactly one write path into this database.
 make test     # unit tests, in a container, with --network none
 ```
 
-Fifty-seven tests covering the rule engine's truth table (including that indoor
+Unit tests covering the rule engine's truth table (including that indoor
 activities really are scored as the inverse of outdoor ones), envelope
 round-tripping and rejection of malformed messages, payload validation, and the
 outbox's two load-bearing properties: accepting the same message twice is a
@@ -318,9 +433,54 @@ the agent's date parsing and its word-boundary intent matching — the latter ha
 a test named after the bug that caused it, because `"eat"` is inside
 `"weather"`, so every weather question was silently running a restaurant lookup.
 
-CI (`.github/workflows/ci.yml`) runs lint → unit → guard → build → Trivy. CI
-has the internet; the runtime does not. That asymmetry is deliberate, and the
-guard job is what keeps it honest.
+CI (`.github/workflows/ci.yml`) runs lint, unit tests and guards, then builds
+the service and UI images once, scans them and the repository, and runs a fresh
+Compose integration test against those images. That test checks snapshot →
+RabbitMQ → Postgres → API, stored suitability scores, and a correction through
+the outbox and queue into the audit history. It uses a separate Compose project
+and removes its temporary volumes afterward. CI has the internet; the runtime
+does not. The guard job enforces the offline model boundary.
+
+On a push to `main`, **only after those gates pass**, CI publishes the same
+tested images to GHCR with a `sha-<commit>` tag. Its `aow-images-<commit>` run
+artifact contains `images.lock` with the registry digests. Pull requests never
+publish. The local model is too large for a useful per-PR full-stack run; the
+integration test exercises the queue and database path without it.
+
+### Offline release and installation
+
+The repository is private, so sign in to GHCR on a connected staging machine
+with permission to read its packages. Download `aow-images-<commit>` from the
+successful `main` workflow run, check out that exact commit in a clean clone,
+stage the pinned model, and build the transport folder:
+
+```sh
+RUN_ID=123456789  # replace with the successful main workflow run ID
+COMMIT=$(git rev-parse HEAD)
+gh run download "$RUN_ID" -n "aow-images-$COMMIT" -D release
+make stage-fetch COMPOSE="docker compose --env-file .env.example"
+bash scripts/package-offline.sh release/images.lock
+```
+
+`dist/aow-<commit>/` contains the exact CI images (plus the digest-pinned
+upstream images) in `images.tar`, the verified model, the Compose files, code,
+migrations, snapshot, checksums and an installer. Copy the folder to the
+on-prem **Linux/amd64 Docker host**. There, fill in a new `.env` and run:
+
+```sh
+cd aow-<commit>
+cp .env.example .env           # set distinct passwords
+bash scripts/install-offline.sh
+```
+
+The installer verifies checksums, loads the images locally, starts Compose with
+`--no-build --pull never`, then checks API health, stored weather and scores,
+the agent, local model, UI and edge. It preserves the named Postgres, RabbitMQ
+and outbox volumes across upgrades. Before upgrading an existing installation,
+back up those volumes and Postgres; keep the previous release folder. If the
+new release fails, run the previous folder's installer to restore its images.
+A database schema change may require restoring the matching backup too; an
+image rollback alone cannot undo a migration.
 
 ---
 
@@ -340,12 +500,12 @@ you can run.
 | M7 | Agent answering varied questions from stored data | `services/agent/` | `make questions` |
 | M8 | Tourism: history, places, sports events | `facts`, `places`, `events` tables | `make questions` (Lisbon history, London sports) |
 | M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build and save a plan in the UI |
-| M10 | Good data visualization | forecast chart, city×day×activity heatmap, coverage banner | the Forecast and Suitability pages |
+| M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
 | M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `make no-data-loss` |
 | M12 | Update stored information | `PATCH /records/...`, `make refresh`, re-enrichment | `make update` |
-| S1 | Repo with code, config, CI/CD, README | this repo, `.github/workflows/ci.yml` | `gh run list` |
+| S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`, `scripts/package-offline.sh`, `scripts/install-offline.sh` | `gh run list`; offline release installer |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — 57 unit tests; the demo scripts are the integration evidence, not a test container | `make test` |
+| B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `make test`; CI integration job |
 | B2 | LLM observability metrics | **not attempted** — `llm` exposes llama.cpp's own `--metrics`, unscraped | — |
 | B3 | Automatic recovery from failures | **partial, and not as a bonus feature** — reconnect-with-backoff everywhere, `restart: unless-stopped`, healthchecks, automatic re-enrichment | `make reenrich`, `make no-data-loss` |
 
@@ -383,6 +543,8 @@ Stated, not implied:
   free-text activity it is answered from the weather on hand, with that caveat.
 * **The verified event set is small and London-weighted.** Other cities
   correctly report no events on record.
+* **The places map is a city-level coordinate view**, with a generalized
+  coastline. It has no street detail, route directions or live map tiles.
 * **The agent routes deterministically in code** and uses the model only to
   phrase retrieved rows. It is not a general-purpose assistant, and that is the
   point.
@@ -390,8 +552,9 @@ Stated, not implied:
 * **`edge` is the one container on a routable network**, by necessity.
 * **The CSP carries `'unsafe-inline'` and `'unsafe-eval'`** because Streamlit's
   bundle requires them. Noted rather than quietly included.
-* **The bonus items (B1–B3) are not attempted**: no Prometheus/Grafana stack,
-  no integration-test container. `llm` exposes llama.cpp's own `--metrics`.
+* **The bonus items (B1–B3) are partial**: CI covers the queue/database/API
+  integration path, but not the full model and UI flows. There is no
+  Prometheus/Grafana stack; `llm` exposes llama.cpp's own `--metrics`.
 
 ---
 

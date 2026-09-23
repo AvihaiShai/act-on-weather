@@ -81,6 +81,7 @@ services:
            -v writer_password=${POSTGRES_WRITER_PASSWORD:?set POSTGRES_WRITER_PASSWORD in .env}
            -v reader_password=${POSTGRES_READER_PASSWORD:?set POSTGRES_READER_PASSWORD in .env}
            -f /db/migrations/001_init.sql
+           -f /db/migrations/002_activities.sql
     networks: [backend]
 
   llm:
@@ -91,11 +92,21 @@ services:
     # never pulled at runtime.
     volumes:
       - ./models:/models:ro
+    # Two slots, not one, and --ctx-size doubled to match: llama.cpp divides
+    # the context between slots, so this is still 4096 each. The reason is
+    # contention. The enricher works through a queue of several hundred
+    # recommendations, and with a single slot an interactive question from the
+    # agent sits behind a whole batch and times out as though the model were
+    # down. The second slot keeps the chat responsive while the backlog drains.
+    # Raise --ctx-size alongside --parallel if you raise it again.
+    #
+    # Note: the command below is a YAML folded block, so a '#' inside it is an
+    # argument, not a comment. Comments about it belong here.
     command: >
       -m /models/${LLM_MODEL_FILE:-Qwen3-1.7B-Q4_K_M.gguf}
       --host 0.0.0.0 --port 8080
-      --ctx-size ${LLM_CTX_SIZE:-4096}
-      --parallel 1
+      --ctx-size ${LLM_CTX_SIZE:-8192}
+      --parallel ${LLM_PARALLEL:-2}
       --threads ${LLM_THREADS:-4}
       --metrics
     environment:

@@ -42,6 +42,10 @@ pool = Pool(config.writer_dsn())
 
 RULE_VERSION, ACTIVITIES = rules.load_activities(config.DATA_DIR / "activities.yml")
 
+# city_id -> has a coast. Filled by seed_cities from data/cities.yml, which is
+# also where the DB column comes from, so the two cannot disagree.
+COASTAL: dict[str, bool] = {}
+
 # Fields a user is allowed to correct, per entity. Anything else in a PATCH is
 # rejected as poison: the update path must not become an arbitrary SQL surface.
 PATCHABLE = {
@@ -75,16 +79,23 @@ def seed_cities(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
         for city in cities:
             cur.execute(
-                "INSERT INTO cities (id, name, country, lat, lon, timezone, aliases)"
+                "INSERT INTO cities (id, name, country, lat, lon, timezone, aliases, coastal)"
                 " VALUES (%(slug)s, %(name)s, %(country)s, %(lat)s, %(lon)s,"
-                "         %(timezone)s, %(aliases)s)"
+                "         %(timezone)s, %(aliases)s, %(coastal)s)"
                 " ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name,"
                 "   country = EXCLUDED.country, lat = EXCLUDED.lat, lon = EXCLUDED.lon,"
-                "   timezone = EXCLUDED.timezone, aliases = EXCLUDED.aliases",
-                {**city, "aliases": city.get("aliases", [])},
+                "   timezone = EXCLUDED.timezone, aliases = EXCLUDED.aliases,"
+                "   coastal = EXCLUDED.coastal",
+                {
+                    **city,
+                    "aliases": city.get("aliases", []),
+                    "coastal": bool(city.get("coastal", False)),
+                },
             )
     conn.commit()
-    log.info("seeded %d cities", len(cities))
+    COASTAL.clear()
+    COASTAL.update({c["slug"]: bool(c.get("coastal", False)) for c in cities})
+    log.info("seeded %d cities (%d coastal)", len(cities), sum(COASTAL.values()))
 
 
 # ------------------------------------------------------------- upserting ----
@@ -119,28 +130,50 @@ def upsert_weather(cur: psycopg.Cursor, p: schemas.WeatherDaily) -> bool:
 
 
 def score_defaults(cur: psycopg.Cursor, p: schemas.WeatherDaily) -> None:
-    """Create or refresh the pending recommendation row per default activity.
+    """Create or refresh a recommendation row per activity for one city-day.
 
-    The score is computed here, deterministically, and stored immediately. Only
-    the wording is left `pending` for the enricher, which is why an LLM that is
-    down or slow can never block or lose weather data.
+    The score is computed here, deterministically, for *every* activity the
+    city supports, and stored immediately. Only the wording is left to the
+    enricher, which is why an LLM that is down or slow can never block or lose
+    weather data.
+
+    What the enricher is asked to word is capped. Scoring 18 activities is
+    microseconds; wording 18 x 5 cities x 16 days is ~1,300 CPU LLM calls per
+    refresh, through a single llama.cpp slot the agent also uses. So the day's
+    scores are ranked and only the top `ENRICH_TOP_N` go out as 'pending'. The
+    rest are stored 'deferred': scored, charted and answerable, just not
+    queued for prose. Asking for one by name flips it back to 'pending'
+    (`store_recommendation_request`), so nothing is unreachable.
     """
     weather = p.model_dump()
-    for key, cfg in ACTIVITIES.items():
-        result = rules.score_activity(key, cfg, weather)
+    supported = rules.activities_for_city(ACTIVITIES, coastal=COASTAL.get(p.city_id, False))
+
+    scored = [(key, cfg, rules.score_activity(key, cfg, weather)) for key, cfg in supported.items()]
+    # Rank by score, then by key so a tie resolves the same way on every replay
+    # -- a re-ingest must not shuffle which rows are worded.
+    scored.sort(key=lambda item: (-item[2].score, item[0]))
+    worded = {key for key, _cfg, _result in scored[: config.ENRICH_TOP_N]}
+
+    for key, cfg, result in scored:
         cur.execute(
             """
             INSERT INTO recommendations (city_id, forecast_date, activity, activity_label,
                 requested, score, band, reasons, rule_version, status, weather_as_of)
             VALUES (%(city_id)s, %(forecast_date)s, %(activity)s, %(label)s,
-                false, %(score)s, %(band)s, %(reasons)s, %(rule_version)s, 'pending', %(as_of)s)
+                false, %(score)s, %(band)s, %(reasons)s, %(rule_version)s,
+                %(status)s, %(as_of)s)
             ON CONFLICT (city_id, forecast_date, activity) DO UPDATE SET
+                activity_label = EXCLUDED.activity_label,
                 score = EXCLUDED.score, band = EXCLUDED.band, reasons = EXCLUDED.reasons,
                 rule_version = EXCLUDED.rule_version, weather_as_of = EXCLUDED.weather_as_of,
                 -- The one invalidation rule in the system: when the weather
                 -- behind a recommendation changes, its wording goes stale and
                 -- is re-enriched. Nothing else resets a row to pending.
-                status = 'pending', text = NULL, last_error = NULL, invalid_attempts = 0
+                -- A row a user asked for by name keeps its place in the
+                -- queue however it ranks today.
+                status = CASE WHEN recommendations.requested THEN 'pending'
+                              ELSE EXCLUDED.status END,
+                text = NULL, last_error = NULL, invalid_attempts = 0
             """,
             {
                 "city_id": p.city_id,
@@ -151,6 +184,7 @@ def score_defaults(cur: psycopg.Cursor, p: schemas.WeatherDaily) -> None:
                 "band": result.band,
                 "reasons": json.dumps(result.reasons),
                 "rule_version": RULE_VERSION,
+                "status": "pending" if key in worded else "deferred",
                 "as_of": p.as_of,
             },
         )
@@ -230,7 +264,15 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
         )
         return
 
-    result = rules.score_requested(p.activity_label, row)
+    # If the user named an activity the catalogue already knows, score it with
+    # its own thresholds rather than the generic outdoor-comfort fallback --
+    # and, if it is deferred for this day, this promotes it back to 'pending'
+    # so the model words the thing that was actually asked about.
+    cfg = ACTIVITIES.get(p.activity)
+    if cfg is not None and (not cfg.get("requires_coast") or COASTAL.get(p.city_id, False)):
+        result = rules.score_activity(p.activity, cfg, row)
+    else:
+        result = rules.score_requested(p.activity_label, row)
     cur.execute(
         """
         INSERT INTO recommendations (city_id, forecast_date, activity, activity_label,
@@ -293,6 +335,42 @@ def store_llm_recommendation(cur: psycopg.Cursor, p: schemas.LlmRecommendation) 
     )
 
 
+def request_reenrich(cur: psycopg.Cursor, p: schemas.ReenrichRequest) -> None:
+    """M12: re-word stored recommendations with the local model.
+
+    Scores are untouched -- they are the rule engine's output and re-running
+    them is what a weather refresh does. This resets only the wording, which
+    is the update path that works with no connectivity at all.
+
+    A row whose wording gave up ('failed') gets its attempt counter cleared;
+    otherwise it would come straight back as failed on the next reply.
+    """
+    statuses = ["ready", "failed"]
+    if p.include_deferred:
+        statuses.append("deferred")
+
+    clauses = ["status = ANY(%(statuses)s)"]
+    params: dict[str, object] = {"statuses": statuses}
+    if p.city_id:
+        clauses.append("city_id = %(city_id)s")
+        params["city_id"] = p.city_id
+    if p.forecast_date:
+        clauses.append("forecast_date = %(forecast_date)s")
+        params["forecast_date"] = p.forecast_date
+    if p.activity:
+        clauses.append("activity = %(activity)s")
+        params["activity"] = p.activity
+
+    cur.execute(
+        "UPDATE recommendations"
+        "   SET status = 'pending', text = NULL, model = NULL,"
+        "       last_error = NULL, invalid_attempts = 0"
+        f" WHERE {' AND '.join(clauses)}",
+        params,
+    )
+    log.info("re-enrichment queued %d recommendation(s)", cur.rowcount)
+
+
 def apply_patch(cur: psycopg.Cursor, p: schemas.RecordPatch) -> None:
     """M12: a user correction. The trigger bumps the revision and files history."""
     allowed = PATCHABLE[p.entity]
@@ -325,6 +403,7 @@ HANDLERS = {
     config.RK_RECOMMENDATION_REQUEST: store_recommendation_request,
     config.RK_LLM_RECOMMENDATION: store_llm_recommendation,
     config.RK_PATCH: apply_patch,
+    config.RK_REENRICH: request_reenrich,
 }
 
 

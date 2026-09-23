@@ -63,7 +63,12 @@ SELECT r.city_id, r.forecast_date, r.activity, r.activity_label, r.score, r.band
   LEFT JOIN weather_daily w
     ON w.city_id = r.city_id AND w.forecast_date = r.forecast_date
  WHERE r.status = 'pending'
- ORDER BY r.created_at
+ -- Nearest day first, best-rated activity first within it. With 18 activities
+ -- in the catalogue the queue is long enough that the order is visible to a
+ -- user watching the heatmap fill in, and this is the order they care about.
+ -- `created_at` last, so the ordering is total and a restart resumes rather
+ -- than reshuffles.
+ ORDER BY r.forecast_date, r.score DESC NULLS LAST, r.created_at
  LIMIT %s
 """
 

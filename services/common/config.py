@@ -28,6 +28,10 @@ RK_RECOMMENDATION_REQUEST = "recommendation.request"
 RK_LLM_RECOMMENDATION = "llm.recommendation"
 RK_ITINERARY = "itinerary.record"
 RK_PATCH = "record.patch"
+# M12, the third update path: ask the local model to re-word stored
+# recommendations. Like every other write it travels the queue, so the
+# consumer stays the only role that touches the database.
+RK_REENRICH = "recommendation.reenrich"
 
 ROUTING_KEYS = frozenset(
     {
@@ -39,6 +43,7 @@ ROUTING_KEYS = frozenset(
         RK_LLM_RECOMMENDATION,
         RK_ITINERARY,
         RK_PATCH,
+        RK_REENRICH,
     }
 )
 
@@ -102,3 +107,8 @@ ENRICH_BATCH = int(os.environ.get("ENRICH_BATCH", "8"))
 # connection error or a timeout is a temporary outage and consumes no attempt,
 # so a long `llm` outage can never strand a row permanently.
 ENRICH_MAX_INVALID_ATTEMPTS = int(os.environ.get("ENRICH_MAX_INVALID_ATTEMPTS", "5"))
+# How many of a city-day's activities the local model is asked to word. The
+# rule engine scores all 18 -- that is the product, and it is free. Wording all
+# of them is ~1,300 CPU LLM calls per refresh through one llama.cpp slot, so
+# the consumer ranks each day and defers the rest. Raise it if you have a GPU.
+ENRICH_TOP_N = int(os.environ.get("ENRICH_TOP_N", "6"))

@@ -12,5 +12,20 @@ gatherUsageStats = false
 serverAddress = "localhost"
 serverPort = 8080
 
+[client]
+# Hides Streamlit's own toolbar, whose "Deploy" button offers to publish the
+# app to Streamlit Community Cloud. It is not ours, it does nothing useful
+# here, and in an air-gapped demo a button labelled Deploy is actively
+# misleading -- a reviewer reasonably reads it as "deploy this stack".
+toolbarMode = "minimal"
+showErrorDetails = true
+
 [theme]
 base = "light"
+primaryColor = "#3B6FE0"
+backgroundColor = "#EEF2FB"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#141A2A"
+# System stack only: a webfont would be a runtime download, and the whole
+# point of this build is that there are none.
+font = "sans serif"

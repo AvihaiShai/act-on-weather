@@ -1,0 +1,25 @@
+# Overlay for a staged, offline release. The bundle contains these exact image
+# bytes under local aliases; --pull never prevents registry access at runtime.
+services:
+  postgres:
+    image: aow-bundle/postgres:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  migrate:
+    image: aow-bundle/postgres:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  rabbitmq:
+    image: aow-bundle/rabbitmq:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  llm:
+    image: aow-bundle/llm:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  ingestor:
+    image: aow-bundle/services:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  consumer:
+    image: aow-bundle/services:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  enricher:
+    image: aow-bundle/services:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  agent:
+    image: aow-bundle/services:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  api:
+    image: aow-bundle/services:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  ui:
+    image: aow-bundle/ui:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  edge:
+    image: aow-bundle/edge:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
