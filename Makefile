@@ -76,7 +76,7 @@ logs:
 
 clean:
 	$(COMPOSE) down -v
-	@echo "Volumes removed. The next `make up` starts from the committed snapshot."
+	@echo "Volumes removed. The next 'make up' starts from the committed snapshot."
 
 # ------------------------------------------------------------------ tests --
 test:
