@@ -321,6 +321,33 @@ guard job is what keeps it honest.
 
 ---
 
+## Requirements traceability
+
+IDs are from `ASSIGNMENT.md`, which decomposes the brief. "Verify" is a command
+you can run.
+
+| ID | Requirement | Where it lives | Verify |
+|---|---|---|---|
+| M1 | Weather for five cities from an external API | `services/ingestor/providers.py` (Open-Meteo), `data/cities.yml` | `curl localhost:8000/coverage` → 80 rows, 5 cities |
+| M2 | LLM recommendation: is the weather suitable for the activity | `common/rules.py` scores it, `services/enricher/` words it; free-text via `POST /recommendations` | `make reenrich`; the Suitability page |
+| M3 | Local open-weights LLM, no external API | `llm` (llama.cpp + Qwen3-1.7B), `common/llm.py` is the only client | `make offline` §3 |
+| M4 | All collected data → queue → database | outbox → `aow.events` → consumer; consumer is the only writer | `make no-data-loss`; `psql` grants |
+| M5 | Containerized, one uniform way to run | `compose.yml`, `Makefile` | `docker compose up -d` |
+| M6 | Runs on-prem without full internet | `backend` is `internal: true`; committed snapshot | `make offline`, ideally with the host NIC down |
+| M7 | Agent answering varied questions from stored data | `services/agent/` | `make questions` |
+| M8 | Tourism: history, places, sports events | `facts`, `places`, `events` tables | `make questions` (Lisbon history, London sports) |
+| M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build and save a plan in the UI |
+| M10 | Good data visualization | forecast chart, city×day×activity heatmap, coverage banner | the Forecast and Suitability pages |
+| M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `make no-data-loss` |
+| M12 | Update stored information | `PATCH /records/...`, `make refresh`, re-enrichment | `make update` |
+| S1 | Repo with code, config, CI/CD, README | this repo, `.github/workflows/ci.yml` | `gh run list` |
+| S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
+| B1 | Full tests for all components | **partial** — 57 unit tests; the demo scripts are the integration evidence, not a test container | `make test` |
+| B2 | LLM observability metrics | **not attempted** — `llm` exposes llama.cpp's own `--metrics`, unscraped | — |
+| B3 | Automatic recovery from failures | **partial, and not as a bonus feature** — reconnect-with-backoff everywhere, `restart: unless-stopped`, healthchecks, automatic re-enrichment | `make reenrich`, `make no-data-loss` |
+
+---
+
 ## Reproducing every claim in this file
 
 ```sh
