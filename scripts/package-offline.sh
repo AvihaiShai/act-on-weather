@@ -85,7 +85,16 @@ docker tag "$ui_ref" "aow-bundle/ui:$commit"
 
 # .env.example supplies only placeholders for Compose interpolation here.
 docker compose --env-file .env.example pull postgres rabbitmq llm edge
-images="$(docker compose --env-file .env.example config --images)"
+# The observability overlay is opt-in at run time but not at packaging time:
+# an air-gapped host cannot pull prometheus and grafana later, so a bundle that
+# leaves them out is a bundle where the monitoring overlay simply cannot be
+# started. They are ~313 MB of the archive and are loaded, not run, unless the
+# operator passes `-f compose.observability.yml`.
+obs="-f compose.yml -f compose.observability.yml"
+# shellcheck disable=SC2086  # deliberate word splitting: two -f flags
+docker compose $obs --env-file .env.example pull prometheus grafana
+# shellcheck disable=SC2086
+images="$(docker compose $obs --env-file .env.example config --images)"
 docker compose -f compose.tools.yml --env-file .env.example pull stage
 docker compose -f compose.tools.yml --env-file .env.example build demos
 stage_ref="$(docker compose -f compose.tools.yml --env-file .env.example config --images | awk '/^python:.*@sha256:/ {print; exit}')"
@@ -98,7 +107,8 @@ docker tag aow/demos:dev "aow-bundle/demos:$commit"
 # the offline host. SHA256SUMS proves images.tar arrived intact; this proves
 # that the intact tar holds the images CI built, scanned and published.
 { printf 'services %s\n' "$services_ref"; printf 'ui %s\n' "$ui_ref"; } > "$out/images.bundle.lock"
-for pair in 'postgres:postgres:' 'rabbitmq:rabbitmq:' 'llm:ghcr.io/ggml-org/llama.cpp:' 'edge:nginx:'; do
+for pair in 'postgres:postgres:' 'rabbitmq:rabbitmq:' 'llm:ghcr.io/ggml-org/llama.cpp:' \
+            'edge:nginx:' 'prometheus:prom/prometheus:' 'grafana:grafana/grafana:'; do
   name="${pair%%:*}"
   prefix="${pair#*:}"
   ref="$(printf '%s\n' "$images" | awk -v p="$prefix" 'index($0, p) == 1 {print; exit}')"
@@ -113,7 +123,8 @@ docker save -o "$out/images.tar" \
   "aow-bundle/services:$commit" "aow-bundle/ui:$commit" \
   "aow-bundle/postgres:$commit" "aow-bundle/rabbitmq:$commit" \
   "aow-bundle/llm:$commit" "aow-bundle/edge:$commit" \
-  "aow-bundle/stage:$commit" "aow-bundle/demos:$commit"
+  "aow-bundle/stage:$commit" "aow-bundle/demos:$commit" \
+  "aow-bundle/prometheus:$commit" "aow-bundle/grafana:$commit"
 
 # The proof runner is built from this release's pinned Dockerfile on the
 # connected machine. Record its manifest digest from the archive we ship.

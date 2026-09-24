@@ -77,7 +77,7 @@ PROSE = [
     # The verified events, whose count is the one most often repeated.
     (r"\b(\d+)\s+verified\s+events\b", ("events",)),
     (r"\b(\d+)\s+hand-verified\s+events\b", ("events",)),
-    (r"\b(\d+)\s+verified\s+listings\b", ("events",)),
+    (r"\b(\d+)\s+(?:hand-)?verified\s+listings\b", ("events",)),
     (r"\b(\d+)\s+\*{0,2}real\*{0,2}\s+listings\b", ("events",)),
     (r"\b(\d+)\s+rows\s+across\s+all\s+five\s+cities\b", ("events",)),
     (r"\bverified\s+event\s+set\s+is\s+(\d+)\s+rows\b", ("events",)),
@@ -103,15 +103,15 @@ PROSE = [
 # with `-` spelled `_`, since a regex group name cannot contain a hyphen.
 BREAKDOWNS = [
     (
-        r"\(london\s+(?P<london>\d+),\s+reykjavik\s+(?P<reykjavik>\d+),"
-        r"\s+rome\s+(?P<rome>\d+),\s+lisbon\s+(?P<lisbon>\d+),"
-        r"\s+tel-aviv\s+(?P<tel_aviv>\d+)\)",
+        r"\(london\s+(?P<london>\d+),\s+rome\s+(?P<rome>\d+),"
+        r"\s+tel-aviv\s+(?P<tel_aviv>\d+),\s+reykjavik\s+(?P<reykjavik>\d+),"
+        r"\s+lisbon\s+(?P<lisbon>\d+)\)",
         "events",
     ),
     (
-        r"(?P<london>\d+)\s+London,\s+(?P<reykjavik>\d+)\s+Reykjavík,"
-        r"\s+(?P<rome>\d+)\s+Rome,\s+(?P<lisbon>\d+)\s+Lisbon,"
-        r"\s+(?P<tel_aviv>\d+)\s+Tel\s+Aviv",
+        r"(?P<london>\d+)\s+London,\s+(?P<rome>\d+)\s+Rome,"
+        r"\s+(?P<tel_aviv>\d+)\s+Tel\s+Aviv,\s+(?P<reykjavik>\d+)\s+Reykjavík,"
+        r"\s+(?P<lisbon>\d+)\s+Lisbon",
         "events",
     ),
 ]
@@ -197,12 +197,6 @@ def build() -> dict:
 # else must match, because "the snapshot is the seed" is the property that
 # stops a hand-edited snapshot shipping past review.
 DERIVED_IN_SNAPSHOT = {"valid_until"}
-
-
-def rows_of(path: Path) -> list[dict]:
-    return [
-        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
 
 
 def mirror_errors(source: Path, mirror: Path) -> list[str]:

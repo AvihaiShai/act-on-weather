@@ -156,8 +156,8 @@ not the documented route.
 
 ### Demo mode
 
-A default run stores the **26 hand-verified events** — 11 London, 6 Reykjavík,
-4 Rome, 4 Lisbon, 1 Tel Aviv — and answers "none on record" for any city, date
+A default run stores the **39 hand-verified events** — 10 London, 10 Rome,
+9 Tel Aviv, 6 Reykjavík, 4 Lisbon — and answers "none on record" for any city, date
 or category the feed does not cover. To see the trip planner and the agent
 working with a denser event calendar, switch to **demo mode**:
 
@@ -668,7 +668,7 @@ check:
 
 | | |
 |---|---|
-| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (26) and `data/snapshot/events.samples.jsonl` (45) |
+| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (39) and `data/snapshot/events.samples.jsonl` (45) |
 | **Ingestor** | replays the sample file only when `AOW_DEMO_EVENTS` is set, so a default run never even *accepts* a generated row |
 | **Consumer** | the only role with write grants, so it is the last word: it drops a sample row that arrives while demo mode is off, whoever produced it, and on startup it deletes every `is_sample` row it finds |
 
@@ -1012,6 +1012,18 @@ docker compose -f compose.tools.yml --env-file .env.example run --rm stage
 bash scripts/package-offline.sh release/images.lock
 ```
 
+**One precondition on the staging engine, and it is not cosmetic.** Docker's
+containerd image store keeps a per-store record of every manifest it has
+pulled. If this engine ever pulled one of these images while it was published
+as a single-platform manifest, that stale record wins over a later re-pull, and
+`docker save` will keep writing an archive with no layers in it — silently,
+exiting 0. Purge those digests (`docker system prune -af`, **with the
+containerd store active**; purging under `overlay2` leaves the containerd
+records untouched) and pull again. A CI runner is clean per job and is safe by
+construction. `package-offline.sh` fails rather than ship such a bundle, so the
+worst case is a failed packaging run, not a bad release — see
+[docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) §1.
+
 `dist/aow-<commit>/` contains the exact CI images, the digest-pinned upstream
 images and the locally built proof runner in `images.tar`, plus the verified
 model, Compose files, code, migrations, snapshot, an installer, and two files that say what the rest is
@@ -1083,31 +1095,44 @@ The bundle overlay also points the operator refresh's detached window guard
 at the packaged `demos` image, so `refresh --check` can enforce its deadline
 without a locally built `aow/demos:dev` tag.
 
-**Last release drill.** Commit `a129bb6` was packaged from its own green
-`main` workflow and digest manifest on a Windows Docker Desktop host with a
-Linux/amd64 engine. The 1.8 GB folder was installed in a second Compose
-project against fresh volumes (`COMPOSE_PROJECT_NAME=aow-rel2`,
-`AOW_BIND_ADDR=127.0.0.3` in that folder's `.env`). This drill predates the
-addition of tool images above; its archive held the six runtime images.
+**Last release drill.** Run on a **separate Docker engine** — its own
+`docker-ce` daemon, its own image store, no Docker Desktop integration — with
+outbound network cut by nftables and the cut verified from inside a container
+(DNS, raw-IP HTTP, raw TCP, raw-IP HTTPS and ICMP all dead). Three releases
+were packaged from three commits, so the upgrade moved image tags and code
+rather than a version string.
 
 | Exercise | Result |
 |---|---|
-| First install, empty volumes | 60 s to `PASS`; weather 80, places 620, events 26, facts 81 |
-| Upgrade over the running install | pre-upgrade dump written first (628 KB); `PASS` |
-| `SHA256SUMS` | all 142 files verified, including after the rollback drill |
-| `images.bundle.lock` vs `images.tar` | all six image digests matched |
-| `--pull never` | installer smoke passed with fresh volumes |
-| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel2_backend` reports `Internal=true` |
-| E1 through the installed release | answered from stored data, with source and as-of |
-| Failed upgrade (a migration that deletes and then errors) | install aborted; forecast rows 80 → 0 |
-| Rollback: previous folder's installer | images and migrations reverted; smoke **failed**, correctly, on the still-empty forecast |
-| `scripts/restore-offline.sh` with the failed release's dump | 12 s; weather 80, places 620, events 26 and facts 81 restored; smoke passed |
+| First install, empty volumes, `--pull never` | `PASS` in 16 s, **0 pull attempts**; weather 80, places 620, events 26, facts 81 |
+| Live data through the queue | a recommendation, an itinerary and a `PATCH`, all three `message_id`s traced to `stored` |
+| Upgrade with that data in place | `PASS` in 14 s; pre-upgrade dump written first; every traced ID and record survived |
+| Deliberately failed migration | install aborted, `migrate` exit 3, dump taken first, `weather_daily` 80 → 0 |
+| Image rollback | images and migrations reverted; smoke **failed, correctly**, on the still-empty forecast |
+| Restore from the failed install's dump | `PASS` in 18 s; all counts and all traced IDs back |
+| Packaged proof runner, E1 and E2 | exit 0; both answered from stored data with source and as-of |
+| Out-of-coverage question | refused in code, `llm_called: False` |
 
-The isolation was a **second Compose project on the same machine**. Its backend
-network was `internal: true`, and agent, API, consumer and ingestor got
-`errno 101` when they tried to reach `1.1.1.1:443`. The host NIC stayed up and
-the folder was not transferred to another machine, so this is not a physical
-air-gap certification.
+**That drill found a real defect, and it is the reason this section no longer
+describes a same-host test.** The bundle it started from was unloadable: CI
+publishes the two application images as a manifest with no platform
+descriptor, and a containerd-store `docker save` exports such an image as its
+manifest alone — no config, no layers — while exiting 0. The archive passed
+`SHA256SUMS` and the digest check and then died on the clean host with
+`failed to read config content`.
+
+It had passed every previous drill because those installed on the machine that
+packaged the bundle, and that engine already held the layers from its own
+`docker pull`. A same-host install cannot detect this even in principle, so
+**the earlier `a129bb6` drill is not evidence that its archive was complete**;
+it is evidence about the installer and the recovery path only.
+`scripts/verify-bundle-images.sh` now refuses an archive whose images are not
+physically complete for this release's platform, so it cannot recur silently.
+
+[docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) has the full record: the
+diagnosis, the measurements, the exact isolation this environment does and does
+not provide, the staging-host precondition it exposed, and what is still not
+proven.
 
 ---
 

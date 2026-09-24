@@ -219,13 +219,20 @@ redrive:
 #
 # Grafana is the only thing published, on loopback like everything else.
 # Prometheus stays on the internal network and is reached through Grafana.
+#
+# In an installed offline release AOW_IMAGE_VERSION is set and the images are
+# the bundle's local aliases, so the two bundle overlays go on the end. On a
+# developer checkout the variable is empty and this expands to nothing, which
+# is why the same target works in both places.
+OBS_BUNDLE = $(if $(AOW_IMAGE_VERSION),-f compose.bundle.yml -f compose.observability.bundle.yml,)
+
 monitor:
-	$(COMPOSE) -f compose.yml -f compose.observability.yml up -d
+	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) up -d
 	@echo ""
 	@echo "Grafana http://127.0.0.1:3000 -- admin / GRAFANA_ADMIN_PASSWORD from .env"
 
 monitor-down:
-	$(COMPOSE) -f compose.yml -f compose.observability.yml stop \
+	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) stop \
 	  prometheus grafana edge-observability
 
 # ------------------------------------------------------- backup / restore --
