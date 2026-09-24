@@ -191,9 +191,37 @@ Three things are worth keeping from how this was found:
 1. **A poisoned store gives a false negative.** Once a containerd store holds a
    platform-less record for a child manifest digest, an index-wrapped pull of that same
    child **keeps exporting empty** — the stale record wins. The fix looked broken until it
-   was tested on a genuinely purged store. A long-lived staging host that ever pulled the
-   bad shape keeps producing broken bundles until purged; a CI runner is clean per job and
-   is safe by construction.
+   was tested on a genuinely purged store.
+
+   Confirmed directly afterwards, on Docker Desktop 29.8.0 with a containerd store — the
+   same engine and version on which the wrapped image had appeared unexportable. Pulled
+   fresh from `main`, the current image exports completely:
+
+   ```
+   type: application/vnd.docker.distribution.manifest.list.v2+json
+   child sha256:808b86405188d903d  config_present=True  layers=11  missing=0
+   VERDICT: LOADABLE as linux/amd64
+   ```
+
+   That matters because it rules out a competing explanation. The same engine, the same
+   media type and the same command produce a complete archive for an image the store has
+   never held in the bare form, and an empty one for an image it has. The variable is
+   store state, not the engine and not the manifest media type.
+
+   **`docker rmi <tag>` does not clear it.** Removing the tag — even `-f`, even removing
+   both the tag and the digest reference — leaves the record in place and the archive
+   still comes back empty. It clears only when the image is removed **by image ID**, or by
+   a prune. This is the detail that produced the misdiagnosis: three consecutive attempts,
+   each preceded by an `rmi` that looked thorough, all returned 10,240 bytes, which reads
+   as "this image cannot be exported" rather than "this store still remembers it".
+   Anyone reproducing this has to purge by ID or they will reach the same wrong
+   conclusion.
+
+   **Who is affected:** only a machine that pulled the pre-fix bare manifests — which
+   means the machines used to investigate this, and not a reviewer's. A fresh machine and
+   a CI runner are both clean by construction. A long-lived staging host that ever pulled
+   the bad shape keeps producing broken bundles until those digests are purged, so the
+   staging engine's history is a release-critical property and is recorded as one.
 2. **Digests must be resolved registry-side.** `docker pull` + `RepoDigests` returned the
    index on one engine and the platform child on another, and — worse — returned
    *different answers for two images in the same run*, because `grep -m1` over
@@ -267,6 +295,20 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
 
 ## 10. Known limits of this matrix
 
+- **A reproducible symptom is not a diagnosis.** The empty-archive failure was reproduced
+  independently by two people on two engines, and both of us then explained it with the
+  wrong variable — first the published media type, later the engine version — before the
+  measurement in §6 isolated store state. Each wrong explanation implied a different fix
+  to the publish path. The symptom being real is not evidence that the cause has been
+  found, and a fix applied to the wrong variable would have looked like it worked, because
+  republishing anything also repopulates the store.
+
+  The misdiagnosis had a clean positive control (an OCI-index image exported correctly)
+  and a clean negative (ours did not), and still drew the wrong line between them, because
+  the two samples differed in **two** ways at once — media type and store history — and
+  only one was varied. What settled it was a positive control that held media type fixed
+  and varied store history alone: a *freshly published* image of the same media type on
+  the same engine.
 - Timings are from single runs, not averages.
 - `release-smoke.py` asserts **data** for weather and scores but only **liveness** for
   agent, llm, ui and edge. It is a partial gate and `docs/RELEASE.md` says so.
