@@ -24,12 +24,13 @@
 # or a crash mid-way still ends with the ingestor back on the internal network
 # and with a record of how far the run got.
 #
-# SIGKILL beats any trap, so the window does not rely on one. Before it opens,
-# this starts a detached guard (scripts/refresh_window_guard.sh) that closes the
-# window after REFRESH_WINDOW_MAX_S (default 600) whatever happened to this
-# process. A normal run closes its own window in seconds and the guard exits
-# having done nothing. The next run also detects and closes an inherited window,
-# but the guard is what makes the lifetime bounded rather than merely likely.
+# SIGKILL beats any trap, so the window does not rely on one. Between creating
+# the network and attaching the ingestor to it, this starts a detached guard
+# (scripts/refresh_window_guard.sh) that closes the window after
+# REFRESH_WINDOW_MAX_S (default 600) whatever happened to this process. A normal
+# run closes its own window in seconds and the guard exits having done nothing.
+# The next run also detects and closes an inherited window, but the guard is what
+# makes the lifetime bounded rather than merely likely.
 #
 # It acts on the `aow` project by default. AOW_PROJECT picks a different stack
 # and AOW_API a different API address; see compose.tools.yml.
@@ -156,9 +157,11 @@ network_exists() {
   docker network inspect "$EGRESS" >/dev/null 2>&1
 }
 
-# The bound. Started BEFORE the window opens, detached, so that the window has a
-# hard lifetime no matter what happens to this process -- including SIGKILL,
-# which no trap in here can survive. See scripts/refresh_window_guard.sh.
+# The bound. Detached, so that the window has a hard lifetime no matter what
+# happens to this process -- including SIGKILL, which no trap in here can
+# survive. Called from open_egress between the network's creation and the
+# ingestor's attachment; see the note there for why that is the only ordering
+# that works. See also scripts/refresh_window_guard.sh.
 #
 # The script is passed to bash as an argument rather than mounted, because this
 # process is itself inside a container and does not know the host path of the

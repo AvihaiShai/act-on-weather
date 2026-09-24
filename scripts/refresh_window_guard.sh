@@ -9,8 +9,9 @@
 # until somebody runs the command again -- which could be never. "Someone will
 # notice" is not a boundary.
 #
-# So the refresh starts this, detached, BEFORE it opens the window. Its whole
-# job is to make sure the window cannot outlive a deadline:
+# So the refresh starts this, detached, while it is opening the window -- after
+# the network exists and before the ingestor is on it. Its whole job is to make
+# sure the window cannot outlive a deadline:
 #
 #   * it polls; the moment the network no longer exists, it exits. A normal run
 #     closes the window in seconds, so in the normal case this exits seconds
