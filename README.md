@@ -994,8 +994,8 @@ integration test exercises the queue and database path without it.
 ### Offline release and installation
 
 This is the one path that asks the staging machine for more than Docker: `git`,
-the GitHub CLI (`gh`, signed in), and `bash` with `sha256sum`. Git Bash supplies
-the last two on Windows, and the engine must be Linux/amd64 — see [Known
+the GitHub CLI (`gh`, signed in), `python3`, and `bash` with `sha256sum`. Git Bash
+supplies the shell tools on Windows, and the engine must be Linux/amd64 — see [Known
 limitations](#known-limitations). The quick start above needs none of this.
 
 The repository is private, so sign in to GHCR on a connected staging machine

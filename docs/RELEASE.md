@@ -100,7 +100,11 @@ so its output cannot satisfy the bundle's digest lock.
    the same command `make stage-fetch` runs) and lets `sha256sum -c
    models.lock` fail the job if it does not match.
 8. Builds the bundle: `bash scripts/package-offline.sh release/images.lock`,
-   unmodified. Verifies it a second, explicit time: `bash
+   unmodified. After `docker save`, the package script fills any omitted
+   services/UI config or layer blobs directly from GHCR by digest and hashes
+   every fetched blob. This works around a containerd-store `docker save`
+   defect seen on a clean runner; the manifest digests remain unchanged.
+   Verifies the completed archive a second, explicit time: `bash
    scripts/verify-bundle-images.sh dist/aow-<sha>`.
 9. **Installs the bundle and proves it serves data**, with no pulls, in a
    disposable Compose project (`bash dist/aow-<sha>/scripts/install-offline.sh`,
@@ -182,6 +186,10 @@ This reproduces `dist/aow-<sha>/` with the same pinned images and model,
 verified against the same `images.lock` the release workflow checked. Compare
 `dist/aow-<sha>/promotion-record.json`'s `images` block against what you
 built, if you want a second confirmation beyond the script's own checks.
+The archive completion step uses the existing `docker login ghcr.io`
+credentials (including Docker credential helpers), or anonymous access when
+the package is public. `GHCR_USER` and `GHCR_TOKEN` can override the Docker
+login; the release workflow supplies its job token explicitly.
 
 ## Operator procedure: transfer
 
