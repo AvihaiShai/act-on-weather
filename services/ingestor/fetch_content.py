@@ -31,6 +31,7 @@ import json
 import logging
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -61,18 +62,38 @@ WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 
 # Wikidata classes worth collecting, mapped onto the same category vocabulary
 # the OSM tags use, so the two sources produce interchangeable rows.
+# ORDER IS SIGNIFICANT. An item is an instance of several of these at once --
+# the Uffizi is an art museum and a museum -- and it is stored once, under the
+# first class here that claims it. So the list runs most specific to most
+# general, and the specific category wins.
+#
+# This stopped being cosmetic when subclass traversal arrived. Q207694 (art
+# museum) is a subclass of Q33506 (museum), verified against the endpoint, so
+# a one-hop museum query matches every art gallery in the city. With `museum`
+# listed first, `gallery` would have been deduplicated down to almost nothing
+# while the snapshot looked fuller than before. `attraction` is last for the
+# same reason in the extreme: it is general enough to swallow anything, so it
+# only ever collects what no sharper category claimed.
 WIKIDATA_CLASSES: list[tuple[str, str]] = [
-    ("Q33506", "museum"),  # museum
-    ("Q207694", "gallery"),  # art museum
-    ("Q24354", "theatre"),  # theatre building
+    ("Q207694", "gallery"),  # art museum -- a subclass of museum, so listed first
+    ("Q33506", "museum"),
     ("Q1060829", "concert_hall"),
+    ("Q24354", "theatre"),  # theatre building
     ("Q11315", "shopping"),  # shopping centre
     ("Q330284", "market"),  # marketplace
     ("Q22698", "park"),
     ("Q483110", "stadium"),
     ("Q11707", "restaurant"),
     ("Q4989906", "monument"),
-    ("Q570116", "attraction"),  # tourist attraction
+    # A coastal city's defining places were missing entirely: the vocabulary
+    # had no beach, so Tel Aviv scored "a day at the beach" at 100 and could
+    # not name a single beach to spend it on. These two classes are what the
+    # source actually asserts -- a beach exists here, a marina exists here --
+    # and nothing more. See `place_categories` in data/activities.yml for why
+    # that stops short of surfing, swimming, fishing and boat hire.
+    ("Q40080", "beach"),
+    ("Q721207", "marina"),
+    ("Q570116", "attraction"),  # tourist attraction -- the catch-all, so it is last
 ]
 USER_AGENT = "act-on-weather/1.0 (take-home project; https://github.com/; contact via repository)"
 
@@ -95,9 +116,75 @@ OSM_CATEGORIES: list[tuple[str, str, str]] = [
     ("leisure", "sports_centre", "sports_centre"),
     ("shop", "department_store", "shopping"),
     ("shop", "mall", "shopping"),
+    # The OSM half of the beach/marina vocabulary above. `natural=beach` is
+    # almost always mapped as an area rather than a node, which the query
+    # already handles: it asks for `way` as well as `node` and closes with
+    # `out center`, so an area arrives with a usable centre point.
+    ("natural", "beach", "beach"),
+    ("leisure", "beach_resort", "beach"),
+    ("leisure", "marina", "marina"),
 ]
 
-PER_CATEGORY_LIMIT = 10
+# How many venues of one category a city keeps. Raised from 10 once the
+# retrieval below stopped throwing away what the source already held: Rome
+# matched 220 rows and stored 57, London matched 623 and stored 68. This is a
+# per-city-per-category ceiling on snapshot size, not a coverage decision --
+# most categories never reach it.
+PER_CATEGORY_LIMIT = 25
+
+# Safety valve per class query. Real per-class counts within 4km are in the
+# low hundreds, so this should never bind; if it does, the run says so
+# (`truncated_classes`) because ranking over a partial set is not the same
+# thing as ranking.
+WIKIDATA_CLASS_QUERY_LIMIT = 1500
+
+# The public endpoint is a shared free service. These two knobs are the
+# difference between a complete snapshot and a half-failed one.
+SPARQL_ATTEMPTS = 5
+WIKIDATA_CLASS_PAUSE_S = 1.5
+
+# Classes that may take ONE subclass hop (`wdt:P31/wdt:P279?`).
+#
+# An allowlist rather than a blanket `wdt:P279*`, because the transitive
+# closure is not safe to trust. Measured against the live endpoint within 4km
+# of Rome, Q33506 (museum) returns 72 items directly, 157 at one hop, and 2077
+# at full depth -- by which point it is collecting whatever the ontology
+# happens to route through "museum" rather than collecting museums.
+#
+# One hop is bounded and checkable, and it is where the real venues are: a
+# city's museums are mostly instances of *art museum* or *archaeology museum*,
+# never of "museum" itself. Measured d0 -> d1, Rome and London:
+#
+#   museum 72->157, 88->165     monument  39->87, 84->301
+#   gallery 42->64, 38->40      park       7->28, 40->50
+#   shopping 0->0,  4->13       market     0->2,  3->9
+#   restaurant 6->6, 152->175   stadium    2->9,  1->1
+#   theatre 35->37, 188->192    attraction 0->3,  1->4
+#
+# Every class currently collected qualified on that measurement, so the set is
+# presently the whole vocabulary. It stays a set rather than a flag so that a
+# class which later misbehaves can be dropped from it without touching the
+# retrieval code, and so the ceiling on traversal depth stays visible.
+#
+# What keeps one hop honest is the pair below it: selection is ranked by
+# sitelink count, and PER_CATEGORY_LIMIT caps each category. London's 301
+# one-hop "monuments" are mostly statues and memorials; the snapshot keeps the
+# 25 best known of them, not all 301.
+WIKIDATA_SUBCLASS_CLASSES: set[str] = {
+    "Q207694",  # gallery
+    "Q33506",  # museum
+    "Q1060829",  # concert_hall
+    "Q24354",  # theatre
+    "Q11315",  # shopping
+    "Q330284",  # market
+    "Q22698",  # park
+    "Q483110",  # stadium
+    "Q11707",  # restaurant
+    "Q4989906",  # monument
+    "Q40080",  # beach
+    "Q721207",  # marina
+    "Q570116",  # attraction
+}
 
 
 def now_iso() -> str:
@@ -176,96 +263,291 @@ def overpass_fetch(query: str) -> list[dict[str, Any]]:
     raise OverpassUnavailable(last)
 
 
-def wikidata_places(city: dict[str, Any], radius_m: int, as_of: str) -> list[dict[str, Any]]:
-    """The fallback source for places: Wikidata, queried geographically.
+class WikidataUnavailable(Exception):
+    """The endpoint never answered, as distinct from answering "nothing here"."""
 
-    Narrower than OpenStreetMap -- Wikidata holds notable venues, not every
-    cafe -- but it is a stable public endpoint, it is CC0, and the rows carry
-    the same shape and the same category vocabulary. Each row records Wikidata
-    as its source, so a reviewer can see exactly which cities came from where.
+
+def sparql(query: str, what: str, attempts: int = SPARQL_ATTEMPTS) -> list[dict[str, Any]]:
+    """Run one SPARQL query and return its bindings, or raise.
+
+    This exists to keep two very different outcomes apart. An empty result set
+    means the city really has no marinas. An HTTP error means we do not know
+    whether it has marinas. The previous code collapsed both into an empty
+    list, and that is precisely how London reached a committed snapshot with
+    zero monuments while Wikidata held 84 of them: a truncated, half-failed
+    query looked exactly like an honest "none".
+
+    So anything that is not a 200 carrying parseable JSON raises once the
+    retries are spent, and the caller records that class as *failed* rather
+    than as *empty*. The snapshot can then say what it does not know.
     """
-    values = " ".join(f"wd:{qid}" for qid, _ in WIKIDATA_CLASSES)
-    query = f"""
-    SELECT ?item ?itemLabel ?class ?coord WHERE {{
-      SERVICE wikibase:around {{
-        ?item wdt:P625 ?coord .
-        bd:serviceParam wikibase:center "Point({city["lon"]} {city["lat"]})"^^geo:wktLiteral .
-        bd:serviceParam wikibase:radius "{radius_m / 1000.0:.1f}" .
-      }}
-      VALUES ?class {{ {values} }}
-      ?item wdt:P31 ?class .
-      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
-    }}
-    LIMIT 400
-    """
-    # Wikidata's public endpoint rate-limits per client, and a 429 is a "come
-    # back shortly", not a "this city has no museums". Backing off and retrying
-    # is the difference between a thin snapshot and a correct one.
-    bindings = None
-    for attempt in range(4):
+    last = "no attempt made"
+    for attempt in range(attempts):
         try:
             response = requests.get(
                 WIKIDATA_SPARQL,
                 params={"query": query, "format": "json"},
                 headers={"User-Agent": USER_AGENT, "Accept": "application/sparql-results+json"},
-                timeout=120,
+                timeout=90,
             )
-            if response.status_code == 429:
-                wait = int(response.headers.get("Retry-After", 0)) or 20 * (attempt + 1)
-                log.warning("wikidata rate-limited for %s; waiting %ds", city["slug"], wait)
-                time.sleep(wait)
-                continue
+        except requests.RequestException as exc:
+            last = f"{type(exc).__name__}: {exc}"
+            log.warning("wikidata %s: %s (attempt %d)", what, last, attempt + 1)
+            time.sleep(min(8 * (attempt + 1), 45))
+            continue
+        # 429 is "come back shortly"; 5xx is the public endpoint shedding load.
+        # Both were seen repeatedly while this was written, and both are worth
+        # waiting out rather than recording as an empty city.
+        if response.status_code == 429:
+            wait = int(response.headers.get("Retry-After", 0) or 0) or 20 * (attempt + 1)
+            log.info("wikidata %s: rate-limited, waiting %ds", what, wait)
+            time.sleep(wait)
+            last = "HTTP 429"
+            continue
+        if response.status_code >= 500:
+            last = f"HTTP {response.status_code}"
+            log.warning("wikidata %s: %s (attempt %d)", what, last, attempt + 1)
+            time.sleep(min(8 * (attempt + 1), 45))
+            continue
+        try:
             response.raise_for_status()
-            bindings = response.json()["results"]["bindings"]
-            break
+            return response.json()["results"]["bindings"]
         except (requests.RequestException, ValueError, KeyError) as exc:
-            log.warning("wikidata attempt %d failed for %s: %s", attempt + 1, city["slug"], exc)
-            time.sleep(15 * (attempt + 1))
-    if bindings is None:
-        log.error("wikidata gave up on %s; the snapshot will have no places for it", city["slug"])
-        return []
+            last = f"{type(exc).__name__}: {exc}"
+            log.warning("wikidata %s: %s (attempt %d)", what, last, attempt + 1)
+            time.sleep(min(8 * (attempt + 1), 45))
+    raise WikidataUnavailable(f"{what}: {last}")
 
-    class_to_category = {f"http://www.wikidata.org/entity/{q}": c for q, c in WIKIDATA_CLASSES}
-    per_category: dict[str, int] = {}
-    rows: list[dict[str, Any]] = []
-    for binding in bindings:
-        category = class_to_category.get(binding.get("class", {}).get("value"))
-        name = binding.get("itemLabel", {}).get("value")
-        uri = binding.get("item", {}).get("value", "")
-        qid = uri.rsplit("/", 1)[-1]
-        # An unlabelled item comes back as its own Q-number; a place with no
-        # name is not a place a traveller can be sent to.
-        if not category or not name or name == qid:
-            continue
-        if per_category.get(category, 0) >= PER_CATEGORY_LIMIT:
-            continue
-        per_category[category] = per_category.get(category, 0) + 1
 
-        lat = lon = None
-        point = binding.get("coord", {}).get("value", "")
-        if point.startswith("Point("):
-            try:
-                lon_s, lat_s = point[6:-1].split()
-                lat, lon = float(lat_s), float(lon_s)
-            except ValueError:
-                pass
+@dataclass
+class PlaceStats:
+    """What a places run actually did, including everything it threw away.
 
-        rows.append(
-            {
-                "id": f"wikidata:{qid}",
-                "city_id": city["slug"],
-                "name": name,
-                "category": category,
-                "lat": lat,
-                "lon": lon,
-                "address": None,
-                "source": "Wikidata (CC0)",
-                "source_url": uri or f"https://www.wikidata.org/wiki/{qid}",
-                "is_sample": False,
-                "as_of": as_of,
-            }
+    A snapshot that reports only what it kept cannot be audited: "282 places"
+    says nothing about whether 282 was the ceiling, the cap, or everything the
+    source held. These counters are logged per city so the README's numbers
+    can be re-derived rather than trusted.
+    """
+
+    matched: int = 0
+    unnamed: int = 0
+    no_coord: int = 0
+    duplicate: int = 0
+    over_cap: int = 0
+    kept: int = 0
+    failed_classes: list[str] = field(default_factory=list)
+    truncated_classes: list[str] = field(default_factory=list)
+
+    def merge(self, other: PlaceStats) -> None:
+        self.matched += other.matched
+        self.unnamed += other.unnamed
+        self.no_coord += other.no_coord
+        self.duplicate += other.duplicate
+        self.over_cap += other.over_cap
+        self.kept += other.kept
+        self.failed_classes.extend(other.failed_classes)
+        self.truncated_classes.extend(other.truncated_classes)
+
+    def summary(self) -> str:
+        parts = [
+            f"kept={self.kept}",
+            f"matched={self.matched}",
+            f"unnamed={self.unnamed}",
+            f"no_coord={self.no_coord}",
+            f"duplicate={self.duplicate}",
+            f"over_cap={self.over_cap}",
+        ]
+        if self.failed_classes:
+            parts.append("FAILED=" + ",".join(sorted(set(self.failed_classes))))
+        if self.truncated_classes:
+            parts.append("TRUNCATED=" + ",".join(sorted(set(self.truncated_classes))))
+        return " ".join(parts)
+
+
+def coverage_table(rows: list[dict[str, Any]]) -> str:
+    """City x category counts, rendered from the rows themselves.
+
+    The README quotes place counts, and a hand-maintained number goes stale
+    the first time anyone re-runs staging -- a review already caught the README
+    claiming 282 places against a live 272. This renders the table from the
+    snapshot that was actually written, so the documented figure can be
+    re-derived instead of retyped.
+    """
+    cities = sorted({row["city_id"] for row in rows})
+    categories = sorted({row["category"] for row in rows})
+    counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        key = (row["city_id"], row["category"])
+        counts[key] = counts.get(key, 0) + 1
+
+    width = max([len(c) for c in categories] + [8])
+    header = "category".ljust(width) + "".join(c[:10].rjust(11) for c in cities) + "total".rjust(8)
+    lines = [header, "-" * len(header)]
+    for category in categories:
+        cells = [counts.get((city, category), 0) for city in cities]
+        lines.append(
+            category.ljust(width)
+            + "".join(str(n).rjust(11) for n in cells)
+            + str(sum(cells)).rjust(8)
         )
-    log.info("places: %s -> %d rows from Wikidata", city["slug"], len(rows))
+    totals = [sum(counts.get((city, c), 0) for c in categories) for city in cities]
+    lines.append("-" * len(header))
+    lines.append(
+        "TOTAL".ljust(width) + "".join(str(n).rjust(11) for n in totals) + str(sum(totals)).rjust(8)
+    )
+    return "\n".join(lines)
+
+
+def wikidata_class_query(qid: str, city: dict[str, Any], radius_m: int) -> str:
+    """One class, one query -- which is the whole point.
+
+    The old code asked for every class at once under a single `LIMIT 400`.
+    London matches 623, so the endpoint returned an arbitrary 400 of them and
+    whole categories fell off the end; that is the London monuments bug. Per
+    class, no category can crowd out another, and the limit below is a safety
+    valve rather than the thing that decides coverage.
+
+    `?sitelinks` is how many Wikipedias hold an article on the item. It is not
+    a quality score, but it is a stable, source-provided proxy for how well
+    known a venue is, and it is what turns "the first ten the endpoint
+    happened to return" into "the ten a visitor is most likely to have heard
+    of" -- deterministically, because ties break on the Q-number.
+    """
+    path = "wdt:P31/wdt:P279?" if qid in WIKIDATA_SUBCLASS_CLASSES else "wdt:P31"
+    # DISTINCT is load-bearing, not tidiness. An item reachable by several
+    # P31/P279 paths -- which is most of them once traversal is on -- comes
+    # back once per path. Without it, Rome's galleries returned 1500 rows for
+    # 64 distinct venues, hit the per-class limit, and were then ranked over
+    # whichever arbitrary slice the endpoint had truncated to. Deduplicating
+    # in Python cannot fix that: the truncation has already happened server
+    # side, which is the same class of bug as the old global LIMIT 400.
+    return f"""
+    SELECT DISTINCT ?item ?itemLabel ?coord ?sitelinks WHERE {{
+      SERVICE wikibase:around {{
+        ?item wdt:P625 ?coord .
+        bd:serviceParam wikibase:center "Point({city["lon"]} {city["lat"]})"^^geo:wktLiteral .
+        bd:serviceParam wikibase:radius "{radius_m / 1000.0:.1f}" .
+      }}
+      ?item {path} wd:{qid} .
+      OPTIONAL {{ ?item wikibase:sitelinks ?sitelinks . }}
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+    }}
+    LIMIT {WIKIDATA_CLASS_QUERY_LIMIT}
+    """
+
+
+def _parse_point(value: str) -> tuple[float, float] | None:
+    if not value.startswith("Point("):
+        return None
+    try:
+        lon_s, lat_s = value[6:-1].split()
+        return float(lat_s), float(lon_s)
+    except ValueError:
+        return None
+
+
+def _qid_sort_key(qid: str) -> int:
+    try:
+        return int(qid[1:])
+    except ValueError:
+        return 1 << 62
+
+
+def wikidata_places(
+    city: dict[str, Any], radius_m: int, as_of: str, stats: PlaceStats | None = None
+) -> list[dict[str, Any]]:
+    """Places from Wikidata: one bounded query per class, ranked, deduplicated.
+
+    Wikidata holds *notable* venues rather than every cafe. That is a real
+    coverage ceiling and the README says so. What it is not is the reason the
+    old snapshot was thin: Rome matched 220 rows and stored 57, London matched
+    623 and stored 68. The shortfall was ours, in two places -- a global
+    `LIMIT 400` shared across every class, and a first-N-arrive selection --
+    and both are fixed here.
+
+    Selection is deterministic: within a class, candidates sort by sitelink
+    count descending, then by Q-number ascending. The same data yields the
+    same snapshot, and the venues kept are the ones a visitor has heard of
+    rather than whichever the endpoint happened to list first.
+
+    An item that instantiates two collected classes is stored once, under
+    whichever class comes first in WIKIDATA_CLASSES. That order is therefore a
+    priority order, and deduplication happens before the per-category cap so a
+    duplicate cannot silently consume a slot a real venue needed.
+    """
+    stats = stats if stats is not None else PlaceStats()
+    taken: dict[str, str] = {}
+    rows: list[dict[str, Any]] = []
+
+    for qid, category in WIKIDATA_CLASSES:
+        what = f"{city['slug']}/{category}"
+        try:
+            bindings = sparql(wikidata_class_query(qid, city, radius_m), what)
+        except WikidataUnavailable as exc:
+            # Recorded, never silently swallowed: a failed class is a hole in
+            # the snapshot, and the run has to be able to name which one.
+            log.error("wikidata: %s failed -- %s", what, exc)
+            stats.failed_classes.append(what)
+            continue
+
+        if len(bindings) >= WIKIDATA_CLASS_QUERY_LIMIT:
+            log.warning("wikidata: %s hit the per-class limit; ranking is over a partial set", what)
+            stats.truncated_classes.append(what)
+        stats.matched += len(bindings)
+
+        candidates: list[tuple[int, int, str, str, float, float]] = []
+        for binding in bindings:
+            uri = binding.get("item", {}).get("value", "")
+            item_qid = uri.rsplit("/", 1)[-1]
+            name = binding.get("itemLabel", {}).get("value")
+            # An unlabelled item comes back as its own Q-number, and a place
+            # with no name is not a place a traveller can be sent to.
+            if not name or name == item_qid:
+                stats.unnamed += 1
+                continue
+            point = _parse_point(binding.get("coord", {}).get("value", ""))
+            if point is None:
+                # `wikibase:around` selects on P625, so this should not happen.
+                # It is counted rather than assumed away.
+                stats.no_coord += 1
+                continue
+            try:
+                sitelinks = int(binding.get("sitelinks", {}).get("value", 0))
+            except (TypeError, ValueError):
+                sitelinks = 0
+            candidates.append((-sitelinks, _qid_sort_key(item_qid), item_qid, name, *point))
+
+        candidates.sort()
+        kept_here = 0
+        for _rank, _qsort, item_qid, name, lat, lon in candidates:
+            if item_qid in taken:
+                stats.duplicate += 1
+                continue
+            if kept_here >= PER_CATEGORY_LIMIT:
+                stats.over_cap += 1
+                continue
+            taken[item_qid] = category
+            kept_here += 1
+            rows.append(
+                {
+                    "id": f"wikidata:{item_qid}",
+                    "city_id": city["slug"],
+                    "name": name,
+                    "category": category,
+                    "lat": lat,
+                    "lon": lon,
+                    "address": None,
+                    "source": "Wikidata (CC0)",
+                    "source_url": f"https://www.wikidata.org/wiki/{item_qid}",
+                    "is_sample": False,
+                    "as_of": as_of,
+                }
+            )
+        log.info("places: %s -> %d kept of %d matched", what, kept_here, len(bindings))
+        time.sleep(WIKIDATA_CLASS_PAUSE_S)
+
+    stats.kept += len(rows)
+    log.info("places: %s -> %d rows (%s)", city["slug"], len(rows), stats.summary())
     return rows
 
 
@@ -294,9 +576,23 @@ def fetch_places(
     rows: list[dict[str, Any]] = []
 
     if source == "wikidata":
+        totals = PlaceStats()
         for city in cities:
-            rows.extend(wikidata_places(city, radius, as_of))
+            stats = PlaceStats()
+            rows.extend(wikidata_places(city, radius, as_of, stats))
+            totals.merge(stats)
             time.sleep(2)
+        log.info("places: all cities -> %s", totals.summary())
+        if totals.failed_classes:
+            # Loud on purpose. The snapshot is about to be committed, and a
+            # class that failed is a hole that looks exactly like a city with
+            # no museums. The operator gets to decide whether to re-run.
+            log.error(
+                "places: %d class queries never answered -- the snapshot is INCOMPLETE for %s",
+                len(totals.failed_classes),
+                ", ".join(sorted(set(totals.failed_classes))),
+            )
+        log.info("places: coverage\n%s", coverage_table(rows))
         return rows
 
     tag_to_category = {(k, v): c for k, v, c in OSM_CATEGORIES}

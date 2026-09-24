@@ -180,8 +180,9 @@ def page_forecast(cov) -> None:
         return
 
     city_info = next(item for item in cov["cities"] if item["id"] == city)
-    latest = forecast.next_row(rows, city_info["timezone"])
-    if latest is None:
+    today = forecast.local_today(city_info["timezone"])
+    window = forecast.upcoming_rows(rows, city_info["timezone"])
+    if not window:
         last_day = max(row["forecast_date"] for row in rows)
         st.warning(
             f"No current forecast for {city_info['name']}. The stored forecast ended "
@@ -193,10 +194,12 @@ def page_forecast(cov) -> None:
     frame["forecast_date"] = pd.to_datetime(frame["forecast_date"])
 
     columns = st.columns(4)
-    columns[0].metric(f"Next high · {latest['forecast_date']}", f"{latest['temp_max_c']:.0f}°C")
-    columns[1].metric("Next low", f"{latest['temp_min_c']:.0f}°C")
-    columns[2].metric("Rain", f"{latest['precip_mm']:.1f} mm")
-    columns[3].metric("Wind", f"{latest['wind_kmh']:.0f} km/h")
+    for column, card in zip(columns, forecast.highlights(window, today), strict=True):
+        column.metric(card["label"], card["value"], help=card["help"])
+    st.caption(
+        f"Cards cover the {len(window)} stored day(s) from {window[0]['forecast_date']} "
+        f"to {window[-1]['forecast_date']}; each names the day it came from."
+    )
 
     figure = go.Figure()
     figure.add_trace(
@@ -503,14 +506,35 @@ def page_planner(cov) -> None:
             st.session_state["plan"] = plan
 
     plan = st.session_state.get("plan")
-    if not plan:
-        return
+    if plan:
+        render_plan(plan, cov)
 
+    st.divider()
+    render_saved_itineraries(city, cov)
+
+
+def render_plan(plan: dict, cov) -> None:
+    """One renderer for a freshly built plan and for a reopened stored one.
+
+    They differ only in what may honestly be said above the days. A built plan
+    was scored against the coverage window it names. A stored one carries the
+    as-of it was built from, which the forecast may since have moved past, so
+    it gets `render_plan_staleness` in place of a coverage line.
+    """
+    saved = plan.get("saved")
     st.markdown(f"### {plan['title']}")
-    st.caption(
-        f"Built from data as of {fmt_ts(plan.get('as_of'))} · "
-        f"coverage {plan['coverage']['first']} to {plan['coverage']['last']}"
-    )
+    if saved:
+        st.caption(
+            f"Saved itinerary `{saved['id']}` · revision {saved['revision']} · "
+            f"last changed {fmt_ts(saved['updated_at'])} · "
+            f"scored from weather as of {fmt_ts(plan.get('as_of'))}"
+        )
+        render_plan_staleness(plan, cov)
+    else:
+        st.caption(
+            f"Built from data as of {fmt_ts(plan.get('as_of'))} · "
+            f"coverage {plan['coverage']['first']} to {plan['coverage']['last']}"
+        )
     if plan.get("requested_days_outside_coverage"):
         st.warning(
             "No stored weather for: "
@@ -522,6 +546,44 @@ def page_planner(cov) -> None:
         render_day(day)
 
     st.divider()
+    if saved:
+        render_rename(plan, saved)
+    else:
+        render_save(plan)
+
+
+def render_plan_staleness(plan: dict, cov) -> None:
+    """A stored itinerary is a snapshot of a snapshot.
+
+    Its scores are the rule engine's output against the forecast of the day it
+    was built, and nothing re-scores them in place. Redrawing them under the
+    header's current as-of stamp would let stale numbers read as live, which is
+    the one thing this UI is not allowed to do.
+    """
+    current = cov.get("weather_as_of")
+    if current and plan.get("as_of") and str(current) != str(plan["as_of"]):
+        st.info(
+            "The stored forecast has been refreshed since this was saved (it is now "
+            f"as of {fmt_ts(current)}). The days below are the ones that were saved, "
+            "scores and wording included. Build the itinerary again to re-score it "
+            "against what is stored now."
+        )
+
+    first, last = cov.get("weather_first_date"), cov.get("weather_last_date")
+    outside = [
+        str(day["date"])
+        for day in plan["days"]
+        if first and last and not (first <= str(day["date"]) <= last)
+    ]
+    if outside:
+        st.warning(
+            "The stored forecast no longer covers: "
+            + ", ".join(outside)
+            + ". Those days are shown exactly as they were saved and cannot be re-scored."
+        )
+
+
+def render_save(plan: dict) -> None:
     title = st.text_input("Save as", value=plan["title"])
     if st.button("Save this itinerary"):
         saved = api_send(
@@ -542,10 +604,85 @@ def page_planner(cov) -> None:
                 "appears below once the consumer has stored it."
             )
 
-    saved_rows = cached_get("/itineraries", city=plan["city"])
-    if saved_rows:
-        st.markdown("**Saved itineraries**")
-        st.dataframe(pd.DataFrame(saved_rows), hide_index=True, width="stretch")
+
+def render_rename(plan: dict, saved: dict) -> None:
+    """A reopened plan is already a row, so the write here is an edit of it.
+
+    Offering "save" again would post a second row with a new id on every click,
+    which is how a list of saved trips turns into a list of duplicates. A
+    rename is the M12 patch path: same queue, same revision bump, same history.
+    """
+    title = st.text_input("Rename", value=plan["title"], key=f"rename_{saved['id']}")
+    if st.button("Rename this itinerary", disabled=title.strip() == plan["title"]):
+        result = api_send("PATCH", f"/records/itineraries/{saved['id']}", {"title": title.strip()})
+        if result:
+            st.success(f"Accepted as `{result['message_id']}`.")
+            st.caption(
+                "Same queue as every other write, so the new title and revision "
+                "appear once the consumer has applied it."
+            )
+
+
+def render_saved_itineraries(city: str, cov) -> None:
+    """The way back into a stored trip.
+
+    This list used to render only underneath a freshly built plan, so a saved
+    itinerary could be seen and never reopened. It is its own section now, it
+    does not wait for a plan to exist, and the days come from
+    `GET /itineraries/{id}` -- the list endpoint carries titles and dates only.
+    """
+    st.markdown("**Saved itineraries**")
+    rows = cached_get("/itineraries", city=city) or []
+    if not rows:
+        st.caption(
+            "Nothing stored for this city yet. Build an itinerary above and save it; "
+            "it appears here once the consumer has taken it off the queue."
+        )
+        return
+
+    by_id = {row["id"]: row for row in rows}
+
+    def label(itinerary_id: str) -> str:
+        row = by_id[itinerary_id]
+        return f"{row['title']} · {row['start_date']} → {row['end_date']} · rev {row['revision']}"
+
+    left, right = st.columns([5, 1], vertical_alignment="bottom")
+    chosen = left.selectbox(
+        "Open a saved itinerary", list(by_id), format_func=label, key="saved_itinerary"
+    )
+    if right.button("Open", width="stretch"):
+        # Uncached on purpose: this is a click on one named row, and a 20s-old
+        # copy of a plan someone just corrected is worth less than one API call.
+        row = api_get(f"/itineraries/{chosen}")
+        if row:
+            st.session_state["plan"] = plan_from_saved(row, cov)
+            st.rerun()
+        else:
+            st.error("That itinerary is no longer in the database.")
+
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def plan_from_saved(row: dict, cov) -> dict:
+    """Shape a stored row like a built plan, so that one renderer -- and the
+    map tab's highlight -- serve both. `saved` is what marks it as stored."""
+    return {
+        "city": row["city_id"],
+        "title": row["title"],
+        "start_date": str(row["start_date"]),
+        "end_date": str(row["end_date"]),
+        "days": row.get("days") or [],
+        "as_of": row.get("as_of"),
+        "coverage": {
+            "first": cov.get("weather_first_date"),
+            "last": cov.get("weather_last_date"),
+        },
+        "saved": {
+            "id": row["id"],
+            "revision": row["revision"],
+            "updated_at": row["updated_at"],
+        },
+    }
 
 
 def render_day(day: dict) -> None:
@@ -574,6 +711,26 @@ def render_day(day: dict) -> None:
                 f'<div style="margin-top:.4rem"><span style="font-size:.8rem;'
                 f'color:#55607A">Also good that day:</span> {pills}</div>',
                 unsafe_allow_html=True,
+            )
+
+        # Where the day's activity actually happens, kept separate from the
+        # interest-matched list so the two are never confused for each other.
+        venues = day.get("activity_places") or []
+        wanted = day.get("activity_place_categories") or []
+        if venues:
+            st.markdown(
+                f"**For {day.get('activity') or 'this'}:** "
+                + ", ".join(
+                    f"[{v['name']}]({v['source_url']})" + (" *(sample)*" if v["is_sample"] else "")
+                    for v in venues
+                )
+            )
+        elif wanted:
+            # The activity has a venue category and the city has no row for it.
+            # Saying so beats letting the interest list below stand in for it.
+            st.caption(
+                f"No {', '.join(wanted)} on record for this city, so this day names "
+                "no venue rather than suggesting one the data does not support."
             )
 
         if day["places"]:

@@ -609,6 +609,78 @@
    "updated_at": "2026-09-23T18:16:44.438338Z"
   }
  ],
+ "itineraries/11111111-2222-3333-4444-555555555555": {
+  "as_of": "2026-09-23T18:16:44.438338Z",
+  "city_id": "lisbon",
+  "created_at": "2026-09-23T18:16:44.438338Z",
+  "days": [
+   {
+    "activity": "Walking tour",
+    "activity_band": "great",
+    "activity_icon": "\ud83e\udded",
+    "activity_place_categories": [],
+    "activity_places": [],
+    "activity_score": 88,
+    "activity_slug": "walking_tour",
+    "alternatives": [
+     {
+      "icon": "\ud83d\uddbc",
+      "label": "Museum visit",
+      "score": 74
+     },
+     {
+      "icon": "\ud83c\udf7d",
+      "label": "Outdoor dining",
+      "score": 70
+     }
+    ],
+    "date": "2026-09-23",
+    "events": [],
+    "places": [
+     {
+      "category": "monument",
+      "id": "lisbon-place-1",
+      "is_sample": false,
+      "lat": 38.6979,
+      "lon": -9.2065,
+      "name": "Mosteiro dos Jer\u00f3nimos",
+      "source_url": "https://www.wikidata.org/wiki/Q207360"
+     }
+    ],
+    "why": "Dry, mild and light wind - good legs weather."
+   },
+   {
+    "activity": "Museum visit",
+    "activity_band": "good",
+    "activity_icon": "\ud83e\udded",
+    "activity_place_categories": [],
+    "activity_places": [],
+    "activity_score": 71,
+    "activity_slug": "museum_visit",
+    "alternatives": [],
+    "date": "2026-09-24",
+    "events": [],
+    "places": [
+     {
+      "category": "monument",
+      "id": "lisbon-place-1",
+      "is_sample": false,
+      "lat": 38.6979,
+      "lon": -9.2065,
+      "name": "Mosteiro dos Jer\u00f3nimos",
+      "source_url": "https://www.wikidata.org/wiki/Q207360"
+     }
+    ],
+    "why": "Rain in the afternoon - keep it indoors."
+   }
+  ],
+  "end_date": "2026-09-24",
+  "id": "11111111-2222-3333-4444-555555555555",
+  "revision": 1,
+  "start_date": "2026-09-23",
+  "title": "Two days in Lisbon",
+  "updated_at": "2026-09-23T18:16:44.438338Z"
+ },
  "places": [
   {
    "address": null,

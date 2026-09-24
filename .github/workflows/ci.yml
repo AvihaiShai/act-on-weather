@@ -65,8 +65,13 @@ jobs:
           test -f .env.example || { echo "::error::.env.example is missing"; exit 1; }
           # Password fields are placeholders; non-secret tuning values (for
           # example context size and parallelism) are intentionally real.
+          # The final grep is quiet on purpose. It rejects exactly what it
+          # rejected before -- any of these four whose value is not exactly
+          # `change-me` -- but without -q the offending line goes to stdout,
+          # so the one run that matters, the failing one, would write a real
+          # password into a build log that outlives it.
           if grep -E '^(POSTGRES_PASSWORD|POSTGRES_WRITER_PASSWORD|POSTGRES_READER_PASSWORD|RABBITMQ_PASSWORD)=' .env.example \
-               | grep -vE '=change-me$'; then
+               | grep -qvE '=change-me$'; then
             echo "::error::.env.example contains a non-placeholder password"; exit 1
           fi
           echo "clean"

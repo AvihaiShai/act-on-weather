@@ -2,14 +2,14 @@
 # project gives the integration test fresh networks and volumes.
 services:
   ingestor:
-    image: aow/services:ci
+    image: ${AOW_CI_SERVICES_IMAGE:-aow/services:ci}
   consumer:
-    image: aow/services:ci
+    image: ${AOW_CI_SERVICES_IMAGE:-aow/services:ci}
   enricher:
-    image: aow/services:ci
+    image: ${AOW_CI_SERVICES_IMAGE:-aow/services:ci}
   agent:
-    image: aow/services:ci
+    image: ${AOW_CI_SERVICES_IMAGE:-aow/services:ci}
   api:
-    image: aow/services:ci
+    image: ${AOW_CI_SERVICES_IMAGE:-aow/services:ci}
   ui:
     image: aow/ui:ci

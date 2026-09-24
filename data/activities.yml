@@ -16,6 +16,25 @@
 #   interests        which data/interests.yml keys this activity serves. The
 #                    trip planner uses it to weight the day's pick towards
 #                    what the traveller actually asked for.
+#   where_noun       what an answer calls the place you do this activity ("a
+#                    surf spot"), used by the agent's `where` route when it has
+#                    to report that it holds none. Wording only: it never makes
+#                    a location answerable. Set it where the generated fallback
+#                    ("place for surfing") reads badly; otherwise leave it out
+#                    and the first `place_categories` entry, or the label, is
+#                    used.
+#   place_categories places.category values that ARE a venue for this activity,
+#                    so the planner can name where to go rather than listing
+#                    whatever matched the traveller's interests. Set only where
+#                    the source class is the venue by definition: a place the
+#                    source calls a beach is where you spend a day at the
+#                    beach. It is deliberately absent from surfing, swimming,
+#                    fishing and boat rides -- Wikidata Q40080 and OSM
+#                    `natural=beach` assert that a beach is there, not that it
+#                    has rideable surf, lifeguarded water, permitted angling or
+#                    a boat to hire, and the system does not claim what its
+#                    sources do not say. An activity with no key here keeps the
+#                    old behaviour: the day lists interest-matched places only.
 #   requires_coast   only scored for cities with `coastal: true` in cities.yml.
 #                    A city with no coast gets no row at all, rather than a
 #                    surfing score invented from an inland forecast.
@@ -83,6 +102,7 @@ activities:
     icon: "\U0001F5FA"
     indoor: false
     interests: [history, outdoors]
+    place_categories: [monument, attraction, viewpoint]
     ideal_temp_c: [12, 26]
     max_precip_mm: 4.0
     max_precip_prob: 55
@@ -107,6 +127,7 @@ activities:
     icon: "\U0001F9FA"
     indoor: false
     interests: [shopping, dining]
+    place_categories: [market]
     ideal_temp_c: [8, 28]
     max_precip_mm: 2.0
     max_precip_prob: 45
@@ -136,6 +157,9 @@ activities:
     indoor: false
     requires_coast: true
     interests: [outdoors]
+    # The one coastal activity whose venue the sources actually name. Surfing,
+    # swimming, fishing and a boat ride deliberately have no such key.
+    place_categories: [beach]
     ideal_temp_c: [24, 34]
     max_precip_mm: 0.5
     max_precip_prob: 20
@@ -148,6 +172,7 @@ activities:
     icon: "\U0001F3CA"
     indoor: false
     requires_coast: true
+    where_noun: supervised swimming spot
     interests: [sports, outdoors]
     ideal_temp_c: [24, 36]
     max_precip_mm: 1.0
@@ -161,6 +186,7 @@ activities:
     icon: "\U0001F3C4"
     indoor: false
     requires_coast: true
+    where_noun: surf spot
     interests: [sports, outdoors]
     ideal_temp_c: [16, 32]
     max_precip_mm: 5.0
@@ -176,6 +202,7 @@ activities:
     icon: "\U0001F3A3"
     indoor: false
     requires_coast: true
+    where_noun: fishing spot
     interests: [outdoors]
     ideal_temp_c: [8, 30]
     max_precip_mm: 3.0
@@ -188,6 +215,7 @@ activities:
     icon: "⛵"
     indoor: false
     requires_coast: true
+    where_noun: boat hire
     interests: [outdoors]
     ideal_temp_c: [16, 32]
     max_precip_mm: 1.0
@@ -208,6 +236,7 @@ activities:
     icon: "\U0001F3DB"
     indoor: true
     interests: [museums, history]
+    place_categories: [museum]
     indoor_floor: 55
     indoor_weight: 0.45
 
@@ -217,6 +246,7 @@ activities:
     icon: "\U0001F5BC"
     indoor: true
     interests: [museums]
+    place_categories: [gallery]
     indoor_floor: 50
     indoor_weight: 0.45
 
@@ -235,6 +265,7 @@ activities:
     icon: "\U0001F6CD"
     indoor: true
     interests: [shopping]
+    place_categories: [shopping]
     indoor_floor: 40
     indoor_weight: 0.6
 
