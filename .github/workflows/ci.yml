@@ -232,6 +232,12 @@ jobs:
           bash -n demos/*.sh
           docker compose -f compose.yml -f compose.ci.yml --env-file .env.example config --quiet
           AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml --env-file .env.example config --quiet
+          # The monitoring overlay's bundled form. A reviewer running the
+          # observability profile from an installed release passes all four,
+          # so all four are rendered here -- an overlay combination nobody
+          # validates is one that breaks on the reviewer's machine and
+          # nowhere else.
+          AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml -f compose.observability.yml -f compose.observability.bundle.yml --env-file .env.example config --quiet
           # Every overlay a reviewer can actually pass to `docker compose -f`
           # is rendered here. An overlay nobody validates is one that breaks on
           # the reviewer's machine and nowhere else.
@@ -444,21 +450,31 @@ jobs:
             docker buildx imagetools create --tag "$image" "$image"
             # Re-resolved after imagetools create, deliberately: the lock
             # must record the digest the tag resolves to now (the index),
-            # not the pre-wrap child-manifest digest -- verified directly
-            # against a real public multi-arch tag (alpine:3.20): `docker
-            # pull` + `docker image inspect .RepoDigests` reports the same
-            # digest `docker pull` prints on its own "Digest:" line, i.e.
-            # whatever the tag itself resolves to server-side (the index),
-            # never a per-platform child. `docker manifest inspect -v` is a
-            # different code path and does NOT have this property -- it
-            # returns one entry per child manifest, and naively indexing it
-            # (e.g. `[0]`) hands back an amd64 child digest, not the index.
-            # That is the mistake the "linux/amd64 platform descriptor"
-            # assertion step below exists to catch, for any image, not only
-            # this one -- see its comment.
-            docker pull "$image" >/dev/null
-            digest_ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" | grep -F -m1 "$image_root/$component@sha256:")"
-            test -n "$digest_ref"
+            # not the pre-wrap child-manifest digest, because the index is
+            # what a `docker save` archive records per alias, and therefore
+            # what the offline bundle verification anchors against.
+            #
+            # Resolved with `imagetools inspect --format`: a registry-side
+            # query that never consults the local image store. That matters
+            # more than it looks. The previous version used `docker pull` +
+            # `docker image inspect .RepoDigests`, verified against a real
+            # multi-arch tag on a containerd-store engine, where it does
+            # return the index. On the GitHub runner's *classic* store,
+            # pulling a manifest list resolves to the platform-specific child
+            # and RepoDigests records THAT instead. Same command, two answers,
+            # decided by an image-store type nothing in this repo controls.
+            # It shipped a lock naming the child while the tag named the
+            # index, which fails bundle verification on the offline host.
+            #
+            # `docker manifest inspect -v` is a third code path with the same
+            # trap: it returns one entry per child manifest, so naively
+            # indexing it (e.g. `[0]`) also hands back a child digest.
+            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image")"
+            case "$digest" in
+              sha256:*) ;;
+              *) echo "::error::no index digest resolved for $image (got '$digest')"; exit 1 ;;
+            esac
+            digest_ref="$image_root/$component@$digest"
             echo "$component $digest_ref" | tee -a release/images.lock "$GITHUB_STEP_SUMMARY"
           done
 
@@ -494,14 +510,20 @@ jobs:
           set -euo pipefail
           image_root="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="sha-${GITHUB_SHA}"
+          manifest_file="$(mktemp)"
+          trap 'rm -f "$manifest_file"' EXIT
           for component in services ui; do
             ref="$image_root/$component:$version"
-            docker buildx imagetools inspect --raw "$ref" | python3 - "$ref" <<'PY'
+            # The heredoc is Python's stdin, so the registry JSON must be in
+            # a file. Piping it here leaves json.load with an empty stream.
+            docker buildx imagetools inspect --raw "$ref" > "$manifest_file"
+            python3 - "$ref" "$manifest_file" <<'PY'
           import json
           import sys
 
           ref = sys.argv[1]
-          manifest = json.load(sys.stdin)
+          with open(sys.argv[2], encoding="utf-8") as source:
+              manifest = json.load(source)
           media_type = manifest.get("mediaType", "")
           is_index = media_type in (
               "application/vnd.oci.image.index.v1+json",
@@ -523,6 +545,56 @@ jobs:
               )
               sys.exit(1)
           print(f"{ref}: {media_type}, linux/amd64 present -- OK")
+          PY
+          done
+
+          # And release/images.lock has to name that same index. A child digest
+          # here does not merely mismatch the archive -- it reintroduces the
+          # original defect, because scripts/package-offline.sh pulls the
+          # reference straight out of this lock. Pulling by a child digest
+          # returns exactly the platform-less single manifest whose
+          # `docker save` writes a manifest and no layers, so a bad lock
+          # rebuilds the empty-bundle bug and the failure surfaces three steps
+          # downstream, looking like a packaging fault rather than a bad lock.
+          #
+          # Both halves are checked, per component: the digest the lock names
+          # must equal what the tag resolves to, and the manifest AT that
+          # digest must be an index. The regression that prompted this
+          # produced different answers for `services` and `ui` in the same
+          # run -- `grep -m1` over RepoDigests, which after a push and a
+          # pull can hold both the child and the index and returns whichever
+          # the daemon listed first -- so a single-image check would have
+          # passed it.
+          for component in services ui; do
+            ref="$image_root/$component:$version"
+            locked_file="$(mktemp)"
+            tag_digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$ref")"
+            lock_digest="$(awk -v c="$component" '$1 == c {print $2}' release/images.lock | sed 's/.*@//')"
+            if [ "$tag_digest" != "$lock_digest" ]; then
+              echo "::error::release/images.lock records $component@$lock_digest but $ref resolves to $tag_digest"
+              exit 1
+            fi
+            docker buildx imagetools inspect --raw "$image_root/$component@$lock_digest" > "$locked_file"
+            python3 - "$component" "$lock_digest" "$locked_file" <<'PY'
+          import json
+          import sys
+
+          component, digest, path = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path, encoding="utf-8") as handle:
+              manifest = json.load(handle)
+          media_type = manifest.get("mediaType", "")
+          if media_type not in (
+              "application/vnd.oci.image.index.v1+json",
+              "application/vnd.docker.distribution.manifest.list.v2+json",
+          ):
+              print(
+                  f"::error::release/images.lock records {component}@{digest}, "
+                  f"whose manifest is {media_type!r} rather than an index. "
+                  "package-offline.sh pulls this reference, and pulling a child "
+                  "manifest recreates the empty-archive defect"
+              )
+              sys.exit(1)
+          print(f"{component}: the lock names the index {digest} -- OK")
           PY
           done
 

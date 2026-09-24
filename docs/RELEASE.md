@@ -61,6 +61,11 @@ operator, from the same inputs -- see below.
 Triggered by `workflow_dispatch` with a required `sha` input (see the
 workflow file for the full reasoning). In order:
 
+Before it touches an image, the job starts pinned Docker 29.8.1 with the
+containerd image store and checks the daemon reports that store. F10's proof
+found that the classic store rewrites the index digests during `docker save`,
+so its output cannot satisfy the bundle's digest lock.
+
 1. Validates `sha` is a 40-character hex commit SHA.
 2. Checks it out and asserts `git rev-parse HEAD` matches it.
 3. Queries the Actions API for a **completed, successful** `ci.yml` run with
@@ -89,13 +94,17 @@ workflow file for the full reasoning). In order:
    tag) and asserts they still match what the artifact says. This is the one
    gate with an anchor outside the release's own paperwork -- see
    `scripts/cd-promotion-record.py`'s `PROVENANCE_BY_ALIAS` for why the other
-   images in the bundle (`postgres`, `rabbitmq`, `llm`, `edge`, `stage`,
-   `demos`) do not carry the same strength of proof.
+   images in the bundle (`postgres`, `rabbitmq`, `llm`, `edge`, `prometheus`,
+   `grafana`, `stage`, `demos`) do not carry the same strength of proof.
 7. Stages the model (`docker compose -f compose.tools.yml run --rm stage`,
    the same command `make stage-fetch` runs) and lets `sha256sum -c
    models.lock` fail the job if it does not match.
 8. Builds the bundle: `bash scripts/package-offline.sh release/images.lock`,
-   unmodified. Verifies it a second, explicit time: `bash
+   unmodified. After `docker save`, the package script fills any omitted
+   services/UI config or layer blobs directly from GHCR by digest and hashes
+   every fetched blob. This works around a containerd-store `docker save`
+   defect seen on a clean runner; the manifest digests remain unchanged.
+   Verifies the completed archive a second, explicit time: `bash
    scripts/verify-bundle-images.sh dist/aow-<sha>`.
 9. **Installs the bundle and proves it serves data**, with no pulls, in a
    disposable Compose project (`bash dist/aow-<sha>/scripts/install-offline.sh`,
@@ -148,10 +157,20 @@ recommendation was written, and does not render the UI. Read
 `scripts/release-smoke.py` directly for the exact checks.
 
 **This does not duplicate F10's air-gap rig**, and is not trying to. That rig
-is a physically separate `docker-ce` host with `nftables` dropping DNS,
-raw-IP and ICMP -- a real network-isolation certification a GitHub-hosted
-runner cannot reproduce, because the runner itself has internet access
-throughout this job. What step 9 proves instead is narrower and cheaper to
+is a *separate Docker engine* -- its own `docker-ce` daemon and image store,
+holding no images at all before the install -- with `nftables` dropping DNS,
+raw-IP TCP, HTTPS and ICMP, verified from inside a container on a routable
+network. It is **not** a physically separate machine and not a separate VM,
+and it is not a certification that the stack runs on hardware that has never
+seen a network; `docs/RELEASE-PROOF.md` §2 states exactly what it does and
+does not establish, and that section is the authority on it rather than this
+paragraph. What it has that a GitHub-hosted runner cannot have is an engine
+with **no image cache to fall back on and no reachable egress**, which is the
+difference that matters here: the runner has internet throughout this job, and
+its own `docker pull` during packaging leaves the layers in its store. A
+bundle whose archive was missing every layer would still install on this
+runner for that reason -- which is not hypothetical, it is the defect F10
+found. What step 9 proves instead is narrower and cheaper to
 run on every release: *the exact tar this job just built and verified boots
 the stack and the stack holds real data, using no image the bundle did not
 already carry.* That is worth checking every time even though it is not an
@@ -177,6 +196,10 @@ This reproduces `dist/aow-<sha>/` with the same pinned images and model,
 verified against the same `images.lock` the release workflow checked. Compare
 `dist/aow-<sha>/promotion-record.json`'s `images` block against what you
 built, if you want a second confirmation beyond the script's own checks.
+The archive completion step uses the existing `docker login ghcr.io`
+credentials (including Docker credential helpers), or anonymous access when
+the package is public. `GHCR_USER` and `GHCR_TOKEN` can override the Docker
+login; the release workflow supplies its job token explicitly.
 
 ## Operator procedure: transfer
 

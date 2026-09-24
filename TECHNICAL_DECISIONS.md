@@ -109,13 +109,17 @@ quoting through YAML and Docker's argument splitting.
 
 Pre-agreed cut order, taken in this order as the deadline approached:
 
-| Cut | Cost |
+Three of the four moved after the cut was taken, so each row says where it
+actually ended up: a cut list that still disowns something the reviewer can see
+on screen is worse than no cut list.
+
+| Cut | Cost, as it stands |
 |---|---|
-| Itinerary editing → generate-and-save only | M9's editing affordance. Building and saving both work. |
-| The markers map page | Visual breadth on M10; the forecast chart, the heatmap and the coverage banner carry it. |
-| Marine data and surfing | No marine provider, so surfing is not among the scored defaults. Typed as a free-text activity it is answered from the weather on hand, with that caveat stated. |
-| B1, B3 (bonuses) | No integration-test container beyond CI's Compose job; the demo scripts are the integration evidence. |
-| B2 (bonus) | Met. Prometheus and Grafana ship as an opt-in overlay (`compose.observability.yml`), pinned and air-gapped, with request/error/latency and pipeline metrics, 11 alert rules and two provisioned dashboards. No Alertmanager: a single air-gapped host has nowhere to route to. |
+| Itinerary editing → generate-and-save only | M9's editing affordance. Building and saving both work. Still cut. |
+| The markers map page | **Reversed.** The Places map tab ships, drawn over a bundled OpenStreetMap extract rather than a tile service — no residential streets, no labels, no routing, nothing past 20 km from the centre. Tiles are a runtime download, and the air-gap rule outranks the cartography. |
+| Marine data and surfing | **Half reversed.** No marine provider was staged, so there is still no wave, swell or sea-state data. Surfing *is* scored, in coastal cities only, from wind, temperature and precipitation — the day, not the surf — and the UI and the agent both say so. |
+| B1, B3 (bonuses) | **Partly reversed.** CI runs a Compose integration test (`scripts/ci-integration.sh`) over the queue → database → API path, and the demo scripts carry the model and UI flows. B3 is partial and not as a bonus feature: reconnect-with-backoff, `restart: unless-stopped`, healthchecks and automatic re-enrichment. |
+| B2 (bonus) | **Reversed. Met.** Prometheus and Grafana ship as an opt-in overlay (`compose.observability.yml`), pinned and air-gapped, with request/error/latency and pipeline metrics, 11 alert rules and two provisioned dashboards. No Alertmanager: a single air-gapped host has nowhere to route to. |
 
 Never cut, and all verified: one-command startup, the full outbox → queue →
 consumer → Postgres path, the coverage gate and as-of footers, both example

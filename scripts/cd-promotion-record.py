@@ -55,13 +55,30 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 # The gates this workflow enforces, in the order it enforces them. Recorded as
-# a fixed list, not a live re-check -- see the module docstring for why that
-# is sound here.
+# a fixed list rather than a live re-check, which is sound for one specific
+# reason and only that reason: every gate named here is a step that runs
+# BEFORE this script in release.yml, and a failed step fails the job. So the
+# fact that this script is running at all is the evidence -- reaching it is
+# not possible with any of them unsatisfied.
+#
+# That makes the list order-dependent, which is the trap. Adding a name here
+# for a step that runs AFTER this script would assert something that has not
+# happened yet, and the record would say so in a file sealed into the bundle.
+# Before adding an entry, check its step's position in release.yml. The two
+# most recent additions, `bundle_installed_without_pulls` and
+# `release_smoke_serves_data`, are the install-and-smoke step, which sits
+# ahead of "Write the promotion record into the bundle" -- verified when they
+# were added, and worth re-verifying rather than assuming next time.
+#
+# Contrast `branch_protection`, which is NOT in this list: it is a live
+# repository setting this workflow does not itself enforce, so it is read at
+# release time and recorded as unverified when the read fails.
 GATES = [
     "sha_format_valid",
     "checkout_matches_sha",
@@ -73,6 +90,8 @@ GATES = [
     "model_checksum_verified",
     "bundle_built_by_package_offline_sh",
     "bundle_verified_by_verify_bundle_images_sh",
+    "bundle_installed_without_pulls",
+    "release_smoke_serves_data",
 ]
 
 # Not every image alias in the bundle carries the same proof. Three tiers,
@@ -87,7 +106,8 @@ GATES = [
 #                               no external source to cross-check it against.
 #
 #   digest_pinned_pull_verified_by_docker
-#                               postgres, rabbitmq, llm and edge are pulled
+#                               postgres, rabbitmq, llm, edge, prometheus,
+#                               grafana and stage are pulled
 #                               straight from IMAGES.lock's pinned digests.
 #                               Docker refuses a pull whose content does not
 #                               hash to the requested digest, so this is a
@@ -114,6 +134,8 @@ PROVENANCE_BY_ALIAS = {
     "rabbitmq": "digest_pinned_pull_verified_by_docker",
     "llm": "digest_pinned_pull_verified_by_docker",
     "edge": "digest_pinned_pull_verified_by_docker",
+    "prometheus": "digest_pinned_pull_verified_by_docker",
+    "grafana": "digest_pinned_pull_verified_by_docker",
     "stage": "digest_pinned_pull_verified_by_docker",
     "demos": "self_attested_build",
 }
@@ -157,6 +179,21 @@ def read_checksums(path: Path) -> dict[str, str]:
     return out
 
 
+def read_model_lock(path: Path) -> tuple[str, str]:
+    """Read the one sha256sum entry; comments are documentation, not hashes."""
+    entries = [
+        line.strip()
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(entries) != 1:
+        raise ValueError(f"{path}: expected exactly one model checksum, got {len(entries)}")
+    match = re.fullmatch(r"([0-9a-f]{64}) [ *](models/[^\s]+\.gguf)", entries[0])
+    if not match:
+        raise ValueError(f"{path}: invalid sha256sum entry for a models/*.gguf file")
+    return match.group(1), match.group(2)
+
+
 def require_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -185,8 +222,9 @@ def main() -> int:
     release_lock = read_lock_pairs(release_lock_path)
     bundle_lock = read_lock_pairs(bundle_lock_path)
     checksums = read_checksums(bundle_checksums_path)
-    model_digest, _, model_name = models_lock_path.read_text().strip().partition(" ")
-    model_name = model_name.strip().lstrip("*")
+    model_digest, model_name = read_model_lock(models_lock_path)
+    if checksums.get(f"./{model_name}") != model_digest:
+        sys.exit(f"{bundle_checksums_path}: model checksum differs from {models_lock_path}")
 
     unknown_aliases = sorted(set(bundle_lock) - set(PROVENANCE_BY_ALIAS))
     if unknown_aliases:

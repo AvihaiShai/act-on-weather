@@ -1,0 +1,26 @@
+# Bundle aliases for the optional monitoring overlay.
+#
+# Why this is a fourth file rather than three more entries in
+# compose.bundle.yml: Compose merges overlays by adding services it has not
+# seen, so a `prometheus:` block in compose.bundle.yml would append a bare
+# prometheus service to the *base* stack, and `docker compose -f compose.yml
+# -f compose.bundle.yml up -d` would start monitoring for everyone. The
+# monitoring aliases therefore live with the overlay that declares those
+# services, and are passed only alongside it.
+#
+# On an offline host:
+#
+#   docker compose -f compose.yml -f compose.observability.yml \
+#                  -f compose.bundle.yml -f compose.observability.bundle.yml \
+#                  up -d
+#
+# or just `make monitor` from the installed release folder, which passes all
+# four when AOW_IMAGE_VERSION is set.
+services:
+  prometheus:
+    image: aow-bundle/prometheus:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  grafana:
+    image: aow-bundle/grafana:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  # Reuses the nginx the base bundle already carries; it is the same image.
+  edge-observability:
+    image: aow-bundle/edge:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
