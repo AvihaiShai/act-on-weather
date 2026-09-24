@@ -8,7 +8,15 @@ name: ci
 on:
   push:
     branches: [main]
+  # `types` is listed explicitly, which means the three defaults have to be
+  # listed too -- naming any type replaces the default set rather than adding
+  # to it. `labeled` is the one being added, and without it the
+  # `release-candidate` label path in the RC jobs below can never fire: adding
+  # a label to an open pull request is not a `synchronize`, so nothing re-runs
+  # and the expensive gates stay silently unreachable. Found by adding the
+  # label to this workflow's own pull request and watching nothing happen.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
