@@ -365,6 +365,23 @@ Four drills — consumer down, database down, broker down and poison message. Ea
 **single accepted `message_id`** to its terminal state. Row counts are
 deliberately not the assertion: a loss and a duplicate cancel out in a count.
 
+**Reconcile older accepted records.** After an upgrade from a version with the
+database reconnect bug, audit both producer outboxes while the stack is up:
+
+```sh
+docker compose exec -T ingestor python -m services.common.reconcile
+docker compose exec -T api python -m services.common.reconcile
+```
+
+The default command only reads the original outbox and `ingest_log`. A missing
+ID may still be in the queue or dead-letter queue, so inspect those and allow
+in-flight work to settle before replaying an ID. To replay one confirmed but
+still missing ID from its original producer, use `--replay --id MESSAGE_ID` on
+that producer's command. The tool publishes the original envelope and ID;
+`ingest_log` makes a concurrent redelivery safe. Verify the ID is stored after
+replay by rerunning the same producer command with `--id MESSAGE_ID` and
+checking `stored: 1`. Keep the original named outbox volumes across upgrades.
+
 ---
 
 ## Technical choices, and what was rejected

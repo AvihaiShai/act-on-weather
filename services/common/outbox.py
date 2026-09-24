@@ -39,21 +39,27 @@ CREATE INDEX IF NOT EXISTS outbox_unpublished ON outbox (seq) WHERE published_at
 
 
 class Outbox:
-    def __init__(self, path: Path | str):
+    def __init__(self, path: Path | str, *, readonly: bool = False):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not readonly:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False because the API accepts on its request
         # threads and publishes on a background one. Every caller holds a lock
         # around this handle; nothing here is concurrent.
         self.conn = sqlite3.connect(
-            self.path, isolation_level=None, timeout=30, check_same_thread=False
+            self.path.resolve().as_uri() + "?mode=ro" if readonly else self.path,
+            isolation_level=None,
+            timeout=30,
+            check_same_thread=False,
+            uri=readonly,
         )
         self.conn.row_factory = sqlite3.Row
         # WAL for a concurrent reader; FULL because a fsync per accepted record
         # is exactly the cost we are choosing to pay for the guarantee.
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=FULL")
-        self.conn.executescript(SCHEMA)
+        if not readonly:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=FULL")
+            self.conn.executescript(SCHEMA)
 
     def close(self) -> None:
         self.conn.close()
@@ -86,6 +92,21 @@ class Outbox:
             (limit,),
         ).fetchall()
         return iter(rows)
+
+    def published_after(self, seq: int, limit: int = 200) -> list[sqlite3.Row]:
+        """Page through confirmed envelopes for an operator reconciliation."""
+        return self.conn.execute(
+            "SELECT seq, message_id, routing_key, body FROM outbox"
+            " WHERE published_at IS NOT NULL AND seq > ? ORDER BY seq LIMIT ?",
+            (seq, limit),
+        ).fetchall()
+
+    def published_id(self, message_id: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT seq, message_id, routing_key, body FROM outbox"
+            " WHERE published_at IS NOT NULL AND message_id = ?",
+            (message_id,),
+        ).fetchone()
 
     def mark_published(self, seq: int) -> None:
         self.conn.execute(
