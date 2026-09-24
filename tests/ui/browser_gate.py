@@ -9,7 +9,8 @@ that check, made automatic and made to fail.
 
 It asserts four things, each one a real failure mode, not a print:
 
-1. The page loads and its seven tabs render (`renders_main_tabs`).
+1. The page loads and every top-level page renders in the main nav
+   (`renders_main_nav`).
 2. The page makes zero off-origin network requests (`no_external_requests`).
    `edge/nginx.conf` already sends a CSP that should make this true in any
    spec-compliant browser; this re-proves it from the outside, by recording
@@ -17,7 +18,7 @@ It asserts four things, each one a real failure mode, not a print:
 3. An as-of / coverage timestamp is visible in the header chips
    (`as_of_is_visible`) -- the assignment requires every answer to carry its
    data's provenance, and the header chip is where that first appears.
-4. The Forecast tab's four highlight cards never name a day before the
+4. The Forecast page's four highlight cards never name a day before the
    viewed city's local "today" (`forecast_cards_are_not_stale`). This is F6:
    the cards used to read off the *first stored row* regardless of whether
    the snapshot's window had already passed, so a stale snapshot could label
@@ -47,12 +48,23 @@ from zoneinfo import ZoneInfo
 
 import requests
 from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 UI_BASE_URL = os.environ.get("UI_BASE_URL", "http://edge:8080")
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://edge:8000")
 NAV_TIMEOUT_MS = int(os.environ.get("UI_GATE_NAV_TIMEOUT_MS", "90000"))
 
-TOP_LEVEL_TABS = [
+# `services/ui/app.py:PAGES`, rendered by the `main_nav` radio rather than
+# `st.tabs`: one page renders at a time, so navigating is a real click and
+# everything this script scrapes belongs to the page it selected. The nav's
+# DOM shape is the one `services/ui/theme.py` already styles by -- a single
+# `[role="radiogroup"]` inside the `main_nav` container, one `<label>` per
+# page -- and the radio `<input>`s themselves are visually hidden by that
+# CSS, so the labels are what a browser (and this gate) can see and click.
+MAIN_NAV = '.st-key-main_nav [role="radiogroup"] label'
+
+TOP_LEVEL_PAGES = [
+    "Dashboard",
     "Forecast",
     "Suitability",
     "Trip planner",
@@ -60,6 +72,7 @@ TOP_LEVEL_TABS = [
     "Ask the agent",
     "Update data",
     "Data coverage",
+    "Monitoring",
 ]
 
 MONTH_BY_ABBR = {
@@ -79,20 +92,36 @@ class Failure(Exception):
 def wait_for_app(page: Page) -> None:
     page.goto(UI_BASE_URL, wait_until="load", timeout=NAV_TIMEOUT_MS)
     # Streamlit renders client-side after the initial HTML; wait for the app
-    # shell rather than assuming `load` already painted the tabs.
+    # shell rather than assuming `load` already painted the nav.
     page.wait_for_selector("text=act-on-weather", timeout=NAV_TIMEOUT_MS)
     page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
 
 
-def renders_main_tabs(page: Page) -> None:
-    tabs = page.get_by_role("tab")
-    tabs.first.wait_for(timeout=NAV_TIMEOUT_MS)
-    labels = tabs.all_inner_texts()
-    missing = [name for name in TOP_LEVEL_TABS if not any(name in label for label in labels)]
+def renders_main_nav(page: Page) -> None:
+    options = page.locator(MAIN_NAV)
+    options.first.wait_for(timeout=NAV_TIMEOUT_MS)
+    labels = options.all_inner_texts()
+    missing = [name for name in TOP_LEVEL_PAGES if not any(name in label for label in labels)]
     if missing:
-        raise Failure(f"tabs missing from the rendered page: {missing} (saw: {labels})")
-    if len(labels) < len(TOP_LEVEL_TABS):
-        raise Failure(f"expected {len(TOP_LEVEL_TABS)} top-level tabs, rendered {len(labels)}")
+        raise Failure(f"pages missing from the main nav: {missing} (saw: {labels})")
+    if len(labels) < len(TOP_LEVEL_PAGES):
+        raise Failure(f"expected {len(TOP_LEVEL_PAGES)} top-level pages, rendered {len(labels)}")
+
+
+def open_page(page: Page, name: str) -> None:
+    """Click a nav entry and wait for the rerun that swaps the page in.
+
+    The click is only half of it: the gate then scrapes whatever the page
+    rendered, so a click that silently did not take would have it reading
+    the previous page's DOM and reporting on the wrong thing. Checking that
+    the entry came back selected is what rules that out.
+    """
+    option = page.locator(MAIN_NAV, has_text=name)
+    option.first.click(timeout=NAV_TIMEOUT_MS)
+    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+    selected = page.locator(f"{MAIN_NAV}:has(input:checked)").all_inner_texts()
+    if not any(name in label for label in selected):
+        raise Failure(f"clicking {name!r} in the main nav left {selected} selected")
 
 
 def no_external_requests(requests_seen: list[str]) -> None:
@@ -142,11 +171,20 @@ def _resolve_card_day(suffix: str, today: date) -> date:
 
 
 def forecast_cards_are_not_stale(page: Page, cities: list[dict]) -> None:
-    forecast_tab = page.get_by_role("tab", name=re.compile("Forecast"))
-    forecast_tab.click()
-    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+    open_page(page, "Forecast")
 
+    # Wait for the page to actually paint before reading it. Under the old
+    # `st.tabs` layout every panel was in the DOM from first load, so counting
+    # cards straight after the click happened to work; with one page rendered
+    # at a time it is a race. `networkidle` does not close it -- Streamlit
+    # pushes the rerun over a WebSocket that is already open, so the browser
+    # is network-idle the whole time and the wait returns before a single card
+    # exists. Wait on the two outcomes this check distinguishes instead: the
+    # highlight cards, or the warning that stands in for them.
     warning = page.locator("text=No current forecast for")
+    cards = page.locator('[data-testid="stMetricLabel"]')
+    cards.first.or_(warning.first).wait_for(timeout=NAV_TIMEOUT_MS)
+
     if warning.count() > 0:
         # The whole stored snapshot has fallen behind the real calendar. That
         # is a legitimate state -- a static demo snapshot ages -- and the UI
@@ -167,7 +205,7 @@ def forecast_cards_are_not_stale(page: Page, cities: list[dict]) -> None:
     # fact this script already has.
     city = cities[0]
 
-    labels = page.locator('[data-testid="stMetricLabel"]').all_inner_texts()
+    labels = cards.all_inner_texts()
     card_labels = [label for label in labels if "\N{MIDDLE DOT}" in label]
     if len(card_labels) < 4:
         raise Failure(f"expected 4 highlight cards with a day label, saw: {labels}")
@@ -213,7 +251,7 @@ def main() -> int:
 
         checks = [
             ("page loads", lambda: wait_for_app(page)),
-            ("main tabs render", lambda: renders_main_tabs(page)),
+            ("main nav renders", lambda: renders_main_nav(page)),
             ("as-of timestamp visible", lambda: as_of_is_visible(page)),
             (
                 "forecast cards are not stale (F6)",
@@ -224,7 +262,12 @@ def main() -> int:
             try:
                 check()
                 print(f"PASS: {name}")
-            except Failure as exc:
+            # A locator that never appears raises Playwright's own timeout, not
+            # a Failure. Letting that propagate aborted the whole run and threw
+            # away every assertion after it -- the nav change landed and the
+            # log showed one traceback instead of which checks still held. A
+            # timeout here means the same thing a Failure does: it did not hold.
+            except (Failure, PlaywrightTimeout) as exc:
                 failures.append(f"{name}: {exc}")
                 print(f"FAIL: {name}: {exc}")
 

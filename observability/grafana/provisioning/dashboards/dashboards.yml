@@ -13,7 +13,7 @@ apiVersion: 1
 providers:
   - name: aow
     orgId: 1
-    # No folder: two dashboards do not need a hierarchy, and a folder name is
+    # No folder: three dashboards do not need a hierarchy, and a folder name is
     # one more thing that has to match between this file and a bookmark.
     folder: ""
     type: file

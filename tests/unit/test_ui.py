@@ -38,6 +38,7 @@ if str(UI_DIR) not in sys.path:
 import forecast  # noqa: E402
 
 PAGES = [
+    "dashboard",
     "forecast",
     "suitability",
     "trip-planner",
@@ -45,6 +46,7 @@ PAGES = [
     "ask-the-agent",
     "update-data",
     "data-coverage",
+    "monitoring",
 ]
 
 
@@ -137,6 +139,20 @@ def test_page_selection_is_restored_from_the_url(app):
     assert reloaded.radio[0].value == "ask-the-agent"
 
 
+def test_dashboard_shows_activity_comparison(app):
+    assert app.radio[0].value == "dashboard"
+    assert app.get("plotly_chart"), "the dashboard rendered no activity chart"
+    assert app.get("dataframe"), "the dashboard rendered no activity summary"
+
+
+def test_monitoring_page_links_to_all_dashboards(app):
+    app = _open_page(app, "monitoring")
+    content = "\n".join(element.value for element in app.markdown)
+    assert "http://127.0.0.1:3000/d/aow-service-health" in content
+    assert "http://127.0.0.1:3000/d/aow-pipeline" in content
+    assert "http://127.0.0.1:3000/d/aow-llm-observability" in content
+
+
 def test_the_places_map_renders_a_figure(app):
     app = _open_page(app, "places-map")
     assert app.get("plotly_chart"), "the places map rendered no figure"
@@ -147,6 +163,7 @@ def test_each_forecast_card_names_the_day_it_came_from(app):
     different days. Asserting them together is what catches a regression to
     reading all four off one row, which looked right only because the first
     card happened to be the day the other three were silently using."""
+    app = _open_page(app, "forecast")
     cards = [
         metric
         for metric in app.metric
@@ -161,7 +178,7 @@ def test_each_forecast_card_names_the_day_it_came_from(app):
 
 
 def test_expired_forecast_has_no_highlight_cards(monkeypatch):
-    app = _run(monkeypatch)
+    app = _open_page(_run(monkeypatch), "forecast")
     monkeypatch.setattr(forecast, "utc_now", lambda: datetime(2026, 9, 30, 12, tzinfo=UTC))
     app.run()
     assert not any(metric.label.startswith("Warmest") for metric in app.metric)

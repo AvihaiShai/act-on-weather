@@ -184,6 +184,78 @@ def date_bounds(cov) -> tuple[date, date]:
     )
 
 
+# ----------------------------------------------------------- 0. dashboard ----
+
+
+def page_dashboard(cov) -> None:
+    """A one-day view of the best stored activity in each city."""
+    first, last = date_bounds(cov)
+    today = forecast.local_today(cov["cities"][0]["timezone"])
+    selected_day = st.date_input(
+        "Forecast day",
+        value=min(max(today, first), last),
+        min_value=first,
+        max_value=last,
+        key="dashboard_day",
+    )
+    st.caption(
+        "The highest weather suitability score in each city for this day. "
+        "Scores describe weather comfort; they do not guarantee an activity or venue is available."
+    )
+    rows = cached_get("/scores", start=str(selected_day), end=str(selected_day)) or []
+    best_by_city = {}
+    for row in rows:
+        if row["forecast_date"] != str(selected_day):
+            continue
+        city = row["city_id"]
+        if city not in best_by_city or row["score"] > best_by_city[city]["score"]:
+            best_by_city[city] = row
+    if not best_by_city:
+        st.warning("No activity scores are stored for this day.")
+        return
+
+    names = {city["id"]: city["name"] for city in cov["cities"]}
+    summary = pd.DataFrame(
+        [
+            {
+                "City": names.get(city, city),
+                "Activity": row["activity_label"],
+                "Score": row["score"],
+                "Rating": row["band"],
+                "LLM note": row.get("text")
+                or (
+                    "Deferred — request a note in Suitability"
+                    if row.get("status") == "deferred"
+                    else "Pending"
+                ),
+                "Weather as of": fmt_ts(row.get("weather_as_of")),
+            }
+            for city, row in best_by_city.items()
+        ]
+    ).sort_values("Score", ascending=False)
+    figure = px.bar(
+        summary,
+        x="City",
+        y="Score",
+        color="Rating",
+        text="Activity",
+        color_discrete_map={
+            "great": "#1E874B",
+            "good": "#5DAE72",
+            "fair": "#E2B23C",
+            "poor": "#C0362C",
+        },
+        category_orders={"City": summary["City"].tolist()},
+    )
+    figure.update_yaxes(range=[0, 100])
+    st.plotly_chart(theme.transparent(figure, 420), width="stretch")
+    st.dataframe(summary, hide_index=True, width="stretch")
+    st.caption(
+        "Explore the full weather trend in Forecast, compare every activity in "
+        "Suitability, or build a route in Trip planner."
+    )
+
+
 # ----------------------------------------------------------- 1. forecast ----
 
 
@@ -1710,9 +1782,32 @@ def page_coverage(cov) -> None:
     )
 
 
+# ---------------------------------------------------------- 7. monitoring ----
+
+
+def page_monitoring(cov) -> None:
+    st.caption(
+        "System and LLM metrics are shown in Grafana. Weather and activity "
+        "visualizations are in Dashboard, Forecast, and Suitability."
+    )
+    st.markdown(
+        "Monitoring runs as an optional local service. Start it with "
+        "`docker compose -f compose.yml -f compose.observability.yml up -d` "
+        "after setting `GRAFANA_ADMIN_PASSWORD` in `.env`. "
+        "Sign in with `admin` (or `GRAFANA_ADMIN_USER` from `.env`) and that password."
+    )
+    st.markdown(
+        "- [Open service health dashboard ↗](http://127.0.0.1:3000/d/aow-service-health)\n"
+        "- [Open pipeline dashboard ↗](http://127.0.0.1:3000/d/aow-pipeline)\n"
+        "- [Open LLM observability dashboard ↗](http://127.0.0.1:3000/d/aow-llm-observability)"
+    )
+    st.caption("The monitoring service is available only on this machine by default.")
+
+
 # ---------------------------------------------------------------- layout ----
 
 PAGES = {
+    "dashboard": ("▦  Dashboard", page_dashboard),
     "forecast": ("☀  Forecast", page_forecast),
     "suitability": ("◎  Suitability", page_heatmap),
     "trip-planner": ("◇  Trip planner", page_planner),
@@ -1720,6 +1815,7 @@ PAGES = {
     "ask-the-agent": ("✦  Ask the agent", page_chat),
     "update-data": ("↻  Update data", page_update),
     "data-coverage": ("▥  Data coverage", page_coverage),
+    "monitoring": ("◉  Monitoring", page_monitoring),
 }
 
 
@@ -1729,9 +1825,9 @@ def remember_page() -> None:
     st.session_state["_last_query_page"] = page
 
 
-requested_page = st.query_params.get("page", "forecast")
+requested_page = st.query_params.get("page", "dashboard")
 if requested_page not in PAGES:
-    requested_page = "forecast"
+    requested_page = "dashboard"
 if requested_page != st.session_state.get("_last_query_page"):
     st.session_state["page"] = requested_page
 st.session_state["_last_query_page"] = requested_page

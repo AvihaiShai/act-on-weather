@@ -1185,6 +1185,12 @@ proven.
 
 ## Monitoring
 
+The application's **Dashboard**, **Forecast**, and **Suitability** pages show
+weather and activity recommendations for the assignment's data-visualization
+requirement. Grafana is for the separate LLM-observability bonus and operational
+health: its three dashboards cover Service health, Pipeline, and LLM
+observability.
+
 Opt-in, and deliberately so. `docker compose up -d` starts the application and
 nothing else; a reviewer who does not want a time-series database and a
 dashboard server on their laptop never pays for them.
@@ -1284,7 +1290,7 @@ you can run.
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
 | B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |
-| B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and two provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at `http://127.0.0.1:3000`; [evidence](docs/EVIDENCE-observability-and-recovery.md) |
+| B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, including a dedicated LLM view, all offline | `make monitor`, then Grafana at `http://127.0.0.1:3000`; [evidence](docs/EVIDENCE-observability-and-recovery.md) |
 | B3 | Automatic recovery from failures | **partial, and not as a bonus feature** — reconnect-with-backoff everywhere, `restart: unless-stopped`, healthchecks, automatic re-enrichment, plus an operator backup/restore with a measured RPO/RTO (`make backup-restore`) | `docker compose -f compose.tools.yml run --rm demos reenrich`, then `… demos no-data-loss` |
 
 ---

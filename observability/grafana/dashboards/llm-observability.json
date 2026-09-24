@@ -1,0 +1,134 @@
+{
+  "uid": "aow-llm-observability",
+  "title": "act-on-weather / LLM observability",
+  "description": "The assignment's LLM observability bonus: interactive answer requests and failures, model availability and concurrency, enrichment outcomes, and latency. Weather and activity recommendations are visualized in the application Dashboard and Suitability pages.",
+  "tags": ["aow", "llm"],
+  "timezone": "utc",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Local model server",
+      "description": "Prometheus can scrape the local llama.cpp server. A down model delays generated wording and agent answers; weather ingestion continues.",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "up{job=\"llm\"} or vector(0)", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [{ "type": "value", "options": { "0": { "text": "down", "color": "red", "index": 0 }, "1": { "text": "up", "color": "green", "index": 1 } } }],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Interactive answer requests, last 6h",
+      "description": "Requests to the agent's /ask endpoint. Zero means no one asked a question during this window, not a broken model.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(increase(aow_http_requests_total{service=\"agent\",route=\"/ask\"}[6h])) or vector(0)", "instant": true }],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "min": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Failed agent answers, last 6h",
+      "description": "Agent /ask responses with a 5xx status, plus unhandled exceptions. Validation errors from callers are excluded.",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "(sum(increase(aow_http_requests_total{service=\"agent\",route=\"/ask\",status=~\"5..\"}[6h])) or vector(0)) + (sum(increase(aow_http_exceptions_total{service=\"agent\",route=\"/ask\"}[6h])) or vector(0))", "instant": true }],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Model requests processing now",
+      "description": "The number of concurrent requests being processed by llama.cpp. This is a live gauge, not a request count.",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "llamacpp:requests_processing", "instant": true }],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Agent answer rate by HTTP status",
+      "description": "Interactive /ask requests per second. Status labels separate successful answers from server errors.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (status) (rate(aow_http_requests_total{service=\"agent\",route=\"/ask\"}[5m]))", "legendFormat": "HTTP {{status}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Agent answer latency p95",
+      "description": "95th percentile of /ask request duration, including time waiting for the local model.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(aow_http_request_duration_seconds_bucket{service=\"agent\",route=\"/ask\"}[5m])))", "legendFormat": "p95 /ask" }],
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Recommendation generation outcomes",
+      "description": "Model-generated recommendations per second. Ready means accepted after grounding; invalid and unavailable are failures that leave the recommendation pending.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (result) (rate(aow_enrichment_requests_total[5m]))", "legendFormat": "{{result}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Recommendation generation latency p95",
+      "description": "95th percentile of local model calls made by the enrichment worker.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(aow_enrichment_duration_seconds_bucket[5m])))", "legendFormat": "p95 enrichment" }],
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Model generation throughput",
+      "description": "Tokens generated per second by llama.cpp across interactive answers and background enrichment.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "rate(llamacpp:tokens_predicted_total[5m])", "legendFormat": "tokens/s" }],
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Model work waiting",
+      "description": "Requests deferred in llama.cpp and recommendation rows pending enrichment. They are different units and shown as separate series.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "llamacpp:requests_deferred", "legendFormat": "model requests deferred" },
+        { "refId": "B", "expr": "aow_enrichment_backlog{status=\"pending\"}", "legendFormat": "recommendations pending" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    }
+  ]
+}
