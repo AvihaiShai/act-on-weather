@@ -601,6 +601,20 @@ def render_day(day: dict) -> None:
 
 # ---------------------------------------------------------- places map ----
 
+# The backdrop palette. Everything here recedes: the markers carry Plotly's
+# qualitative colours, so the streets, water and parks under them are low
+# -contrast tints chosen to sit on the #F1F6FA plot background without
+# competing with a marker for attention. Area layers get a fill, line layers
+# only a stroke; which is which is `places_map.AREA_LAYERS`.
+BASEMAP_STYLE = {
+    "coastline": {"line": "#6EAFC4", "width": 1.6},
+    "park": {"line": "rgba(126, 166, 120, 0.35)", "width": 0.6, "fill": "rgba(206, 228, 200, 0.6)"},
+    "water": {"line": "rgba(110, 175, 196, 0.5)", "width": 0.6, "fill": "rgba(186, 219, 234, 0.8)"},
+    "waterway": {"line": "rgba(110, 175, 196, 0.9)", "width": 1.4},
+    "road_minor": {"line": "rgba(168, 178, 192, 0.55)", "width": 0.7},
+    "road_major": {"line": "rgba(138, 150, 168, 0.85)", "width": 1.3},
+}
+
 
 def page_places_map(cov) -> None:
     city_id = city_picker(cov, "map_city")
@@ -610,9 +624,18 @@ def page_places_map(cov) -> None:
         (item.get("as_of") for item in cov["entities"] if item["entity"] == "places"),
         None,
     )
+    # The basemap is a file in this image, so it carries its own as-of stamp
+    # rather than the snapshot's. A city with no staged extract says so here
+    # instead of silently drawing an empty panel.
+    base = places_map.basemap(city_id)
+    basemap_note = (
+        f"OpenStreetMap extract as of {fmt_ts(base.properties.get('as_of'))}"
+        if base
+        else "no street layer staged for this city"
+    )
     st.caption(
         f"Stored places as of {fmt_ts(places_as_of)} · "
-        "local Natural Earth coastline · no online map tiles"
+        f"local {basemap_note} · no online map tiles"
     )
     if not places:
         st.info("No places are stored for this city.")
@@ -643,19 +666,51 @@ def page_places_map(cov) -> None:
 
     center_lat, center_lon = float(city["lat"]), float(city["lon"])
     x_range, y_range = places_map.extent(center_lat, center_lon, located)
-    coast_x, coast_y = places_map.coastline_xy(center_lat, center_lon, x_range, y_range)
     figure = go.Figure()
-    if coast_x:
+
+    # The backdrop goes on first so it stays under the markers. One trace per
+    # layer, not per street: the ways are already joined with `None` gaps.
+    # Every vertex is read from the gzipped extract in this image -- there is
+    # no tile request here, and there is nothing to request offline.
+    projected = places_map.basemap_xy(city_id, center_lat, center_lon, x_range, y_range)
+    for layer in places_map.BASEMAP_LAYERS:
+        if layer not in projected:
+            continue
+        xs, ys = projected[layer]
+        style = BASEMAP_STYLE[layer]
         figure.add_trace(
             go.Scatter(
-                x=coast_x,
-                y=coast_y,
+                x=xs,
+                y=ys,
                 mode="lines",
-                line={"color": "#6EAFC4", "width": 2},
+                name=f"{places_map.TRACE_PREFIX}{layer}",
+                line={"color": style["line"], "width": style["width"]},
+                fill="toself" if layer in places_map.AREA_LAYERS else "none",
+                fillcolor=style.get("fill"),
                 hoverinfo="skip",
                 showlegend=False,
             )
         )
+
+    # Natural Earth is the fallback shoreline, and only the fallback. It is
+    # generalized at 1:10m, which at this view puts Reykjavik's coast several
+    # hundred metres inland of the streets beside it: drawn together the two
+    # layers visibly disagree, and the accurate one is the OSM extract. So it
+    # is drawn for a city that has no extract staged, and not otherwise.
+    if not base:
+        coast_x, coast_y = places_map.coastline_xy(center_lat, center_lon, x_range, y_range)
+        if coast_x:
+            figure.add_trace(
+                go.Scatter(
+                    x=coast_x,
+                    y=coast_y,
+                    mode="lines",
+                    name=f"{places_map.TRACE_PREFIX}ne_coastline",
+                    line={"color": "#6EAFC4", "width": 2},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
 
     palette = px.colors.qualitative.Plotly
     for index, category in enumerate(categories):
@@ -749,8 +804,12 @@ def page_places_map(cov) -> None:
     st.plotly_chart(figure, width="stretch", config={"scrollZoom": True})
     st.caption(
         f"{len(shown)} of {len(places)} stored places shown. "
-        "Pan or zoom to inspect markers. This city-level overview shows a "
-        "generalized coastline; it has no streets or route directions."
+        "Pan or zoom to inspect markers. The backdrop is a staged "
+        "OpenStreetMap extract — © OpenStreetMap contributors, ODbL — covering "
+        "20 km around the city centre: main and secondary streets, rivers, "
+        "coastline, water and parks, simplified to about 12 m. Residential streets, "
+        "buildings and labels are not in it, and it gives no route directions."
+        + ("" if base else " No extract is staged for this city.")
     )
     st.dataframe(
         pd.DataFrame(
@@ -1022,6 +1081,9 @@ def page_coverage(cov) -> None:
         "- **Weather** — Open-Meteo forecast API, CC BY 4.0, no API key\n"
         "- **Places** — Wikidata SPARQL, CC0 (OpenStreetMap via Overpass, ODbL, "
         "when selected at staging time)\n"
+        "- **Places map backdrop** — a 20 km OpenStreetMap extract per city, "
+        "© OpenStreetMap contributors, ODbL, staged into `data/map/` and read "
+        "from this image; plus Natural Earth 1:10m coastline, public domain\n"
         "- **Background facts** — Wikipedia REST summaries, CC BY-SA 4.0: the city "
         "article plus one article per venue, resolved through its Wikidata sitelink\n"
         "- **Events (verified)** — `data/events.seed.jsonl`, hand-verified real "

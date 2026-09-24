@@ -92,7 +92,7 @@ def _run(monkeypatch, *, offline=False) -> AppTest:
     # The app caches its reads, and the cache outlives a single AppTest run.
     st.cache_data.clear()
 
-    # Generous: the places map parses a 3 MB coastline file on first render,
+    # Generous: the places map parses a staged city basemap on first render,
     # and CPU runners are slow. A timeout here would be a flaky failure, not a
     # useful one.
     return AppTest.from_file(str(APP), default_timeout=120).run()
@@ -111,10 +111,12 @@ def test_every_tab_renders_without_exception(app, name):
     assert matching[0].children, f"the {name!r} tab rendered nothing"
 
 
-def test_the_places_map_draws_from_the_bundled_coastline(app):
-    """M10's map is a plotly figure over a coastline file shipped in the image,
-    not a tile server. A tab that merely rendered its controls would still pass
-    the tab test above, so the figure itself is asserted here."""
+def test_the_places_map_renders_a_figure(app):
+    """A tab that merely rendered its controls would pass the tab test above.
+
+    Assert the figure itself here; `test_places_map.py` verifies that the staged
+    basemap geometry reaches it for Rome and London.
+    """
     map_tab = next(tab for tab in app.tabs if "Places map" in tab.label)
     assert map_tab.get("plotly_chart"), "the places map rendered no figure"
 

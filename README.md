@@ -148,7 +148,8 @@ header, which carries the as-of stamp and the forecast window.
   [Choosing a day's activity](#choosing-a-days-activity).
 * **Places map** — filter stored places by city, category or name; inspect their
   coordinates and source links, and highlight stops from the current itinerary.
-  The coastline is bundled locally, so pan and zoom work without map tiles.
+  Streets, water and parks are staged with the coastline and bundled locally,
+  so pan and zoom work without map tiles.
 * **Ask the agent** — chat, with a panel showing exactly which rows the answer used.
 * **Update data** — all three M12 update paths in one place: connected refresh,
   correcting a stored record, and re-wording with the local model.
@@ -391,7 +392,8 @@ carries the as-of stamp that says how old it is.
 |---|---|---|---|
 | Weather | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0 | fetched by `services/ingestor/fetch_content.py`, committed to `data/snapshot/weather.jsonl` |
 | Places | **Wikidata** (default) or OpenStreetMap via Overpass | CC0 / ODbL © OpenStreetMap contributors | same script; every row keeps its own source URL |
-| Map coastline | [Natural Earth 1:10m](https://www.naturalearthdata.com/downloads/10m-physical-vectors/) | public domain | bundled in `data/map/`; source revision and checksum in `data/map/SOURCE.md` |
+| Map backdrop | OpenStreetMap via Overpass | ODbL © OpenStreetMap contributors | a 20 km extract per city — streets, water, coastline, parks — staged by `services/ingestor/fetch_basemap.py` into `data/map/<city>.basemap.geojson.gz`; 1.2 MB for all five |
+| Map fallback shoreline | [Natural Earth 1:10m](https://www.naturalearthdata.com/downloads/10m-physical-vectors/) | public domain | bundled in `data/map/`; drawn only for a city with no staged extract. Source revision and checksum in `data/map/SOURCE.md` |
 | Background | Wikipedia REST summaries | CC BY-SA 4.0 | same script; the city article plus one article per venue, resolved through its Wikidata sitelink |
 | Events (verified) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. Seven rows, all London. **The only events a default run stores.** |
 | Events (generated samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …*. **Demo mode only** (`make up-demo`). |
@@ -650,12 +652,17 @@ Stated, not implied:
   for Rome, Lisbon, Tel Aviv and Reykjavík, and the trip planner has no events
   to place there. `make up-demo` fills the gap with labelled generated rows for
   demonstration; it does not close it.
-* **The places map is a marker plot, not a map service.** Stored places are
-  drawn as points on a local equirectangular projection over a generalized
-  Natural Earth coastline. A tile map was planned and cut, deliberately: tiles
-  are a runtime download and the air-gap rule outranks the cartography. So
-  there is no street detail, no route directions, no building-level zoom and
-  no live tiles.
+* **The places map is a bundled extract, not a map service.** Stored places are
+  drawn as points on a local equirectangular projection over a 20 km
+  OpenStreetMap extract per city — main and secondary streets, rivers,
+  coastline, water and parks, staged once while connected and read from the
+  image thereafter. A tile map was planned and cut, deliberately: tiles are a
+  runtime download and the air-gap rule outranks the cartography. What that
+  costs, and it is visible: no residential streets, no buildings, no labels, no
+  route directions, no building-level zoom, geometry simplified to about 12 m,
+  and nothing at all beyond 20 km from the city centre. Water mapped in OSM as
+  a multipolygon relation — the Thames is the one that shows — draws as its
+  centreline rather than as a filled channel.
 * **The agent routes deterministically in code** and uses the model only to
   phrase retrieved rows. It is not a general-purpose assistant, and that is the
   point.
