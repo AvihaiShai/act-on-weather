@@ -41,6 +41,15 @@ event_types:
             "performance", "performances", "opera", "ballet"]
     claims: ["theatre performance", "stage performance", "musical", "opera", "ballet"]
 
+  comedy:
+    label: comedy show
+    # Added when the verified feed gained its first comedy listing. Without an
+    # entry here "any comedy on this week?" resolved to `theatre`, because
+    # theatre owns the word "shows" -- so the one comedy row was the only
+    # category the question could not reach.
+    words: ["comedy", "comedian", "comedians", "stand-up", "standup", "stand up"]
+    claims: ["comedy show", "stand-up show", "comedy gig"]
+
   exhibition:
     label: exhibition
     words: ["exhibition", "exhibitions", "exhibit", "exhibits"]

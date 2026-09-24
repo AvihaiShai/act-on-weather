@@ -145,14 +145,20 @@ def header(cov, health) -> None:
         unsafe_allow_html=True,
     )
     if DEMO_EVENTS:
+        # Counted from the same coverage row the chip above uses. This wording
+        # used to carry the numbers as literals, and went stale the first time
+        # the verified feed grew.
+        _events = entities.get("events") or {}
+        _samples = int(_events.get("samples") or 0)
+        _verified = int(_events.get("rows") or 0) - _samples
         st.warning(
-            "**Demo mode.** This run also stores 45 **generated sample events** so the "
-            "trip planner and the agent can be exercised in all five cities. They are "
-            "titled *Sample: …*, marked `is_sample` in the database, and labelled "
-            "wherever they appear. Only seven events in this system are real listings, "
-            "and all seven are in London. A default run (`docker compose up -d`, "
-            "without `compose.demo.yml`) stores those seven and nothing else, and "
-            "deletes any sample row left over from a demo run.",
+            f"**Demo mode.** This run also stores {_samples} **generated sample events** "
+            "so the trip planner and the agent can be exercised with a denser calendar. "
+            "They are titled *Sample: …*, marked `is_sample` in the database, and "
+            f"labelled wherever they appear. Only {_verified} events in this system are "
+            "real listings. A default run (`docker compose up -d`, without "
+            f"`compose.demo.yml`) stores those {_verified} and nothing else, and deletes "
+            "any sample row left over from a demo run.",
             icon="⚠",
         )
 
@@ -1220,7 +1226,8 @@ def page_coverage(cov) -> None:
         "- **Background facts** — Wikipedia REST summaries, CC BY-SA 4.0: the city "
         "article plus one article per venue, resolved through its Wikidata sitelink\n"
         "- **Events (verified)** — `data/events.seed.jsonl`, hand-verified real "
-        "listings, each row carrying its own source URL. Seven rows, all in London. "
+        "listings, each row carrying its own source URL. 26 rows across all five "
+        "cities, thin and uneven. "
         "These are the only events a default run stores.\n"
         "- **Events (generated samples)** — `data/events.samples.jsonl`, replayed "
         "only in demo mode (`compose.demo.yml`). Titled *Sample: …*, marked "
