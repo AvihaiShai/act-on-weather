@@ -5,3 +5,8 @@
 fastapi==0.141.1
 starlette==1.3.1
 uvicorn[standard]==0.32.1
+
+# Prometheus instrumentation (services/common/metrics.py). It lives here and
+# not in common/requirements.txt because it is a service-layer concern: the
+# shared library defines the metrics, but only a running service exports them.
+prometheus-client==0.21.1

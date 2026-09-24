@@ -1,0 +1,40 @@
+%% Which RabbitMQ plugins the broker starts with.
+%%
+%% Honest framing first, because the alternative is a comment that flatters
+%% the change: the pinned image ALREADY ships exactly this list. Verified --
+%% `cat /etc/rabbitmq/enabled_plugins` inside
+%% rabbitmq@sha256:ce634665a8e7262384a793581c20cb8a46343887446eb391b77c814febeca4b2
+%% prints `[rabbitmq_management,rabbitmq_prometheus].`, and a broker started
+%% from that image with no mount at all already serves :15692/metrics. So this
+%% file does not switch the exporter on. It states, in the repository, which
+%% two plugins the monitoring stack depends on, so that a later image bump
+%% that drops one fails loudly here instead of leaving Prometheus scraping a
+%% closed port and every queue-depth alert silently never firing.
+%%
+%%   rabbitmq_management  - the HTTP management API on 15672. Deliberately not
+%%                          published; it is how an operator inspects queues
+%%                          from inside the stack (`docker compose exec`), and
+%%                          it is the reason the image carries the
+%%                          `-management` tag at all.
+%%   rabbitmq_prometheus  - the exporter on 15692. This is the ONLY honest
+%%                          source of queue and dead-letter depth. No
+%%                          application metric can report it: a consumer that
+%%                          has crashed cannot tell you how far behind it is,
+%%                          and that is precisely the moment the number
+%%                          matters.
+%%
+%% Both plugins live inside the pinned image -- verified:
+%% /plugins/rabbitmq_management-4.3.6, /plugins/rabbitmq_management_agent-4.3.6
+%% and /plugins/rabbitmq_prometheus-4.3.6 are present. Enabling them downloads
+%% nothing, which is what makes this safe on an air-gapped host.
+%%
+%% Why BOTH are named even though only the exporter is new: this file is
+%% bind-mounted over /etc/rabbitmq/enabled_plugins, so it REPLACES the image's
+%% copy rather than adding to it. Listing only rabbitmq_prometheus here would
+%% turn the management API off, and that failure surfaces much later as a 404
+%% from a diagnostic command rather than as a start-up error.
+%%
+%% Format: an Erlang term read by file:consult/1. One list, and the trailing
+%% period is required -- without it RabbitMQ cannot parse the file and starts
+%% with no plugins at all. `%%` lines are comments and are ignored.
+[rabbitmq_management,rabbitmq_prometheus].

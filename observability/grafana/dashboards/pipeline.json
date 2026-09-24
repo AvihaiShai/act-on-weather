@@ -1,0 +1,458 @@
+{
+  "uid": "aow-pipeline",
+  "title": "act-on-weather / Pipeline",
+  "description": "The delivery path, left to right: accepted -> outbox -> broker -> consumer -> database, then enrichment and freshness. This is the dashboard that shows whether the no-data-loss guarantee (M11) is being kept. Read the top row first: it is the only part that can show data at risk. Core panel types only (timeseries, stat, bargauge) -- a plugin panel would have to be downloaded from grafana.com, and this stack has no route out.",
+  "tags": ["aow"],
+  "timezone": "utc",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Outbox: accepted records not yet published, by producer",
+      "description": "Where the guarantee begins. A record is fsynced into the producer's outbox -- a named volume, so it survives the container -- before the caller is told 'accepted'. Pending means accepted and durable but not yet on the broker. A spike during a broker restart is the system working; a plateau that never drains is not.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (aow_outbox_entries{state=\"pending\"})",
+          "legendFormat": "{{service}} pending"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (service) (aow_outbox_entries{state=\"published\"})",
+          "legendFormat": "{{service}} published (retained)",
+          "hide": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Oldest unpublished record, by producer (seconds) -- AowOutboxStuck fires above 300s",
+      "description": "The M11 signal, and the single most important number on this dashboard. It is how long the longest-stranded accepted record has been waiting to reach the broker. Zero means nothing is pending. It is not data loss -- the row is durable -- but it is the window in which loss would become possible if the volume were destroyed too, so it is the honest measure of the guarantee's exposure.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "aow_outbox_oldest_pending_age_seconds",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 300 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Publish failures to the broker (failures/second, by producer)",
+      "description": "Counts attempts that did not reach RabbitMQ. A failed publish leaves the row pending and is retried with backoff, so this rising is not loss -- it is the early warning for the panel to its left. Almost always the broker being down or a wrong RABBITMQ_PASSWORD.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (rate(aow_outbox_publish_failures_total[5m]))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Messages published to the exchange (messages/second, by routing key)",
+      "description": "The other side of the outbox: what actually left. Compare with the consumer-throughput panel below -- a sustained gap between the two is the queue filling up, which is exactly what AowQueueBacklog watches.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (routing_key) (rate(aow_messages_published_total[5m]))",
+          "legendFormat": "{{routing_key}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Queue depth: aow.ingest (messages waiting) -- AowQueueBacklog fires above 500",
+      "description": "From the broker's own exporter, not from the consumer. That is deliberate and it is the whole point: a consumer that has crashed cannot report how far behind it is, and that is precisely when this number matters. Note the series comes from Prometheus' /metrics/detailed scrape -- the aggregated endpoint publishes rabbitmq_queue_messages with NO queue label, summing the ingest and dead-letter queues together.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rabbitmq_detailed_queue_messages{queue=\"aow.ingest\"}",
+          "legendFormat": "aow.ingest"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "showPoints": "never", "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 500 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Dead-lettered messages in aow.dlq -- `make dlq` to inspect, `make redrive` to replay",
+      "description": "Messages the consumer rejected enough times to be quarantined. They are parked, NOT lost: the queue is durable, and writes are idempotent, so replaying one that did land the first time cannot double-count it. Anything above zero for five minutes fires AowDeadLetters.",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rabbitmq_detailed_queue_messages{queue=\"aow.dlq\"} or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Since the consumer last committed a message (seconds)",
+      "description": "Idle is normal -- this stack ingests in bursts, not continuously -- so read this together with the queue-depth panel. Queue depth high AND this number climbing is a stuck consumer. Queue depth zero and this number climbing just means nothing has been published lately.",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - aow_consumer_last_message_timestamp_seconds",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Consumer outcomes (messages/second: stored, duplicate, rejected)",
+      "description": "The three things that can happen to a message, and all three are worth seeing. 'duplicate' is not an error -- delivery is at-least-once and writes are idempotent, so duplicates are the guarantee working, and a redrive should produce a visible burst of them. 'rejected' sustained is AowConsumerRejecting and usually means a producer and consumer disagree about a schema.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(aow_messages_consumed_total[5m]))",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "rejected" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "stored" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Message processing time p95, by routing key (seconds)",
+      "description": "Measured from the consumer picking a message up to the database commit that precedes the ack. Ack after commit is what makes at-least-once true, so this number is also the width of the window in which a crash produces a redelivery rather than a loss.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (routing_key, le) (rate(aow_message_processing_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{routing_key}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Enrichment backlog: recommendations awaiting the model",
+      "description": "'pending' is waiting to be worded. 'deferred' is a deliberate decision, not a failure: the rule engine scores all 18 activities per city-day because that is free, and only the top ENRICH_TOP_N are sent to a CPU-bound model -- the rest are stored deferred with their deterministic score intact. A deferred row is still a complete, usable recommendation.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "aow_enrichment_backlog",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Enrichment outcomes (requests/second: ready, invalid, unavailable)",
+      "description": "'unavailable' is the model server being unreachable; 'invalid' is the model answering with something the grounding check refuses. Different causes, different fixes, so they are different alerts: AowModelUnavailable and AowEnrichmentFailing. In both cases the recommendation stays pending rather than being stored with wording nobody verified -- refusing is the designed behaviour.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(aow_enrichment_requests_total[5m]))",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never", "stacking": { "mode": "normal" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "ready" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "invalid" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "unavailable" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Model wording time p95 (seconds per recommendation)",
+      "description": "One CPU generation from the local 1.7B model. Several seconds is normal here and is why ENRICH_TOP_N exists at all. If this and the API's p95 rise together, the model server is contended and LLM_PARALLEL is the knob -- compose.yml explains why it is 2.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aow_enrichment_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "id": 13,
+      "type": "bargauge",
+      "title": "Data freshness: time since the last successful ingestion, by source (seconds)",
+      "description": "What every answer's as-of timestamp is ultimately derived from. On an air-gapped host this growing past a day is expected and not a fault -- new weather needs connectivity, and the agent answers 'no data for that date' rather than guessing. AowIngestionStale fires at 24h so that an operator who CAN connect knows to run `make refresh`.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - aow_ingestion_last_success_timestamp_seconds",
+          "instant": true,
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 86400 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Ingestion runs in the last 24h, by source and outcome",
+      "description": "Counts whole fetch cycles, not records. A run that failed is not a lost record -- nothing was accepted, so nothing needs recovering; it simply has to be re-fetched while connected. That distinction is the boundary of the M11 guarantee, and this panel is where it is visible.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source, result) (increase(aow_ingestion_runs_total[24h]))",
+          "legendFormat": "{{source}} {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*failed.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    }
+  ]
+}

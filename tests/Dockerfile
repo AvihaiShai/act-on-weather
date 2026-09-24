@@ -27,6 +27,16 @@ COPY pytest.ini ruff.toml ./
 # test_refresh.py reads compose.tools.yml from the same set: the
 # operator-refresh container must not be on the egress network.
 COPY compose*.yml .env.example ./
+# test_observability.py reads the monitoring configuration as shipped: the
+# Prometheus scrape config and alert rules, Grafana's provisioning and both
+# dashboards. Its most valuable assertion is that every aow_ metric named in a
+# PromQL expression is one the services actually export -- a typo there is
+# valid PromQL that evaluates to nothing forever, so it has to fail in a test
+# rather than during the incident the alert was written for. `edge/` comes
+# with it for the one assertion that the API's /metrics is not served on the
+# published port.
+COPY observability/ ./observability/
+COPY edge/ ./edge/
 COPY data/ ./data/
 COPY services/ ./services/
 # scripts/refresh_report.py assembles the report the operator refresh files for

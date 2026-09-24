@@ -23,12 +23,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime
 
 import psycopg
 import yaml
 
-from ..common import coast, config, rules, schemas
+from ..common import coast, config, metrics, rules, schemas
 from ..common.db import Pool
 from ..common.envelope import Envelope
 from ..common.rabbit import Poison, consume
@@ -588,7 +589,13 @@ HANDLERS[config.RK_ITINERARY] = upsert_itinerary
 # ----------------------------------------------------------------- handle ----
 
 
-def handle(routing_key: str, body: bytes, _message_id: str | None) -> None:
+def process(routing_key: str, body: bytes, _message_id: str | None) -> str:
+    """Store one delivery. Returns 'stored', or 'duplicate' if it was already in.
+
+    Raises Poison for a message that can never succeed, and anything else for a
+    failure worth retrying. `handle` below wraps this and is what the broker
+    loop actually calls.
+    """
     try:
         envelope = Envelope.from_bytes(body)
     except Exception as exc:  # noqa: BLE001 - anything unparseable is poison
@@ -616,7 +623,7 @@ def handle(routing_key: str, body: bytes, _message_id: str | None) -> None:
             )
             if cur.fetchone() is None:
                 log.info("duplicate %s, already stored", envelope.message_id)
-                return
+                return "duplicate"
 
             if envelope.routing_key == config.RK_WEATHER:
                 changed = upsert_weather(cur, payload)
@@ -632,9 +639,55 @@ def handle(routing_key: str, body: bytes, _message_id: str | None) -> None:
         pool.drop()
         raise
     log.info("stored %s %s", envelope.routing_key, envelope.message_id)
+    return "stored"
+
+
+def handle(routing_key: str, body: bytes, message_id: str | None) -> None:
+    """`process`, with the outcome counted where the outcome is actually decided.
+
+    The counting sits outside the transaction on purpose. `stored` is
+    incremented only once `process` has returned, which is after
+    `with conn.transaction()` committed -- a message counted on the way in would
+    be claiming exactly the property M11 rests on, and would be wrong every time
+    a commit failed. `rejected` is counted where Poison is raised, which is the
+    dead-letter path and is terminal.
+
+    A delivery that fails any other way is deliberately counted as nothing. It
+    is going back on the queue and will arrive again, so counting it here would
+    count one record several times over and make a database outage look like a
+    flood of new work. Its effect is visible as queue depth instead, which comes
+    from RabbitMQ's own exporter rather than from here -- one source of truth
+    per fact.
+
+    What remains uncounted is the gap the delivery semantics already have: the
+    ack happens in `rabbit.consume` after this returns, so a crash in between
+    counts one `stored` now and one `duplicate` on redelivery. That is
+    at-least-once being honest about itself, and it is why `stored` is a
+    throughput signal while `ingest_log` stays the record of what was written.
+    """
+    started = time.perf_counter()
+    key = metrics.safe_routing_key(routing_key)
+    result: str | None = None
+    try:
+        result = process(routing_key, body, message_id)
+    except Poison:
+        result = "rejected"
+        raise
+    finally:
+        if result is not None:
+            metrics.MESSAGES_CONSUMED.labels(routing_key=key, result=result).inc()
+            metrics.MESSAGE_PROCESSING.labels(routing_key=key).observe(
+                time.perf_counter() - started
+            )
+            metrics.CONSUMER_LAST_MESSAGE.set(time.time())
 
 
 def main() -> None:
+    # The consumer serves no HTTP of its own, so Prometheus gets an endpoint of
+    # its own here. Started before the first database call on purpose: a
+    # consumer waiting on Postgres is exactly the state worth being able to
+    # scrape.
+    metrics.start_metrics_server()
     conn = pool.conn
     seed_cities(conn)
     enforce_event_mode(conn)

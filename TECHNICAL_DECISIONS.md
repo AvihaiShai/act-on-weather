@@ -114,7 +114,8 @@ Pre-agreed cut order, taken in this order as the deadline approached:
 | Itinerary editing → generate-and-save only | M9's editing affordance. Building and saving both work. |
 | The markers map page | Visual breadth on M10; the forecast chart, the heatmap and the coverage banner carry it. |
 | Marine data and surfing | No marine provider, so surfing is not among the scored defaults. Typed as a free-text activity it is answered from the weather on hand, with that caveat stated. |
-| B1, B2, B3 (bonuses) | No Prometheus/Grafana stack and no integration-test container. `llm` exposes llama.cpp's own `--metrics`; the demo scripts are the integration evidence. |
+| B1, B3 (bonuses) | No integration-test container beyond CI's Compose job; the demo scripts are the integration evidence. |
+| B2 (bonus) | Met. Prometheus and Grafana ship as an opt-in overlay (`compose.observability.yml`), pinned and air-gapped, with request/error/latency and pipeline metrics, 11 alert rules and two provisioned dashboards. No Alertmanager: a single air-gapped host has nowhere to route to. |
 
 Never cut, and all verified: one-command startup, the full outbox → queue →
 consumer → Postgres path, the coverage gate and as-of footers, both example

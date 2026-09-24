@@ -1,0 +1,295 @@
+{
+  "uid": "aow-service-health",
+  "title": "act-on-weather / Service health",
+  "description": "Is the stack answering, and how well. Hand-written rather than exported, so it stays readable as a file. Every panel uses a core Grafana visualisation (timeseries, stat, table) -- no plugin panels, because a plugin is something Grafana would have to download from grafana.com and this stack has no route out.",
+  "tags": ["aow"],
+  "timezone": "utc",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Firing alerts (there is no Alertmanager -- this panel is the delivery path)",
+      "description": "ALERTS is the series Prometheus writes for every rule it is evaluating. This stack ships no Alertmanager on purpose: an air-gapped single host has no mail relay and no webhook target, so a routing component would have nowhere to route. observability/prometheus/alerts.yml gives the full argument, and every rule's description says what to do about it. An empty table here is the healthy state.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "{{alertname}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "align": "left" } },
+        "overrides": []
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Scrape targets -- 1 is up, 0 is unreachable",
+      "description": "Written by Prometheus itself, not by the services, so a container that is crash-looping before it can serve a single metric still shows here as 0. That is the difference between 'the service reports a problem' and 'the service is gone', and only the second one is visible in this panel.",
+      "gridPos": { "h": 8, "w": 10, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-background" } }]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Application services currently reachable (of 5)",
+      "description": "api, agent, ingestor, consumer, enricher. Anything below 5 means AowServiceDown is either firing or about to: the rule allows two minutes of absence before it fires, so this panel moves first.",
+      "gridPos": { "h": 4, "w": 7, "x": 10, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(up{job=~\"aow-.*\"} == 1) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 5,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 4 },
+              { "color": "green", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Local model server",
+      "description": "Deliberately separate from the count beside it, because the model being down is NOT a pipeline outage. The enricher polls pending recommendations instead of sitting in the ingest path, so weather is fetched, published and stored exactly as normal while this reads 0; what changes is that recommendations stay 'pending' until `make reenrich` catches them up.",
+      "gridPos": { "h": 4, "w": 7, "x": 17, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"llm\"} or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "DOWN -- weather unaffected", "color": "orange", "index": 0 },
+                "1": { "text": "up", "color": "green", "index": 1 }
+              }
+            }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "HTTP request rate by service and route (requests/second)",
+      "description": "route is the FastAPI route TEMPLATE -- /weather/{city}, not /weather/Rome -- so five cities are one series rather than five. Anything that matched no route at all is reported as <unmatched>, which is usually a scanner or a typo rather than a bug.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, route) (rate(aow_http_requests_total[5m]))",
+          "legendFormat": "{{service}} {{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Server-error ratio by service and route (share of requests returning 5xx)",
+      "description": "A ratio rather than a count, for the same reason AowServerErrors is written as one: a raw 5xx count is large on a busy service that is mostly fine and small on an idle service that is failing everything. AowServerErrors fires above 0.05 sustained for ten minutes.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, route) (rate(aow_http_requests_total{status=~\"5..\"}[5m])) / sum by (service, route) (rate(aow_http_requests_total[5m]))",
+          "legendFormat": "{{service}} {{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Request duration p50 (typical request, seconds)",
+      "description": "The median, from the aow_http_request_duration_seconds histogram. Read it next to the p95 panel: p50 flat while p95 climbs means a slow tail (one endpoint, or contention on the model server); both climbing together means the whole host is loaded.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (service, route, le) (rate(aow_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{service}} {{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Request duration p95 (slow tail, seconds) -- AowHighLatency fires above 5s",
+      "description": "What a user actually waits for. The agent's chat route is expected to sit high on a CPU-only host: a 1.7B model generating a grounded answer is seconds, not milliseconds. The 5s threshold on AowHighLatency was chosen above that normal cost so a healthy answer does not page anyone.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (service, route, le) (rate(aow_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{service}} {{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Unhandled exceptions by class (exceptions/second)",
+      "description": "The first place to look when the error-ratio panel goes red, because it names the cause rather than the symptom: an OperationalError is Postgres, a TimeoutError is usually the model server, a ValidationError is a caller sending the wrong shape and is arguably not our fault at all.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, route, type) (rate(aow_http_exceptions_total[5m]))",
+          "legendFormat": "{{service}} {{route}} {{type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never", "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    }
+  ]
+}

@@ -29,3 +29,7 @@ review-*.png
 # submission. Narrow paths, so a deliberate doc is never caught by accident.
 /DEVOPS_REVIEW.md
 /REVIEW_PLAN.md
+
+# Operational backups (scripts/backup-state.sh, demos/06_backup_restore.sh).
+# Real database and outbox contents, written beside the stack. Never committed.
+backups/
