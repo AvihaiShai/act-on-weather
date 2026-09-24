@@ -157,10 +157,20 @@ recommendation was written, and does not render the UI. Read
 `scripts/release-smoke.py` directly for the exact checks.
 
 **This does not duplicate F10's air-gap rig**, and is not trying to. That rig
-is a physically separate `docker-ce` host with `nftables` dropping DNS,
-raw-IP and ICMP -- a real network-isolation certification a GitHub-hosted
-runner cannot reproduce, because the runner itself has internet access
-throughout this job. What step 9 proves instead is narrower and cheaper to
+is a *separate Docker engine* -- its own `docker-ce` daemon and image store,
+holding no images at all before the install -- with `nftables` dropping DNS,
+raw-IP TCP, HTTPS and ICMP, verified from inside a container on a routable
+network. It is **not** a physically separate machine and not a separate VM,
+and it is not a certification that the stack runs on hardware that has never
+seen a network; `docs/RELEASE-PROOF.md` §2 states exactly what it does and
+does not establish, and that section is the authority on it rather than this
+paragraph. What it has that a GitHub-hosted runner cannot have is an engine
+with **no image cache to fall back on and no reachable egress**, which is the
+difference that matters here: the runner has internet throughout this job, and
+its own `docker pull` during packaging leaves the layers in its store. A
+bundle whose archive was missing every layer would still install on this
+runner for that reason -- which is not hypothetical, it is the defect F10
+found. What step 9 proves instead is narrower and cheaper to
 run on every release: *the exact tar this job just built and verified boots
 the stack and the stack holds real data, using no image the bundle did not
 already carry.* That is worth checking every time even though it is not an

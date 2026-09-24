@@ -1494,14 +1494,20 @@ Stated, not implied:
   [production path](#production-path-kubernetes--openshift) below is the answer
   for a real on-prem install. `scripts/restore-offline.sh` additionally needs
   the release folder's `.env` to be the one the dump was taken under.
-* **The release has been installed in isolation, not on a disconnected host.**
-  Package, whole-folder checksums, image-digest verification, `--pull never`,
-  first install, upgrade, a failed upgrade and a restore-backed rollback all
-  ran — but in a second Compose project on the staging machine, with the host
-  NIC up. The containers had no route out (`internal: true`, `errno 101` from
-  every service), which is a strong simulation and not a separate-host
-  air-gap certification. [Offline release and
-  installation](#offline-release-and-installation) lists exactly what ran.
+* **The release has been installed on a separate engine, not on separate
+  hardware.** Package, whole-folder checksums, image-digest verification,
+  `--pull never`, first install, an upgrade with live data, a failed migration
+  and a restore-backed rollback all ran on a *separate Docker engine* — its own
+  `docker-ce` daemon and image store, holding no images before the install —
+  with outbound traffic dropped by `nftables` and the cut verified from inside
+  a container on a routable network. That is what caught the defect a
+  same-host run could not: an engine that packaged the bundle already holds the
+  layers, so it installs a broken archive happily. What it is still not is
+  separate hardware: all WSL2 distributions share one utility VM, kernel and
+  network-namespace root, so the cut is firewall-enforced inside a shared VM
+  and the bundle travelled over a hypervisor filesystem share rather than
+  physical media. [docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) §2 states the
+  boundary precisely, and §3 lists exactly what ran.
 * **Rollback is two commands, not one, and the second needs a dump.** An image
   rollback cannot undo a migration, so a release that migrates destructively is
   recoverable only from the `pg_dump` the failed install took on its way in.
