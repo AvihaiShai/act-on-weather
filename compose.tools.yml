@@ -47,7 +47,12 @@ services:
   # outright on a Linux host where ./models belongs to the invoking user.
   stage:
     image: python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
-    mem_limit: 256m
+    # A hosted release stage was killed with exit 137 after 705 MiB of the
+    # 1.2 GiB model download; an identical rerun passed. The cause was not
+    # confirmed, but 256 MiB leaves little room for host-dependent file-cache
+    # accounting while writing and hashing this file. This one-shot container
+    # exits before the model server or the application stack starts.
+    mem_limit: 2g
     working_dir: /work
     environment:
       # The one place the artefact location is configured. Override it in .env
