@@ -23,6 +23,7 @@ volumes:
   rabbitdata:
   ingestor_outbox:
   api_outbox:
+  enricher_outbox:
 
 x-queue-env: &queue_env
   RABBITMQ_USER: ${RABBITMQ_USER:-aow}
@@ -199,6 +200,8 @@ services:
       LLM_MODEL: ${LLM_MODEL:-Qwen3-1.7B-Q4_K_M}
       ENRICH_POLL_SECONDS: ${ENRICH_POLL_SECONDS:-60}
       ENRICH_BATCH: ${ENRICH_BATCH:-8}
+    volumes:
+      - enricher_outbox:/outbox
     networks: [backend]
 
   # The agent (M7-M9). Router-first: code resolves the city, the dates and the

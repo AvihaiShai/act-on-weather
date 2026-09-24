@@ -42,10 +42,10 @@ echo "ingestor reconciliation audit: $ingestor_audit"
 # ---------------------------------------------------------------------------
 # M11: one acceptance per failure mode, each with its own message_id.
 #
-# Drills 1-3 accept through the API, drills 4-5 through the ingestor, so both
-# producer outboxes are driven through an outage rather than only audited. In
-# every one the record is only ever as safe as the fsynced outbox row makes
-# it. Each is then checked twice: once on its own, and once at the end with
+# Drills 1-3 accept through the API, drills 4-5 through the ingestor, so the
+# API and ingestor outboxes are driven through an outage rather than only
+# audited. In every one the record is only as safe as the fsynced outbox row
+# makes it. Each is then checked twice: once on its own, and once at the end with
 # the others after a full restart. The second check is the one that matters --
 # a write that was acknowledged but never committed is visible to nobody and
 # survives nothing, so the final gate asks a separate reader for every ID this
@@ -173,7 +173,7 @@ dc exec -T -e AOW_TEST_MESSAGE_IDS="$drill_ids" api python - < tests/integration
 # An uncommitted write survives in a session; it does not survive this.
 dc restart postgres rabbitmq ingestor consumer api
 dc exec -T -e AOW_TEST_MESSAGE_IDS="$drill_ids" api python - < tests/integration/verify_db_recovery.py
-echo "PASS: five outages across both producer outboxes each committed once and survived a full restart"
+echo "PASS: five outages across the API and ingestor outboxes each committed once and survived a full restart"
 
 # ---------------------------------------------------------------------------
 # Reproduce the historical ACKed-but-missing state in this disposable project.

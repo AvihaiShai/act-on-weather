@@ -28,8 +28,8 @@ from ..common import config, queries, rules
 from ..common.db import Pool
 from ..common.llm import LlmClient, LlmInvalidOutput, LlmUnavailable
 from . import dates, grounding
-from .planning import plan_day
-from .router import Retrieval, Router, footer
+from .planning import plan_day, venue_places
+from .router import Retrieval, Router, footer, where_gap
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -100,6 +100,9 @@ def respond(result: Retrieval, answer: str, *, llm_called: bool, note: str | Non
             "places": len(result.places),
             "events": len(result.events),
             "facts": len(result.facts),
+            # Venues are counted apart from places: they are the rows the
+            # `where` route stood behind as an answer, not context.
+            "venues": sum(len(rows) for rows in result.venues.values()),
         },
     }
     if note:
@@ -128,6 +131,14 @@ def ask(body: AskIn) -> dict[str, Any]:
     # model asked to phrase "no data" is a model given the chance to invent it.
     if result.refusal:
         return respond(result, result.refusal, llm_called=False)
+
+    # The `where` route, and it runs before the empty check: "I do not have a
+    # verified surf spot for Tel Aviv" is the answer to that question, not a
+    # failure to find rows. Rendered in code for the same reason the named
+    # verdicts below are -- a model handed a list of beaches and asked where to
+    # surf will offer one.
+    if result.resolution.asks_where and result.resolution.activities:
+        return respond(result, where_answer(result), llm_called=False)
 
     brief = grounding.build(result)
 
@@ -204,6 +215,78 @@ def plain_answer(result: Retrieval) -> str:
     to be what the traveller gets when the model's wording fails validation.
     """
     return grounding.render(grounding.build(result))
+
+
+def where_answer(result: Retrieval) -> str:
+    """The answer to "where can I surf in Tel Aviv?".
+
+    A location question gets a location, or an explicit statement that the
+    system holds none. What it must never get is a nearby row offered as
+    though it were the answer: Tel Aviv has five beaches on record and not one
+    of them is recorded as having rideable surf, so none of them is named here.
+    The rule is the same one the trip planner follows -- only an activity
+    declaring `place_categories` can be located -- and the retrieval that
+    applies it is `Router.venues_for`.
+
+    Weather appears only if the question also asked about timing or conditions,
+    and it is labelled when it does: a suitability score rates the forecast,
+    which for surfing is wind and rain, and not the sea.
+    """
+    city = result.resolution.city["name"]
+    meta = _activity_meta()
+    # Blocks, not lines: the UI renders the answer as markdown, and two
+    # sentences on consecutive lines become one paragraph.
+    blocks: list[str] = []
+
+    for activity in result.resolution.activities:
+        rows = result.venues.get(activity) or []
+        label = (meta.get(activity) or {}).get("label", activity.replace("_", " "))
+        if rows:
+            lines = [f"Where to go in {city} for {label[:1].lower()}{label[1:]}:"]
+            for row in rows:
+                sample = " [sample data]" if row.get("is_sample") else ""
+                lines.append(f"- {row['name']} ({row['category']}){sample}")
+            blocks.append("\n".join(lines))
+        else:
+            blocks.append(where_gap(activity, city))
+
+    if result.recommendations:
+        # Only reached when the question asked about timing too. The heading
+        # says what these are, so they cannot be read as an answer to "where".
+        lines = [f"Stored suitability for {result.resolution.window}:"]
+        for row in result.recommendations:
+            lines.append(
+                f"- {row['forecast_date']}: {row['activity_label']} is "
+                f"{row['band']} ({row['score']}/100)."
+            )
+        lines.append("")
+        lines.append(score_caveat(result))
+        blocks.append("\n".join(lines))
+
+    unscored = []
+    for activity in result.unscored_activities:
+        reason = ""
+        if (meta.get(activity) or {}).get("requires_coast") and not result.resolution.city.get(
+            "coastal"
+        ):
+            reason = f"; {city} has no coast on record"
+        unscored.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+    if unscored:
+        blocks.append("\n".join(unscored))
+
+    return "\n\n".join(blocks)
+
+
+def score_caveat(result: Retrieval) -> str:
+    """What a suitability score is, stated wherever one appears next to a
+    location. The score is computed from the stored forecast -- temperature,
+    rain, wind, sun -- so for a coastal activity it says nothing at all about
+    the sea, and a reader comparing surf spots must not take it for a swell
+    report."""
+    meta = _activity_meta()
+    coastal = any((meta.get(a) or {}).get("requires_coast") for a in result.resolution.activities)
+    tail = " -- nothing in the data measures the waves or the sea state" if coastal else ""
+    return f"These scores rate the stored weather, not the place{tail}."
 
 
 def named_activity_answer(result: Retrieval) -> str:
@@ -285,6 +368,12 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
         by_day.setdefault(str(row["forecast_date"]), []).append(row)
 
     places = queries.places(conn, body.city, categories=categories or None, limit=60)
+    # A second, unfiltered read of the city. The interest-filtered list above
+    # cannot answer "where is the beach" for a traveller who ticked only
+    # "museums", and the day's activity is not something they chose per day.
+    city_places = (
+        places if not categories else queries.places(conn, body.city, categories=None, limit=200)
+    )
     events = queries.events(conn, body.city, start=covered[0], end=covered[-1], limit=40)
     # Keyed by the city's local date, and a multi-day event is filed under
     # every day it runs (queries.event_days). Keying by `starts_at.date()` put
@@ -305,6 +394,7 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
 
     days = []
     used_places: set[str] = set()
+    used_venues: set[str] = set()
     used_activities: dict[str, int] = {}
     for day in covered:
         key = day.isoformat()
@@ -321,13 +411,22 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
         top = suggestions[0] if suggestions else None
         if top:
             used_activities[top["activity"]] = used_activities.get(top["activity"], 0) + 1
+        # Where the day's activity actually happens, when the sources name such
+        # a place. Drawn from `city_places`, not the interest-filtered list, so
+        # a beach day still names the beach for a traveller who only ticked
+        # "museums" -- the day is the beach either way. Empty whenever the
+        # activity declares no venue category or the city has no matching row,
+        # and the UI renders that gap rather than papering over it.
+        venues = venue_places(top["activity"] if top else None, meta, city_places, used_venues)
+        used_venues.update(p["id"] for p in venues)
         # Rotate through the places so a five-day trip is not the same museum
         # five times. Deterministic, so the same request rebuilds the same plan.
-        picks = [p for p in places if p["id"] not in used_places][:3]
+        shown = used_places | {p["id"] for p in venues}
+        picks = [p for p in places if p["id"] not in shown][:3]
         used_places.update(p["id"] for p in picks)
         if not picks:
             used_places.clear()
-            picks = places[:3]
+            picks = [p for p in places if p["id"] not in {v["id"] for v in venues}][:3]
         days.append(
             {
                 "date": key,
@@ -339,6 +438,26 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
                 "why": top["why"] if top else None,
                 # The runners-up, so a day is a choice rather than a verdict.
                 "alternatives": suggestions[1:4],
+                # Venues for the day's activity, and what was looked for. The
+                # second field is what lets the UI say "no beach on record"
+                # instead of silently showing nothing.
+                "activity_places": [
+                    {
+                        "id": p["id"],
+                        "name": p["name"],
+                        "category": p["category"],
+                        "lat": p["lat"],
+                        "lon": p["lon"],
+                        "source_url": p["source_url"],
+                        "is_sample": p["is_sample"],
+                    }
+                    for p in venues
+                ],
+                "activity_place_categories": (
+                    (meta.get(top["activity"]) or {}).get("place_categories") or []
+                )
+                if top
+                else [],
                 "places": [
                     {
                         "id": p["id"],
