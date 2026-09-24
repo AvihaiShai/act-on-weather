@@ -30,6 +30,10 @@ dc pull postgres rabbitmq
 dc up -d --no-build --pull never postgres rabbitmq migrate ingestor consumer api
 dc exec -T api python - < tests/integration/smoke.py
 dc exec -T consumer python - < tests/integration/reconnect.py
+# F2: the local-date derivation lives in SQL, so only a real Postgres with real
+# tzdata can prove it. Asserted against the committed snapshot, whose dates are
+# fixed, so this keeps holding after the staged forecast has expired.
+dc exec -T api python - < tests/integration/event_local_days.py
 
 # Exercise an actual outage after the consumer has already connected once.
 # Acceptance happens while Postgres is stopped; verification uses a separate

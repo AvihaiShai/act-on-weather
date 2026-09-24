@@ -431,6 +431,20 @@ carries the as-of stamp that says how old it is.
 | Events (verified) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. Seven rows, all London. **The only events a default run stores.** |
 | Events (generated samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …*. **Demo mode only** (`make up-demo`). |
 
+**Which day an event is on.** Instants are stored as `timestamptz` and never
+rewritten, but the *day* an event belongs to is its day in the city, resolved
+through that city's IANA zone — not UTC, and not the database session's zone.
+The Laver Cup starts at `2026-09-25T00:00+01:00`, which is `2026-09-24T23:00Z`;
+in London it is on the 25th, and "any sports events tomorrow?" asked on the
+24th has to find it. A multi-day event is on **every** day it runs, so the
+tournament appears on the 25th, 26th and 27th of an itinerary, labelled *day n
+of 3*. The active window is half-open, `[starts_at, ends_at)`: one billed as
+ending at local midnight ends the previous day rather than opening the next.
+`GET /events?start=&end=` takes local dates and matches on overlap, and every
+row carries `timezone`, `starts_on` and `ends_on` so nothing downstream
+re-derives the day. Proved in `tests/integration/event_local_days.py` (real
+Postgres, real tzdata) and `tests/unit/test_event_days.py`.
+
 **Why Wikidata and not OpenStreetMap for places.** OSM is the better source and
 the code for it is still there (`--places-source osm`). It is not the default
 because at staging time all four public Overpass mirrors were either refusing

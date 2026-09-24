@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
@@ -264,8 +265,22 @@ class EventFact:
     title: str
     category: str
     venue: str | None
+    # Local calendar dates in the city's own timezone (see
+    # queries.EVENTS_LOCALISED_SQL). `end_day` equals `day` for a single-day
+    # event, so `days()` is one entry and the rendering stays a bare date.
     day: str
+    end_day: str
     is_sample: bool
+
+    def days(self) -> list[str]:
+        start, end = date.fromisoformat(self.day), date.fromisoformat(self.end_day)
+        if end < start:
+            end = start
+        return [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+
+    def when(self) -> str:
+        """How a date is written in the prompt and in the answer."""
+        return self.day if self.end_day == self.day else f"{self.day} to {self.end_day}"
 
 
 @dataclass(frozen=True)
@@ -320,7 +335,10 @@ class Brief:
     def allowed_dates(self) -> set[str]:
         return (
             {d.day for d in self.days}
-            | {e.day for e in self.events}
+            # Every day a multi-day event runs, not only its first: naming the
+            # 26th of a tournament that runs the 25th to the 27th is supported
+            # by the row, and the validator must not read it as invented.
+            | {day for e in self.events for day in e.days()}
             | {v.day for v in self.verdicts}
             | set(self.window_days)
         )
@@ -418,10 +436,11 @@ def build(result: Retrieval) -> Brief:
                 title=str(row["title"]),
                 category=str(row["category"]),
                 venue=row.get("venue"),
-                # Rendered from whatever the row carries. Which calendar day a
-                # stored timestamp belongs to is F2's question, not this
-                # module's: `build` reports the row, it does not re-date it.
-                day=str(row["starts_at"].date()),
+                # The local dates the query already derived in the city's
+                # timezone. `build` reports the row; it does not re-date it,
+                # and it no longer reads the UTC instant to guess a day (F2).
+                day=str(row["starts_on"]),
+                end_day=str(row.get("ends_on") or row["starts_on"]),
                 is_sample=bool(row.get("is_sample")),
             )
         )
@@ -532,7 +551,7 @@ def prompt_block(brief: Brief) -> str:
         for row in brief.events:
             sample = " [sample data]" if row.is_sample else ""
             venue = f" at {row.venue}" if row.venue else ""
-            lines.append(f"  {row.day} {row.title} ({row.category}){venue}{sample}")
+            lines.append(f"  {row.when()} {row.title} ({row.category}){venue}{sample}")
 
     if brief.facts:
         lines.append(
@@ -625,7 +644,7 @@ def render(brief: Brief) -> str:
         for row in brief.events[:10]:
             venue = f" at {row.venue}" if row.venue else ""
             sample = " [sample data]" if row.is_sample else ""
-            lines.append(f"- {row.day} {row.title} ({row.category}){venue}{sample}")
+            lines.append(f"- {row.when()} {row.title} ({row.category}){venue}{sample}")
 
     for gap in brief.gaps:
         lines.append(f"- {gap.text}")
