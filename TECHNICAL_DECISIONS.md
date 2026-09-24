@@ -93,7 +93,7 @@ quoting through YAML and Docker's argument splitting.
 | **`provider` is not in `weather_daily`'s primary key** | A second provider must *replace* a day, not shadow it — otherwise the join to `recommendations` stops being unique. |
 | **`recommendations` is keyed `(city_id, forecast_date, activity)`** | An activity the user types is then a row like any other, with no special case anywhere. |
 | **Weather upsert carries `WHERE EXCLUDED.as_of > weather_daily.as_of`** | At-least-once delivery means redelivery in any order; an older forecast must never overwrite a newer one. |
-| **Three database roles, and `aow_writer` has no `DELETE`** | Nothing in this system removes a record; it supersedes it. Enforced by grants rather than by convention. |
+| **Three database roles, with narrow write grants** | Collected records are revised, not deleted. The consumer's `aow_writer` role can delete `events` rows only to remove generated demo samples when demo mode ends (`003_demo_events.sql`). The API, agent and enricher use a SELECT-only role. |
 | **The outbox is SQLite with `synchronous=FULL`** | The point is to survive Postgres being unreachable, so it cannot be a table in Postgres; and to survive the process dying, so it cannot be a buffer in memory. One fsync per accepted record is the cost we chose. |
 | **`check_same_thread=False` on the outbox connection** | The API accepts on request threads and publishes on a background one. Every caller holds a lock; nothing is actually concurrent. |
 | **The API returns `202`, never `200`, for a write** | The row genuinely is not written yet. `GET /outbox/{message_id}` is how a caller — or a drill — follows it. |

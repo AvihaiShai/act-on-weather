@@ -174,6 +174,16 @@ PLACES = [
     place("Piccadilly Market", "market"),
     place("Elystan Street", "restaurant"),
 ]
+# The verified London concert in data/snapshot/events.jsonl, verbatim: a
+# lunchtime recital on 2026-09-25 at LSO St Luke's. It is the row E2 now has to
+# answer from.
+FREE_FRIDAY = event(
+    "lso:free-friday-2026-09-25",
+    "Free Friday Lunchtime Concert",
+    "concert",
+    DAY2,
+    venue="LSO St Luke's (Jerwood Hall)",
+)
 FORECAST = [forecast_row(DAY1, 21.0, 13.0), forecast_row(DAY2, 19.0, 12.0)]
 VERDICTS = [
     verdict_row(DAY1, "museums", "A museum day", 80, "good"),
@@ -187,6 +197,11 @@ VERDICTS = [
 # case-insensitively against the answer the traveller actually receives.
 CASES: list[tuple[str, object, list[str], list[str]]] = [
     (
+        # The verified seed carries one London concert on 2026-09-25, so the
+        # answer is derived from that row. It is deliberately NOT the "no
+        # concert on record" expectation this case used to carry on the F3
+        # branch: the fixtures follow the seed, or the probe stops testing the
+        # system that ships.
         "E2 -- the London example question",
         retrieval(
             "What activities can I do with my wife this week in London? "
@@ -194,20 +209,52 @@ CASES: list[tuple[str, object, list[str], list[str]]] = [
             forecast=FORECAST,
             recommendations=VERDICTS,
             places=PLACES,
+            events=[FREE_FRIDAY],
         ),
-        # The concert gap has to reach the traveller whichever path the answer
-        # took, because there is no concert row in the window.
-        ["No concert is on record in London"],
-        [],
+        ["Free Friday Lunchtime Concert"],
+        # The nine concert halls are still places. Naming one as the concert is
+        # the original E2 failure, and so is reporting the gap that no longer
+        # exists.
+        ["no concert is on record", "concert at wigmore hall", "concert at cadogan hall"],
     ),
     (
-        "concerts only",
+        "concerts only -- one on record",
         retrieval(
             "Which concerts are scheduled in London this week?",
             places=[p for p in PLACES if p["category"] == "concert_hall"],
+            events=[FREE_FRIDAY],
         ),
-        ["No concert is on record in London"],
-        [],
+        ["Free Friday Lunchtime Concert"],
+        ["no concert is on record"],
+    ),
+    (
+        # The honest-absence path, kept alive now that London has a concert:
+        # Lisbon's window holds none. The answer must scope the absence to the
+        # record and never to the city.
+        "concerts only -- none on record",
+        retrieval(
+            "Which concerts are scheduled in Lisbon this week?",
+            city=LISBON,
+            places=[place("Coliseu dos Recreios", "concert_hall")],
+        ),
+        ["No concert is on record in Lisbon"],
+        [
+            "no concerts are scheduled in lisbon",
+            "no concerts are taking place",
+            "nothing is on in lisbon",
+        ],
+    ),
+    (
+        # A sports row must never answer a concert-only question. The router
+        # filters by category, so this asserts the filter and the validator
+        # together: the brief holds only the concert the question asked for.
+        "concerts only -- a sports row must not answer it",
+        retrieval(
+            "Which concerts are scheduled in London this week?",
+            events=[FREE_FRIDAY],
+        ),
+        ["Free Friday Lunchtime Concert"],
+        ["laver cup"],
     ),
     (
         "a sports event is reported as itself",
@@ -260,10 +307,17 @@ CASES: list[tuple[str, object, list[str], list[str]]] = [
 CONTROLS = {
     "E2 -- the London example question": (
         "On 2026-09-24 a museum day scores 80/100 in London, and on 2026-09-25 it "
-        "scores 74/100. Wigmore Hall and Cadogan Hall are concert halls on record, "
-        "Piccadilly Market is a market, and Elystan Street is a restaurant."
+        "scores 74/100. Free Friday Lunchtime Concert is at LSO St Luke's (Jerwood "
+        "Hall) on 2026-09-25. Wigmore Hall and Cadogan Hall are concert halls on "
+        "record, Piccadilly Market is a market, and Elystan Street is a restaurant."
     ),
-    "concerts only": "I hold no scheduled concert for London in that week.",
+    "concerts only -- one on record": (
+        "Free Friday Lunchtime Concert is at LSO St Luke's (Jerwood Hall) on 2026-09-25."
+    ),
+    "concerts only -- none on record": "I hold no concert on record for Lisbon in that week.",
+    "concerts only -- a sports row must not answer it": (
+        "Free Friday Lunchtime Concert is at LSO St Luke's (Jerwood Hall) on 2026-09-25."
+    ),
     "a sports event is reported as itself": "Laver Cup 2026 is on at The O2 arena on 2026-09-25.",
     "London sports on 2026-09-25 -- the review's exact question": (
         "Laver Cup 2026 runs at The O2 arena from 2026-09-25 to 2026-09-27, so it is "

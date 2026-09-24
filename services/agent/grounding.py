@@ -140,10 +140,72 @@ DESCRIPTION_WORDS = (
 
 _NEGATION = re.compile(r"(?<!\w)(no|not|none|never|without|nor|nothing|lacks?)(?!\w)|n't")
 
+# Predicates that say something is, or is not, actually happening. The system
+# cannot make the negative of any of these: it holds a hand-checked feed of a
+# few venues per city over a few weeks, so its silence about a concert is a gap
+# in the feed and not an empty concert hall. "No concert is scheduled in London
+# this week" is a claim about London; "no concert is on record for that week"
+# is a claim about the feed, and only the second one is ours to make.
+WORLD_SCHEDULE_WORDS = (
+    "taking place",
+    "take place",
+    "takes place",
+    "took place",
+    "happening",
+    "scheduled",
+    "planned",
+    "going on",
+    "is on",
+    "are on",
+    "available",
+)
+
+# Wording that scopes a sentence to the stored feed. These are predicates, not
+# mentions of the store: "the stored data shows no concert is taking place"
+# names the store and still asserts something about London, which is exactly
+# the sentence the model wrote and exactly the one this must not let through.
+RECORD_PHRASES = (
+    "on record",
+    "no record",
+    "not on record",
+    "recorded",
+    "on file",
+    "in the feed",
+    "stored event feed",
+    "event feed",
+    "i hold",
+    "i have no",
+    "i do not have",
+    "i don't have",
+    "in my records",
+)
+
+# What makes a sentence a sentence about scheduled things at all. Without this
+# gate the check would reach ordinary prose; with it, it only reads clauses
+# that are already talking about events.
+_GENERIC_EVENT_WORDS = ("event", "events", "listing", "listings")
+
 
 def _says(text: str, phrase: str) -> bool:
     """Whole-word match; `phrase` may contain spaces."""
     return re.search(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text) is not None
+
+
+def _about_events(sentence: str, asked: bool = False) -> bool:
+    """True when the clause is talking about scheduled things at all.
+
+    `asked` is set when the question itself was about events. It is what lets
+    "nothing is on in London during those dates" be read as the event answer it
+    is: the clause names no event word, and a bare pronoun is how the model
+    most often writes the claim this check exists to catch.
+    """
+    if any(_says(sentence, word) for word in _GENERIC_EVENT_WORDS):
+        return True
+    if any(
+        _says(sentence, word) for cfg in event_types().values() for word in (cfg.get("words") or ())
+    ):
+        return True
+    return asked and any(_says(sentence, word) for word in ("nothing", "anything", "none"))
 
 
 def _sentences(answer: str) -> list[str]:
@@ -564,7 +626,9 @@ def prompt_block(brief: Brief) -> str:
     if reported:
         lines.append(
             "\nCOVERAGE GAPS -- these sentences are appended to your answer automatically. "
-            "Do not repeat them, do not soften them, and do not contradict them:"
+            "Do not repeat them, do not soften them, and do not contradict them. In "
+            "particular do not restate one as a fact about the city: what is missing is "
+            "missing from the record, which is not the same as not being on:"
         )
         lines.extend(f"  {gap.text}" for gap in reported)
 
@@ -658,7 +722,7 @@ def render(brief: Brief) -> str:
 def violations(answer: str, brief: Brief) -> list[str]:
     """Sentences in `answer` that assert something no fact in `brief` carries.
 
-    Six checks, each written for a failure that was actually observed. All of
+    Nine checks, each written for a failure that was actually observed. All of
     them work on the model's prose only -- the gap block and the as-of footer
     are appended afterwards and are code's own words.
 
@@ -666,6 +730,9 @@ def violations(answer: str, brief: Brief) -> list[str]:
     its wording; it never costs the traveller a correct answer, because
     `render` says the same thing from the same rows.
     """
+    # The model writes both apostrophes; `_says` matches one. Normalise once
+    # rather than doubling every phrase list.
+    answer = answer.replace("’", "'")
     found: list[str] = []
     present = brief.event_categories_present()
     venues = brief.venues()
@@ -675,6 +742,9 @@ def violations(answer: str, brief: Brief) -> list[str]:
     allowed_names = brief.allowed_names()
     place_names = {p.name.lower(): p for p in brief.places if len(p.name) >= 5}
     event_titles = {e.title.lower(): e for e in brief.events if len(e.title) >= 5}
+    # Whether the question was about scheduled things, which is what lets check
+    # 6b read a clause that says "nothing is on" without naming an event.
+    asked_about_events = bool(brief.event_categories or brief.events)
 
     for raw in _sentences(answer):
         # Checks 1-6 run per clause, so a negation in the tail of a sentence
@@ -734,6 +804,22 @@ def violations(answer: str, brief: Brief) -> list[str]:
                         found.append(
                             f"describes the place {place.name!r} beyond its stored category"
                         )
+
+            # 6b. An absence claimed about the world rather than about the
+            #     record. "There are no concerts scheduled in London this week"
+            #     and "the stored data indicates that no events are taking
+            #     place in Rome" are both claims the feed cannot support: it
+            #     covers a few venues for a few weeks, and its silence is a gap
+            #     in coverage, not an empty city. The honest form is the one
+            #     the gap sentences use -- "no concert is on record" -- and a
+            #     clause that scopes itself that way passes.
+            if (
+                negated
+                and _about_events(sentence, asked_about_events)
+                and any(_says(sentence, word) for word in WORLD_SCHEDULE_WORDS)
+                and not any(_says(sentence, phrase) for phrase in RECORD_PHRASES)
+            ):
+                found.append("claims nothing is scheduled, rather than nothing being on record")
 
         # 7. A calendar day no row carries. An event moved by a day is a worse
         #    answer than no answer, because it reads as confirmed.

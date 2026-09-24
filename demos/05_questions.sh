@@ -18,7 +18,10 @@ ask() {
     | python3 -c '
 import json, sys, textwrap
 d = json.load(sys.stdin)
-print("A:", "\n   ".join(textwrap.wrap(d["answer"], 92)))
+# Wrapped line by line, not as one paragraph: several answers are lists of
+# dates or places, and collapsing them into prose is not what was sent.
+wrapped = [w for line in d["answer"].splitlines() for w in (textwrap.wrap(line, 92) or [""])]
+print("A:", "\n   ".join(wrapped))
 if d.get("note"):
     print("!  ", d["note"])
 print("   " + (d["as_of"] or "no dated data behind this"))
@@ -36,6 +39,14 @@ hr "Breadth"
 ask "Tell me about the history of Lisbon."
 ask "Are there any sports events in London this month?"
 ask "Is this weekend good for running in Reykjavik?"
+
+hr "Where, and what it will not locate"
+# A place word routes to locations, not to the forecast. The second question is
+# the one that matters: Tel Aviv has five beaches on record and none of them is
+# recorded as having rideable surf, so none is offered as an answer.
+ask "Where can I go to the beach in Tel Aviv?"
+ask "Where can I surf in Tel Aviv?"
+ask "Where and when can I surf in Tel Aviv this week?"
 
 hr "The edges -- where it must say no"
 ask "What is the weather in Rome on 2027-07-04?"
