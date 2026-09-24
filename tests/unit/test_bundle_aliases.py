@@ -21,6 +21,7 @@ the second at all.
 from __future__ import annotations
 
 import re
+import runpy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -103,3 +104,10 @@ def test_the_two_edges_share_one_nginx_reference() -> None:
     earlier and without Docker."""
     nginx = {i for i in pinned_images() if i.startswith(("nginx:", "nginx@"))}
     assert len(nginx) == 1, f"edge and edge-observability disagree on nginx: {sorted(nginx)}"
+
+
+def test_promotion_record_covers_every_bundle_alias() -> None:
+    """Every image the package script saves must have a documented proof tier."""
+    promotion = runpy.run_path(str(ROOT / "scripts" / "cd-promotion-record.py"))
+    saved_aliases = set(alias_table()) | {"services", "ui", "stage", "demos"}
+    assert set(promotion["PROVENANCE_BY_ALIAS"]) == saved_aliases

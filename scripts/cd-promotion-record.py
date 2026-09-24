@@ -87,7 +87,8 @@ GATES = [
 #                               no external source to cross-check it against.
 #
 #   digest_pinned_pull_verified_by_docker
-#                               postgres, rabbitmq, llm and edge are pulled
+#                               postgres, rabbitmq, llm, edge, prometheus,
+#                               grafana and stage are pulled
 #                               straight from IMAGES.lock's pinned digests.
 #                               Docker refuses a pull whose content does not
 #                               hash to the requested digest, so this is a
@@ -114,6 +115,8 @@ PROVENANCE_BY_ALIAS = {
     "rabbitmq": "digest_pinned_pull_verified_by_docker",
     "llm": "digest_pinned_pull_verified_by_docker",
     "edge": "digest_pinned_pull_verified_by_docker",
+    "prometheus": "digest_pinned_pull_verified_by_docker",
+    "grafana": "digest_pinned_pull_verified_by_docker",
     "stage": "digest_pinned_pull_verified_by_docker",
     "demos": "self_attested_build",
 }

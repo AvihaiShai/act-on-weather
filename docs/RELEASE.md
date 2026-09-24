@@ -94,8 +94,8 @@ so its output cannot satisfy the bundle's digest lock.
    tag) and asserts they still match what the artifact says. This is the one
    gate with an anchor outside the release's own paperwork -- see
    `scripts/cd-promotion-record.py`'s `PROVENANCE_BY_ALIAS` for why the other
-   images in the bundle (`postgres`, `rabbitmq`, `llm`, `edge`, `stage`,
-   `demos`) do not carry the same strength of proof.
+   images in the bundle (`postgres`, `rabbitmq`, `llm`, `edge`, `prometheus`,
+   `grafana`, `stage`, `demos`) do not carry the same strength of proof.
 7. Stages the model (`docker compose -f compose.tools.yml run --rm stage`,
    the same command `make stage-fetch` runs) and lets `sha256sum -c
    models.lock` fail the job if it does not match.
