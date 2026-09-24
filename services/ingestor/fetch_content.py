@@ -588,41 +588,49 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     ]
 
 
-def load_events(seed: Path, samples: Path | None = None) -> list[dict[str, Any]]:
-    """Events are not fetched. They are hand-verified and committed.
+def load_events(seed: Path) -> list[dict[str, Any]]:
+    """The verified events. Not fetched -- hand-checked and committed.
 
     There is no free, licensable, offline-stageable feed of concerts and
     fixtures for five cities, and the brief's rule against inventing events is
-    absolute. So this reads files, and copies their rows through unchanged.
+    absolute. So this reads a file and copies its rows through unchanged: real
+    listings, each row checked against its own source URL by hand,
+    `is_sample: false`. There are seven, and they are all in London.
 
-    Two files, kept separate on purpose:
+    These are the only events a default run stores.
+    """
+    real = read_jsonl(seed)
+    if not real:
+        log.error("no event seed at %s", seed)
+    for row in real:
+        if row.get("is_sample"):
+            log.error("%s is in the verified seed but marked is_sample", row["id"])
+    log.info("events: %d hand-verified rows", len(real))
+    return real
 
-      * `seed` -- real listings, each row checked against its own source URL by
-        hand. `is_sample: false`. These are the only events the system claims
-        are real, and there are seven of them, all in London.
-      * `samples` -- the output of `services.ingestor.make_samples`. Every row
-        is `is_sample: true` and titled "Sample: ...". They exist so the
-        planner and the agent can be exercised in all five cities, and they
-        are labelled everywhere they surface.
+
+def load_sample_events(samples: Path) -> list[dict[str, Any]]:
+    """The generated samples, written to their own snapshot file.
+
+    They are the output of `services.ingestor.make_samples` and exist so the
+    planner and the agent can be exercised in all five cities rather than only
+    in London. Every row is `is_sample: true` and titled "Sample: ...", and
+    they are kept in a separate snapshot file so that replaying them is a
+    decision the ingestor makes (demo mode) rather than a property of having a
+    snapshot at all.
 
     A row in the sample file that does not admit to being a sample is dropped
     here rather than trusted: the labelling is a property of the data, so it is
     checked at the boundary and not merely assumed.
     """
-    real = read_jsonl(seed)
-    if not real:
-        log.error("no event seed at %s", seed)
-    log.info("events: %d hand-verified rows", len(real))
-
     sampled = []
-    for row in read_jsonl(samples) if samples else []:
+    for row in read_jsonl(samples):
         if not row.get("is_sample"):
             log.error("dropping %s: it is in the sample file but not marked is_sample", row["id"])
             continue
         sampled.append(row)
-    if sampled:
-        log.info("events: %d labelled sample rows", len(sampled))
-    return real + sampled
+    log.info("events: %d labelled sample rows", len(sampled))
+    return sampled
 
 
 # ----------------------------------------------------------------- main ----
@@ -675,12 +683,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_jsonl(out / "facts.jsonl", fetch_facts(cities, places_rows, args.facts_per_city))
     if "events" in wanted:
+        # Two snapshot files, never one. events.jsonl is what a default run
+        # replays; the samples sit beside it and are replayed only in demo
+        # mode, so "verified" and "generated" cannot be merged by accident.
+        write_jsonl(out / "events.jsonl", load_events(config.DATA_DIR / "events.seed.jsonl"))
         write_jsonl(
-            out / "events.jsonl",
-            load_events(
-                config.DATA_DIR / "events.seed.jsonl",
-                config.DATA_DIR / "events.samples.jsonl",
-            ),
+            out / "events.samples.jsonl",
+            load_sample_events(config.DATA_DIR / "events.samples.jsonl"),
         )
 
     log.info("snapshot written to %s -- commit it", out)

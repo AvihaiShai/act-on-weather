@@ -34,6 +34,10 @@ import theme
 
 API = os.environ.get("API_BASE", "http://api:8000")
 TIMEOUT = float(os.environ.get("API_TIMEOUT_S", "180"))
+# Set by compose.demo.yml. Demo mode adds 45 generated sample events so the
+# planner and the agent can be shown outside London; it must never be possible
+# to be in it without seeing that you are, hence the banner below.
+DEMO_EVENTS = os.environ.get("AOW_DEMO_EVENTS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 st.set_page_config(
     page_title="act-on-weather",
@@ -106,6 +110,16 @@ def header(cov, health) -> None:
     def rows_of(name: str) -> str:
         return f"{(entities.get(name) or {}).get('rows', 0):,}"
 
+    def events_chip() -> str:
+        """Never a single number. "52 events" reads as coverage; "7 verified +
+        45 samples" reads as what it is."""
+        row = entities.get("events") or {}
+        samples = int(row.get("samples") or 0)
+        verified = int(row.get("rows") or 0) - samples
+        if samples:
+            return f"{verified} verified + {samples} samples"
+        return f"{verified} verified"
+
     st.markdown(
         f"""
         <div class="aow-hero">
@@ -120,7 +134,7 @@ def header(cov, health) -> None:
               ("Cities", str(len(cov["cities"]))),
               ("Places", rows_of("places")),
               ("Background facts", rows_of("facts")),
-              ("Events", rows_of("events")),
+              ("Events", events_chip()),
               ("API", health["status"]),
               ("Database", "up" if health["database"] else "down"),
           ])}
@@ -128,6 +142,17 @@ def header(cov, health) -> None:
         """,
         unsafe_allow_html=True,
     )
+    if DEMO_EVENTS:
+        st.warning(
+            "**Demo mode.** This run also stores 45 **generated sample events** so the "
+            "trip planner and the agent can be exercised in all five cities. They are "
+            "titled *Sample: …*, marked `is_sample` in the database, and labelled "
+            "wherever they appear. Only seven events in this system are real listings, "
+            "and all seven are in London. A default run (`docker compose up -d`, "
+            "without `compose.demo.yml`) stores those seven and nothing else, and "
+            "deletes any sample row left over from a demo run.",
+            icon="⚠",
+        )
 
 
 def city_picker(cov, key: str, label: str = "City") -> str:
@@ -552,13 +577,26 @@ def render_day(day: dict) -> None:
             st.caption("No places on record for those interests in this city.")
 
         for event in day["events"]:
-            sample = ' <span class="aow-sample">sample</span>' if event["is_sample"] else ""
             venue = f", {event['venue']}" if event["venue"] else ""
-            st.markdown(
-                f"Event: [{event['title']}]({event['source_url']}) "
-                f"({event['category']}{venue}){sample}",
-                unsafe_allow_html=True,
-            )
+            if event["is_sample"]:
+                # A sample has no listing to link to, because there is no
+                # listing -- the URL is the Wikidata entry for the real venue
+                # it was anchored to. Rendering it as the event's own source
+                # would be the one misleading thing in an otherwise
+                # thoroughly labelled row.
+                st.markdown(
+                    f"Event: {escape(event['title'])} "
+                    f"({event['category']}{venue}) "
+                    f'<span class="aow-sample">sample</span> '
+                    f"\N{MIDDLE DOT} [venue reference]({event['source_url']})",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"Event: [{event['title']}]({event['source_url']}) "
+                    f"({event['category']}{venue})",
+                    unsafe_allow_html=True,
+                )
 
 
 # ---------------------------------------------------------- places map ----
@@ -894,8 +932,9 @@ def render_reenrich(cov) -> None:
 
 def page_coverage(cov) -> None:
     """What the system holds, per entity and per city. This tab exists because
-    row counts in a banner hide the shape of the data: "52 events" reads as
-    coverage until you see how they are spread and how many are samples."""
+    row counts in a banner hide the shape of the data: a single events total
+    reads as coverage until you see how the rows are spread and how many of
+    them are generated samples."""
     st.caption(
         "Everything the system holds, and how old it is. A question about a date "
         "outside these windows is refused rather than guessed at."
@@ -985,10 +1024,15 @@ def page_coverage(cov) -> None:
         "when selected at staging time)\n"
         "- **Background facts** — Wikipedia REST summaries, CC BY-SA 4.0: the city "
         "article plus one article per venue, resolved through its Wikidata sitelink\n"
-        "- **Events** — `data/events.seed.jsonl`, hand-verified real listings, each "
-        "row carrying its own source URL; plus `data/events.samples.jsonl`, which is "
-        "generated, is titled *Sample: …*, and is marked `is_sample` everywhere it "
-        "appears, including in the agent's prompt"
+        "- **Events (verified)** — `data/events.seed.jsonl`, hand-verified real "
+        "listings, each row carrying its own source URL. Seven rows, all in London. "
+        "These are the only events a default run stores.\n"
+        "- **Events (generated samples)** — `data/events.samples.jsonl`, replayed "
+        "only in demo mode (`compose.demo.yml`). Titled *Sample: …*, marked "
+        "`is_sample` everywhere they appear including in the agent's prompt, and "
+        "anchored to a real venue from the places snapshot — their link is a "
+        "**venue reference**, not an event listing. Leaving demo mode deletes them "
+        "from the database."
     )
 
 

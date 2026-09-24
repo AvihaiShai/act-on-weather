@@ -82,6 +82,7 @@ services:
            -v reader_password=${POSTGRES_READER_PASSWORD:?set POSTGRES_READER_PASSWORD in .env}
            -f /db/migrations/001_init.sql
            -f /db/migrations/002_activities.sql
+           -f /db/migrations/003_demo_events.sql
     networks: [backend]
 
   llm:

@@ -49,6 +49,19 @@ ROUTING_KEYS = frozenset(
 
 SCHEMA_VERSION = 1
 
+# ------------------------------------------------------------ demo mode --
+# Generated sample events (data/events.samples.jsonl) exist so the planner and
+# the agent can be exercised in all five cities; only seven events in the whole
+# snapshot are real, and they are all in London. They are off by default: a
+# default run stores the seven verified rows and nothing else.
+#
+# `docker compose -f compose.yml -f compose.demo.yml up -d` (make demo) turns
+# them on. The flag is read by the ingestor, which decides whether the sample
+# file is replayed at all, and by the consumer, which enforces it at the only
+# place that writes to the database -- so turning demo mode back off removes
+# the sample rows rather than leaving them behind.
+DEMO_EVENTS = os.environ.get("AOW_DEMO_EVENTS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _require(name: str) -> str:
     value = os.environ.get(name)
@@ -92,7 +105,7 @@ def owner_dsn() -> str:
 # -------------------------------------------------------------------- llm --
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://llm:8080")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3-1.7B-Q4_K_M")
-# Generous on purpose: llama.cpp runs with --parallel 1, so an interactive
+# Generous on purpose: llama.cpp runs with only --parallel 2 slots, so an interactive
 # request can queue behind an enrichment batch. Timing out at that point would
 # report a model outage that is really just a busy single slot.
 LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "180"))

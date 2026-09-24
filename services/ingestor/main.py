@@ -51,6 +51,16 @@ SNAPSHOT_FILES = {
     "events.jsonl": config.RK_EVENT,
 }
 
+# Generated sample events. Replayed only in demo mode (config.DEMO_EVENTS), so
+# a default run never even accepts them -- they are not filtered out later,
+# they are never turned into envelopes in the first place.
+DEMO_SNAPSHOT_FILES = {
+    "events.samples.jsonl": config.RK_EVENT,
+}
+
+# One per process, and used only for the file above. See envelopes_from.
+DEMO_EPOCH = uuid.uuid4().hex
+
 
 def deterministic_id(routing_key: str, *parts: Any) -> str:
     return str(uuid.uuid5(NS, "|".join([routing_key, *[str(p) for p in parts]])))
@@ -67,17 +77,37 @@ def natural_key(routing_key: str, payload: dict[str, Any]) -> tuple:
     return (payload["id"],)
 
 
-def envelopes_from(routing_key: str, payloads: Iterable[dict[str, Any]], source: str):
+def envelopes_from(
+    routing_key: str,
+    payloads: Iterable[dict[str, Any]],
+    source: str,
+    salt: str = "",
+):
+    """`salt` deliberately breaks the determinism, for one caller only.
+
+    Every real record gets an id derived from its natural key and its as_of, so
+    replaying the same snapshot produces the same ids and the outbox silently
+    deduplicates. That is the property the delivery guarantee rests on.
+
+    Generated sample events are the exception, because they are the one thing
+    here that can be *removed*: leaving demo mode deletes them. Re-entering it
+    is then a genuinely new delivery -- the old message_id is in the outbox as
+    published and in `ingest_log` as written, so an unsalted replay would be
+    correctly ignored and the samples would never come back. Salting per boot
+    mints new ids, and the upsert on `events.id` keeps the table at 45 rows
+    however many times demo mode is toggled.
+    """
     for payload in payloads:
+        parts = [*natural_key(routing_key, payload), payload["as_of"]]
+        if salt:
+            parts.append(salt)
         yield Envelope.create(
             routing_key,
             payload,
             source=source,
             observed_at=payload["as_of"],
             city=payload.get("city_id"),
-            message_id=deterministic_id(
-                routing_key, *natural_key(routing_key, payload), payload["as_of"]
-            ),
+            message_id=deterministic_id(routing_key, *parts),
         )
 
 
@@ -87,7 +117,11 @@ def envelopes_from(routing_key: str, payloads: Iterable[dict[str, Any]], source:
 def accept_snapshot(box: Outbox, snapshot_dir: Path) -> int:
     """Offline default: replay the committed snapshot into the outbox."""
     total = 0
-    for filename, routing_key in SNAPSHOT_FILES.items():
+    files = [(name, rk, "") for name, rk in SNAPSHOT_FILES.items()]
+    if config.DEMO_EVENTS:
+        files += [(name, rk, DEMO_EPOCH) for name, rk in DEMO_SNAPSHOT_FILES.items()]
+        log.warning("DEMO MODE: generated sample events will be accepted and stored")
+    for filename, routing_key, salt in files:
         path = snapshot_dir / filename
         if not path.exists():
             log.warning("snapshot file missing, skipping: %s", path)
@@ -97,7 +131,7 @@ def accept_snapshot(box: Outbox, snapshot_dir: Path) -> int:
             line = line.strip()
             if line:
                 payloads.append(json.loads(line))
-        ids = box.accept_many(list(envelopes_from(routing_key, payloads, "snapshot")))
+        ids = box.accept_many(list(envelopes_from(routing_key, payloads, "snapshot", salt)))
         total += len(ids)
         log.info("accepted %d %s records from %s", len(ids), routing_key, path.name)
     return total

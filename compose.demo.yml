@@ -1,0 +1,36 @@
+# Demo mode. Overlaid on compose.yml when the planner and the agent need to be
+# shown in all five cities:
+#
+#   docker compose -f compose.yml -f compose.demo.yml up -d      (make demo)
+#
+# Only seven events in this system are real, and all seven are in London --
+# there is no free, licensable, offline-stageable feed of concerts and fixtures
+# for five cities, and inventing them is out of the question. So a default run
+# stores those seven and answers "no events on record" everywhere else, which
+# is honest but demonstrates nothing outside London.
+#
+# This overlay turns on `data/events.samples.jsonl`: 45 generated rows, each
+# `is_sample: true`, titled "Sample: ...", anchored to a real venue from the
+# places snapshot and declared as not-a-real-listing in its source field. They
+# are labelled wherever they surface, and the UI carries a banner while this
+# overlay is active.
+#
+# Going back is a single command: `docker compose up -d` without this file
+# restarts the consumer, which deletes every `is_sample` row it finds. Demo
+# rows cannot be left behind in a database that is no longer in demo mode.
+services:
+  ingestor:
+    environment:
+      AOW_DEMO_EVENTS: "1"
+  consumer:
+    environment:
+      AOW_DEMO_EVENTS: "1"
+  api:
+    environment:
+      AOW_DEMO_EVENTS: "1"
+  agent:
+    environment:
+      AOW_DEMO_EVENTS: "1"
+  ui:
+    environment:
+      AOW_DEMO_EVENTS: "1"

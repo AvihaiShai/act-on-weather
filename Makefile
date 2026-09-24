@@ -4,10 +4,11 @@
 
 COMPOSE        ?= docker compose
 CONNECTED      := -f compose.yml -f compose.connected.yml
+DEMO           := -f compose.yml -f compose.demo.yml
 MODEL_FILE     := models/Qwen3-1.7B-Q4_K_M.gguf
 MODEL_URL      := https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf
 
-.PHONY: help stage stage-fetch stage-build up down logs ps test demo \
+.PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
         offline no-data-loss update reenrich questions refresh snapshot \
         samples redrive dlq clean
 
@@ -16,7 +17,8 @@ help:
 	@echo "  make stage          pull the pinned images, download the model, build the services"
 	@echo ""
 	@echo "Running (no internet needed):"
-	@echo "  make up             start everything"
+	@echo "  make up             start everything (7 verified events, no generated rows)"
+	@echo "  make up-demo        same, plus 45 labelled sample events in all five cities"
 	@echo "  make ps / logs      status / follow the logs"
 	@echo "  make down           stop"
 	@echo ""
@@ -66,6 +68,16 @@ up:
 	@echo "API http://localhost:8000/docs"
 	@echo "The llm container stays unhealthy for ~3 minutes while it loads the model."
 
+# Demo mode. Adds data/snapshot/events.samples.jsonl -- 45 generated rows,
+# every one is_sample and titled "Sample: ..." -- so the planner and the agent
+# can be shown outside London, where the only seven verified events are.
+# Going back to "make up" restarts the consumer, which deletes them.
+up-demo:
+	$(COMPOSE) $(DEMO) up -d
+	@echo ""
+	@echo "UI  http://localhost:8080  -- the header carries a demo-mode banner."
+	@echo "Back to verified-only data: make up"
+
 down:
 	$(COMPOSE) down
 
@@ -105,9 +117,11 @@ snapshot:
 	@echo "data/snapshot/ rebuilt -- review the diff and commit it."
 
 # The labelled sample events. Needs no network: it reads the places snapshot
-# and writes data/events.samples.jsonl, which `make snapshot` then folds into
-# data/snapshot/events.jsonl alongside the hand-verified rows. Every row it
-# writes is is_sample=true and titled "Sample: ...". See
+# and writes data/events.samples.jsonl, which `make snapshot` then copies to
+# data/snapshot/events.samples.jsonl -- a file of its own, never merged with
+# the hand-verified data/snapshot/events.jsonl, so that replaying it stays a
+# decision (make up-demo) rather than a side effect of having a snapshot.
+# Every row it writes is is_sample=true and titled "Sample: ...". See
 # services/ingestor/make_samples.py for why they exist at all.
 samples:
 	$(COMPOSE) run --rm --no-deps ingestor \

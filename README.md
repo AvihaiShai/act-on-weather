@@ -5,49 +5,122 @@ open-weights model, with every collected record travelling through a queue into
 Postgres — and the whole thing running with **no internet at all** once it has
 been staged.
 
-Ask it questions:
-
-> **Q:** What is the weather tomorrow in Rome?
-> **A:** Tomorrow in Rome, 2026-09-24, will be sunny with temperatures ranging from 15 °C to 27 °C. There is a slight chance of rain, but it's expected to be light and brief. The weather is suitable for sightseeing and outdoor activities.
-> *weather as of 2026-09-23 18:16 UTC · forecast covers 2026-09-23 to 2026-10-08 · sources: Open-Meteo*
-
-That footer is not decoration. It is written by code, after the model has
-spoken, and it is the mechanism that keeps a stale snapshot from looking like
-live data. Ask about a date outside the window and the system says so instead
-of guessing — without calling the model at all.
+For example, ask it about the weather in Rome on **2026-09-24**. Its answer
+includes the weather source and the time the forecast was collected. The
+bundled forecast was collected on **2026-09-23** and covers **2026-09-23 to
+2026-10-08**; it does not update itself during a normal run. Ask about a date
+outside that window and the system says it has no forecast instead of guessing.
 
 ---
 
 ## Quick start
 
-**Once, connected** (~2.2 GB of images, ~1.2 GB model, roughly 5–10 minutes):
+You need **Docker Desktop** (Windows or macOS) or Docker Engine with the
+**Compose plugin** (Linux). Start Docker before running the commands below.
+Give Docker at least **8 GB of memory** and have several GB of free disk space.
+Use a terminal opened in this project's folder. The first setup needs internet
+to download container images, build the services, and download the local model.
+
+### Windows (PowerShell)
+
+1. Create your local settings file and open it in Notepad. If `.env` already
+   exists, skip `Copy-Item` so you keep your current settings:
+
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
+   ```
+
+   Replace **every** `change-me` in `.env` with a different password, save the
+   file, and close Notepad. Keep `.env` private.
+
+2. Download the images and model, then build the app. Run these commands in
+   the same PowerShell window:
+
+   ```powershell
+   docker compose pull postgres rabbitmq llm edge
+   New-Item -ItemType Directory -Force models | Out-Null
+   Invoke-WebRequest 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf' -OutFile 'models/Qwen3-1.7B-Q4_K_M.gguf'
+   if ((Get-FileHash 'models/Qwen3-1.7B-Q4_K_M.gguf' -Algorithm SHA256).Hash -ne 'd2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5') { throw 'Model download failed its checksum check' }
+   docker compose build
+   ```
+
+3. Start the app:
+
+   ```powershell
+   docker compose up -d
+   ```
+
+### Linux (terminal)
+
+Install `make`, `curl`, and `sha256sum` if needed. With Docker running:
 
 ```sh
-cp .env.example .env      # then fill in the passwords
-make stage                # pull the pinned images, fetch the model, build
+cp .env.example .env
+nano .env
+make stage
+make up
 ```
 
-**From then on, no internet required:**
+In the editor, replace every `change-me` with a different password, then save
+and exit (`Ctrl+O`, Enter, `Ctrl+X` in `nano`). If `.env` already exists, skip
+the `cp` command.
+
+### macOS (Terminal)
+
+With Docker Desktop running, create `.env` (skip `cp` if it already exists),
+then open it in TextEdit. Replace every `change-me` with a different password
+and save it.
 
 ```sh
-make up                   # or: docker compose up -d
+cp .env.example .env
+open -e .env
 ```
 
-| | |
-|---|---|
-| UI | <http://localhost:8080> |
-| API | <http://localhost:8000/docs> |
+Then download and verify the model, build, and start:
 
-Two things to expect on first boot:
+```sh
+docker compose pull postgres rabbitmq llm edge
+mkdir -p models
+curl -fL --progress-bar -o models/Qwen3-1.7B-Q4_K_M.gguf 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf'
+shasum -a 256 -c models.lock
+docker compose build
+docker compose up -d
+```
 
-* **`llm` stays unhealthy for about three minutes** while llama.cpp loads the
-  model. `docker compose ps` looks like a failed stack until it does. It isn't.
-* **Give Docker Desktop at least 8 GB.** The whole stack's memory limits sum to
-  under 6 GB, with the model server the largest single consumer at 3 GB.
+### Open and stop the app
 
-The data is already in the repo (`data/snapshot/`), so a fresh `git clone`
-works offline immediately. Nothing is downloaded at runtime — not packages, not
-model weights, not map tiles, not fonts, not a CDN script.
+Open **<http://localhost:8080>** in your browser. The API documentation is at
+<http://localhost:8000/docs>. The first start can take several minutes while
+the model loads and the saved data enters the database. Check progress with
+`docker compose ps`; an exited `migrate` container with code 0 is normal.
+If the page does not load after a few minutes, run
+`docker compose logs --tail 50` to see the startup messages.
+
+To stop the app, run `docker compose down` (or `make down` on Linux). To run it
+again later, run `docker compose up -d`. These commands keep the database and
+queue data. Do not use `docker compose down -v` unless you intend to remove
+those saved volumes.
+
+A default run stores the **seven hand-verified events**, all of them in London,
+and answers "none on record" for the other four cities. To see the trip planner
+and the agent working with events in all five cities, switch to **demo mode**:
+
+```sh
+docker compose -f compose.yml -f compose.demo.yml up -d
+```
+
+Demo mode adds 45 **generated sample events**, labelled wherever they appear.
+The UI also shows a demo banner. Run `docker compose up -d` to return to
+verified events only; the generated events are removed from the database.
+On Linux, `make up-demo` and `make up` are shortcuts for those two commands. The
+section
+[Events: verified, and generated](#events-verified-and-generated) says exactly
+what they are and why they exist.
+
+The saved data is included in `data/snapshot/`. Once setup has downloaded the
+images and model, a normal run needs no internet. A fresh clone alone is **not**
+ready for offline use because the images and model are not included in Git.
 
 ---
 
@@ -55,7 +128,7 @@ model weights, not map tiles, not fonts, not a CDN script.
 
 | | |
 |---|---|
-| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 272 places, 81 background articles and an event set that separates verified listings from labelled samples |
+| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 282 places, 81 background articles, and **7 verified events** (+ 45 labelled samples in demo mode) |
 | **Decides** | a deterministic suitability score per (city, day, activity) across **18 activities**, from rules in `data/activities.yml` |
 | **Words** | a local Qwen3-1.7B writes one or two sentences about each score |
 | **Answers** | an agent resolves the question in code and answers from stored rows only |
@@ -306,9 +379,9 @@ again.** Everything above still passes.
 | Correct a stored record | **works offline** — it is a local write through the local queue |
 | Re-word recommendations | **works offline** — the model is local |
 
-When the snapshot goes stale, `make refresh` re-fetches the forecast while
-connected and the window moves forward. Until then, every answer and every
-chart carries the as-of stamp that says how old it is.
+When the snapshot goes stale, use the connected refresh below to re-fetch the
+forecast and move the window forward. Until then, every answer and every chart
+carries the as-of stamp that says how old it is.
 
 ---
 
@@ -320,8 +393,8 @@ chart carries the as-of stamp that says how old it is.
 | Places | **Wikidata** (default) or OpenStreetMap via Overpass | CC0 / ODbL © OpenStreetMap contributors | same script; every row keeps its own source URL |
 | Map coastline | [Natural Earth 1:10m](https://www.naturalearthdata.com/downloads/10m-physical-vectors/) | public domain | bundled in `data/map/`; source revision and checksum in `data/map/SOURCE.md` |
 | Background | Wikipedia REST summaries | CC BY-SA 4.0 | same script; the city article plus one article per venue, resolved through its Wikidata sitelink |
-| Events (real) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl` |
-| Events (samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …* |
+| Events (verified) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. Seven rows, all London. **The only events a default run stores.** |
+| Events (generated samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …*. **Demo mode only** (`make up-demo`). |
 
 **Why Wikidata and not OpenStreetMap for places.** OSM is the better source and
 the code for it is still there (`--places-source osm`). It is not the default
@@ -343,31 +416,49 @@ Wikidata sitelink for each venue already in `places.jsonl` instead means every
 landmark article is about somewhere the planner can actually send you, selected
 by its Wikidata P31 class rather than by its distance from a point.
 
+### Events: verified, and generated
+
 **Nothing is passed off as real.** There is no free, licensable,
 offline-stageable feed of concerts and fixtures for five cities, and fabricating
-them was not an option. So there are two event files, kept apart on purpose:
+them was not an option. So there are two event files, kept apart at every layer:
 
 * `data/events.seed.jsonl` — seven **real** listings, each checked by hand
   against its own source URL. `is_sample: false`. These are the only events the
   system claims are real, and they are all in London, because that is how far
-  hand-verification got.
-* `data/events.samples.jsonl` — generated by
+  hand-verification got. **They are what a default run stores.**
+* `data/events.samples.jsonl` — 45 rows generated by
   `services/ingestor/make_samples.py`. Every row is `is_sample: true`, its title
   begins with **"Sample:"**, and its `source` says in words that it is not a
   real listing. The venue in each row is real — it comes from the places
-  snapshot — and the `source_url` points at that venue's own record, because
-  there is no listing to point at. Generation is deterministic, so the committed
-  file is reproducible.
+  snapshot — and its URL is that venue's own record, rendered as a **venue
+  reference** rather than as the event's source, because there is no listing to
+  point at. Generation is deterministic, so the committed file is reproducible.
 
 They exist because with events in one city out of five, the planner and the
-agent could not be exercised anywhere else, and a reviewer could not see how a
-sourced event and a sample are told apart — which is the interesting part. The
-loader drops any row in the sample file that does not admit to being a sample,
-so the labelling is checked at the boundary rather than assumed. Samples are
-marked in the UI, in the agent's prompt, in its footer, and counted separately
-in the coverage tab. **If you would rather ship without them**, delete
-`data/events.samples.jsonl`, re-run `make snapshot --only events`, and the
-system falls back to the seven verified rows.
+agent cannot be exercised anywhere else, and a reviewer cannot see how a sourced
+event and a generated one are told apart — which is the interesting part.
+
+**They are opt-in, and they do not linger.** Three separate places enforce that,
+because "no fabricated row is in the database" is a claim worth more than one
+check:
+
+| | |
+|---|---|
+| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (7) and `data/snapshot/events.samples.jsonl` (45) |
+| **Ingestor** | replays the sample file only when `AOW_DEMO_EVENTS` is set, so a default run never even *accepts* a generated row |
+| **Consumer** | the only role with write grants, so it is the last word: it drops a sample row that arrives while demo mode is off, whoever produced it, and on startup it deletes every `is_sample` row it finds |
+
+The consumer's startup sweep is the part that matters: `AOW_DEMO_EVENTS`
+describes the **database**, not just the run. Run `make up-demo`, look around,
+then `make up` — the samples are gone, not merely hidden. Demo mode is also
+visible while you are in it: the UI carries a banner naming the count and
+saying which seven rows are real.
+
+The loader drops any row in the sample file that does not admit to being a
+sample, so the labelling is checked at the boundary rather than assumed. In demo
+mode the samples are marked in the UI, in the agent's prompt, in its footer, and
+counted separately in the coverage tab — which reports **"7 verified + 45
+samples"**, never a single total of 52.
 
 A city with no events on record produces "none on record", never a
 plausible-sounding invention.
@@ -383,8 +474,8 @@ Three paths, two of which work offline:
 1. **A correction** — `PATCH /records/{entity}/{id}` → 202 + a `message_id` →
    queue → consumer → `revision + 1` and a `record_history` row. Works offline.
    `make update` demonstrates it end to end.
-2. **A connected refresh** — `make refresh` re-fetches the forecast and moves
-   the coverage window forward. Needs connectivity, by definition.
+2. **A connected refresh** — re-fetches the forecast and moves the coverage
+   window forward. Needs an internet connection.
 3. **Re-enrichment** — `POST /reenrich` → 202 → queue → consumer flips the
    selected recommendations back to `pending`, and the enricher rewords them.
    Scores are untouched: they are the rule engine's output, and only a weather
@@ -396,6 +487,18 @@ Three paths, two of which work offline:
 All three are on the **Update data** tab in the UI, which is where a reviewer
 should look first: it names each path, says which work air-gapped, and shows
 the exact command for the one that cannot.
+
+To refresh a normal (non-demo) run from Windows PowerShell, macOS Terminal, or
+Linux, use these commands while connected to the internet. The last command
+returns the ingestor to the offline network after it accepts the new forecast:
+
+```sh
+docker compose -f compose.yml -f compose.connected.yml up -d ingestor
+docker compose exec ingestor python -m services.ingestor.refresh
+docker compose up -d ingestor
+```
+
+On Linux, `make refresh` runs the first two commands.
 
 A user edit is accepted, not applied: `202`, never `200`. The UI says so too.
 There is exactly one write path into this database.
@@ -421,17 +524,16 @@ There is exactly one write path into this database.
 ## Tests and CI
 
 ```sh
-make test     # unit tests, in a container, with --network none
+make test     # unit tests in a container; CI runs that container with --network none
 ```
 
-Unit tests covering the rule engine's truth table (including that indoor
+Unit tests cover the rule engine's truth table (including that indoor
 activities really are scored as the inverse of outdoor ones), envelope
 round-tripping and rejection of malformed messages, payload validation, and the
 outbox's two load-bearing properties: accepting the same message twice is a
 no-op, and an accepted-but-unpublished record survives the process dying. Also
-the agent's date parsing and its word-boundary intent matching — the latter has
-a test named after the bug that caused it, because `"eat"` is inside
-`"weather"`, so every weather question was silently running a restaurant lookup.
+covered are the agent's date parsing and word-boundary intent matching, the
+planner, API responses, UI rendering, and the demo event boundary.
 
 CI (`.github/workflows/ci.yml`) runs lint, unit tests and guards, then builds
 the service and UI images once, scans them and the repository, and runs a fresh
@@ -514,7 +616,7 @@ you can run.
 ## Reproducing every claim in this file
 
 ```sh
-make test           # unit tests, no network
+make test           # unit tests in a container
 make offline        # M6  — air-gapped operation, and the no-guessing rule
 make questions      # M7/M8 — agent breadth, including what it refuses
 make no-data-loss   # M11 — three drills, each tracing one accepted message_id
@@ -539,12 +641,21 @@ Stated, not implied:
   deliberate trade: no second delivery branch means no silent partial fan-out.
 * **A user-entered activity is scored against general outdoor comfort**, not a
   rule tuned for it, and the answer says so. It is not a new data fetch.
-* **No marine data**, so no surfing among the scored defaults. Typed as a
-  free-text activity it is answered from the weather on hand, with that caveat.
-* **The verified event set is small and London-weighted.** Other cities
-  correctly report no events on record.
-* **The places map is a city-level coordinate view**, with a generalized
-  coastline. It has no street detail, route directions or live map tiles.
+* **No marine data.** Surfing is scored, in coastal cities only, from wind,
+  temperature and precipitation — never from wave height, swell or sea state.
+  The score says whether the day is pleasant to be on the water, not whether
+  the surf is any good, and no wave source was staged to say otherwise.
+* **The verified event set is seven rows, all in London.** That is a real
+  coverage gap, not a display problem: a default run answers "none on record"
+  for Rome, Lisbon, Tel Aviv and Reykjavík, and the trip planner has no events
+  to place there. `make up-demo` fills the gap with labelled generated rows for
+  demonstration; it does not close it.
+* **The places map is a marker plot, not a map service.** Stored places are
+  drawn as points on a local equirectangular projection over a generalized
+  Natural Earth coastline. A tile map was planned and cut, deliberately: tiles
+  are a runtime download and the air-gap rule outranks the cartography. So
+  there is no street detail, no route directions, no building-level zoom and
+  no live tiles.
 * **The agent routes deterministically in code** and uses the model only to
   phrase retrieved rows. It is not a general-purpose assistant, and that is the
   point.

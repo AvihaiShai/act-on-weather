@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import config, queries, schemas
 from ..common.db import Pool
@@ -264,7 +264,20 @@ def outbox_status(message_id: str) -> dict[str, Any]:
 # ----------------------------------------------------------------- writes ----
 
 
-class RecommendationRequestIn(BaseModel):
+class RequestIn(BaseModel):
+    """The base every request body inherits.
+
+    `extra="forbid"` because pydantic's default is to drop a field it does not
+    recognise: a misspelled or unsupported key then returns 200 having been
+    ignored, which is worse than a refusal. `{"days": 2}` on an itinerary
+    request is the concrete case -- the plan's length comes from the date
+    range, so the field was silently doing nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RecommendationRequestIn(RequestIn):
     city: str
     forecast_date: date
     activity: str = Field(min_length=2, max_length=80)
@@ -300,7 +313,7 @@ def request_recommendation(body: RecommendationRequestIn) -> dict[str, Any]:
     }
 
 
-class ReenrichIn(BaseModel):
+class ReenrichIn(RequestIn):
     city: str | None = None
     forecast_date: date | None = None
     activity: str | None = None
@@ -353,7 +366,7 @@ def enrichment_status(city: str | None = None) -> dict[str, Any]:
     }
 
 
-class ItineraryIn(BaseModel):
+class ItineraryIn(RequestIn):
     city: str
     title: str
     start_date: date
@@ -394,6 +407,12 @@ def patch_record(
     It is accepted here and applied by the consumer, so a user edit is
     delivered, retried and idempotent exactly like a fetched record. The
     consumer bumps the revision and files the before/after into record_history.
+
+    `fields` is the one body deliberately left open. It is a column map over
+    five entities, so the allowed keys live with the consumer's `PATCHABLE`
+    allow-list, next to the UPDATE that uses them; an unlisted column is a
+    poison message, not a silent no-op. Every other request body forbids
+    extras (see `RequestIn`).
     """
     message_id = accept(
         config.RK_PATCH,
@@ -410,7 +429,7 @@ def patch_record(
 # ------------------------------------------------------------------ agent ----
 
 
-class AskIn(BaseModel):
+class AskIn(RequestIn):
     question: str = Field(min_length=2, max_length=500)
 
 
@@ -435,7 +454,7 @@ def ask(body: AskIn) -> JSONResponse:
     return _agent("/ask", {"question": body.question})
 
 
-class ItineraryRequestIn(BaseModel):
+class ItineraryRequestIn(RequestIn):
     city: str
     start_date: date | None = None
     end_date: date | None = None

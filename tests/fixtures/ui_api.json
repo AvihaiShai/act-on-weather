@@ -1,0 +1,1501 @@
+{
+ "activities": [
+  {
+   "activity": "boat_ride",
+   "avg_score": 77,
+   "best_score": 100,
+   "deferred": 25,
+   "icon": "\u26f5",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "outdoors"
+   ],
+   "label": "A boat ride",
+   "pending": 0,
+   "requires_coast": true,
+   "scored_days": 64,
+   "user_requested": false,
+   "worded": 39
+  },
+  {
+   "activity": "beach_day",
+   "avg_score": 74,
+   "best_score": 100,
+   "deferred": 34,
+   "icon": "\ud83c\udfd6",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "outdoors"
+   ],
+   "label": "A day at the beach",
+   "pending": 0,
+   "requires_coast": true,
+   "scored_days": 64,
+   "user_requested": false,
+   "worded": 30
+  },
+  {
+   "activity": "soccer",
+   "avg_score": 86,
+   "best_score": 100,
+   "deferred": 53,
+   "icon": "\u26bd",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "sports"
+   ],
+   "label": "A game of football",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 27
+  },
+  {
+   "activity": "standup_comedy",
+   "avg_score": 52,
+   "best_score": 86,
+   "deferred": 67,
+   "icon": "\ud83c\udfa4",
+   "in_catalogue": true,
+   "indoor": true,
+   "interests": [
+    "concerts"
+   ],
+   "label": "A stand-up comedy show",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 13
+  },
+  {
+   "activity": "art_gallery",
+   "avg_score": 56,
+   "best_score": 87,
+   "deferred": 66,
+   "icon": "\ud83d\uddbc",
+   "in_catalogue": true,
+   "indoor": true,
+   "interests": [
+    "museums"
+   ],
+   "label": "An art gallery",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 14
+  },
+  {
+   "activity": "farmers_market",
+   "avg_score": 87,
+   "best_score": 100,
+   "deferred": 26,
+   "icon": "\ud83e\uddfa",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "shopping",
+    "dining"
+   ],
+   "label": "An open-air farmers' market",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 54
+  },
+  {
+   "activity": "music_festival",
+   "avg_score": 84,
+   "best_score": 100,
+   "deferred": 25,
+   "icon": "\ud83c\udfaa",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "concerts"
+   ],
+   "label": "An open-air music festival",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 55
+  },
+  {
+   "activity": "outdoor_workout",
+   "avg_score": 80,
+   "best_score": 100,
+   "deferred": 48,
+   "icon": "\ud83d\udcaa",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "sports"
+   ],
+   "label": "An outdoor workout",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 32
+  },
+  {
+   "activity": "fishing",
+   "avg_score": 88,
+   "best_score": 100,
+   "deferred": 9,
+   "icon": "\ud83c\udfa3",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "outdoors"
+   ],
+   "label": "Fishing",
+   "pending": 0,
+   "requires_coast": true,
+   "scored_days": 64,
+   "user_requested": false,
+   "worded": 55
+  },
+  {
+   "activity": "hiking",
+   "avg_score": 81,
+   "best_score": 100,
+   "deferred": 42,
+   "icon": "\ud83e\udd7e",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "outdoors"
+   ],
+   "label": "Hiking or a long walk",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 38
+  },
+  {
+   "activity": "running",
+   "avg_score": 66,
+   "best_score": 100,
+   "deferred": 60,
+   "icon": "\ud83c\udfc3",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "sports",
+    "outdoors"
+   ],
+   "label": "Running",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 20
+  },
+  {
+   "activity": "mall",
+   "avg_score": 48,
+   "best_score": 90,
+   "deferred": 69,
+   "icon": "\ud83d\udecd",
+   "in_catalogue": true,
+   "indoor": true,
+   "interests": [
+    "shopping"
+   ],
+   "label": "Shopping at the mall",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 11
+  },
+  {
+   "activity": "sightseeing",
+   "avg_score": 81,
+   "best_score": 100,
+   "deferred": 58,
+   "icon": "\ud83d\uddfa",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "history",
+    "outdoors"
+   ],
+   "label": "Sightseeing on foot",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 22
+  },
+  {
+   "activity": "indoor_gaming",
+   "avg_score": 35,
+   "best_score": 87,
+   "deferred": 70,
+   "icon": "\ud83c\udfae",
+   "in_catalogue": true,
+   "indoor": true,
+   "interests": [],
+   "label": "Staying in to play computer games",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 10
+  },
+  {
+   "activity": "surfing",
+   "avg_score": 81,
+   "best_score": 100,
+   "deferred": 43,
+   "icon": "\ud83c\udfc4",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "sports",
+    "outdoors"
+   ],
+   "label": "Surfing",
+   "pending": 0,
+   "requires_coast": true,
+   "scored_days": 64,
+   "user_requested": false,
+   "worded": 21
+  },
+  {
+   "activity": "swimming",
+   "avg_score": 74,
+   "best_score": 100,
+   "deferred": 54,
+   "icon": "\ud83c\udfca",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "sports",
+    "outdoors"
+   ],
+   "label": "Swimming in the sea",
+   "pending": 0,
+   "requires_coast": true,
+   "scored_days": 64,
+   "user_requested": false,
+   "worded": 10
+  },
+  {
+   "activity": "museums",
+   "avg_score": 61,
+   "best_score": 92,
+   "deferred": 64,
+   "icon": "\ud83c\udfdb",
+   "in_catalogue": true,
+   "indoor": true,
+   "interests": [
+    "museums",
+    "history"
+   ],
+   "label": "Visiting a museum",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 16
+  },
+  {
+   "activity": "sunset_watching",
+   "avg_score": 84,
+   "best_score": 100,
+   "deferred": 54,
+   "icon": "\ud83c\udf05",
+   "in_catalogue": true,
+   "indoor": false,
+   "interests": [
+    "outdoors"
+   ],
+   "label": "Watching the sunset",
+   "pending": 0,
+   "requires_coast": false,
+   "scored_days": 80,
+   "user_requested": false,
+   "worded": 26
+  }
+ ],
+ "coverage": {
+  "by_city": [
+   {
+    "city_id": "lisbon",
+    "coastal": true,
+    "events": 9,
+    "facts": 17,
+    "name": "Lisbon",
+    "places": 66,
+    "recommendations": 288,
+    "sample_events": 9,
+    "weather": 16
+   },
+   {
+    "city_id": "london",
+    "coastal": false,
+    "events": 16,
+    "facts": 17,
+    "name": "London",
+    "places": 67,
+    "recommendations": 208,
+    "sample_events": 9,
+    "weather": 16
+   },
+   {
+    "city_id": "reykjavik",
+    "coastal": true,
+    "events": 9,
+    "facts": 13,
+    "name": "Reykjavik",
+    "places": 28,
+    "recommendations": 288,
+    "sample_events": 9,
+    "weather": 16
+   },
+   {
+    "city_id": "rome",
+    "coastal": true,
+    "events": 9,
+    "facts": 17,
+    "name": "Rome",
+    "places": 52,
+    "recommendations": 288,
+    "sample_events": 9,
+    "weather": 16
+   },
+   {
+    "city_id": "tel-aviv",
+    "coastal": true,
+    "events": 9,
+    "facts": 17,
+    "name": "Tel Aviv",
+    "places": 59,
+    "recommendations": 288,
+    "sample_events": 9,
+    "weather": 16
+   }
+  ],
+  "cities": [
+   {
+    "coastal": true,
+    "country": "Portugal",
+    "id": "lisbon",
+    "lat": 38.7223,
+    "lon": -9.1393,
+    "name": "Lisbon",
+    "timezone": "Europe/Lisbon"
+   },
+   {
+    "coastal": false,
+    "country": "United Kingdom",
+    "id": "london",
+    "lat": 51.5074,
+    "lon": -0.1278,
+    "name": "London",
+    "timezone": "Europe/London"
+   },
+   {
+    "coastal": true,
+    "country": "Iceland",
+    "id": "reykjavik",
+    "lat": 64.1466,
+    "lon": -21.9426,
+    "name": "Reykjavik",
+    "timezone": "Atlantic/Reykjavik"
+   },
+   {
+    "coastal": true,
+    "country": "Italy",
+    "id": "rome",
+    "lat": 41.8933,
+    "lon": 12.4829,
+    "name": "Rome",
+    "timezone": "Europe/Rome"
+   },
+   {
+    "coastal": true,
+    "country": "Israel",
+    "id": "tel-aviv",
+    "lat": 32.0853,
+    "lon": 34.7818,
+    "name": "Tel Aviv",
+    "timezone": "Asia/Jerusalem"
+   }
+  ],
+  "entities": [
+   {
+    "as_of": "2026-09-23T18:16:44.438338Z",
+    "cities": 5,
+    "entity": "weather",
+    "first_date": "2026-09-23",
+    "kind": "forecast window",
+    "last_date": "2026-10-08",
+    "rows": 80,
+    "samples": 0
+   },
+   {
+    "as_of": "2026-09-23T23:01:28.239895Z",
+    "cities": 5,
+    "entity": "recommendations",
+    "first_date": "2026-09-23",
+    "kind": "forecast window",
+    "last_date": "2026-10-08",
+    "rows": 1360,
+    "samples": 0
+   },
+   {
+    "as_of": "2026-09-23T22:00:18.734664Z",
+    "cities": 5,
+    "entity": "events",
+    "first_date": "2026-09-23",
+    "kind": "event window",
+    "last_date": "2026-10-16",
+    "rows": 52,
+    "samples": 45
+   },
+   {
+    "as_of": "2026-09-23T21:39:03.575554Z",
+    "cities": 5,
+    "entity": "places",
+    "first_date": null,
+    "kind": "not date-scoped",
+    "last_date": null,
+    "rows": 272,
+    "samples": 0
+   },
+   {
+    "as_of": "2026-09-23T21:52:25.344823Z",
+    "cities": 5,
+    "entity": "facts",
+    "first_date": null,
+    "kind": "not date-scoped",
+    "last_date": null,
+    "rows": 81,
+    "samples": 0
+   },
+   {
+    "as_of": null,
+    "cities": 0,
+    "entity": "itineraries",
+    "first_date": null,
+    "kind": "saved by users",
+    "last_date": null,
+    "rows": 0,
+    "samples": 0
+   }
+  ],
+  "weather_as_of": "2026-09-23T18:16:44.438338Z",
+  "weather_first_date": "2026-09-23",
+  "weather_last_date": "2026-10-08"
+ },
+ "enrichment": {
+  "counts": {
+   "deferred": 191,
+   "ready": 97
+  },
+  "top_n_worded_per_day": 6,
+  "total": 288
+ },
+ "events": [
+  {
+   "as_of": "2026-09-23T22:00:18.734664Z",
+   "category": "concert",
+   "city_id": "lisbon",
+   "ends_at": "2026-09-23T23:00:00Z",
+   "id": "sample:lisbon:2026-09-23:concert_hall",
+   "is_sample": true,
+   "revision": 1,
+   "source": "generated sample - NOT a real listing (see services/ingestor/make_samples.py)",
+   "source_url": "http://www.wikidata.org/entity/Q1108805",
+   "starts_at": "2026-09-23T20:00:00Z",
+   "title": "Sample: evening concert at Coliseu dos Recreios",
+   "venue": "Coliseu dos Recreios"
+  },
+  {
+   "as_of": "2026-09-23T22:00:18.734664Z",
+   "category": "theatre",
+   "city_id": "lisbon",
+   "ends_at": "2026-09-24T22:00:00Z",
+   "id": "sample:lisbon:2026-09-24:theatre",
+   "is_sample": true,
+   "revision": 1,
+   "source": "generated sample - NOT a real listing (see services/ingestor/make_samples.py)",
+   "source_url": "http://www.wikidata.org/entity/Q10378812",
+   "starts_at": "2026-09-24T19:00:00Z",
+   "title": "Sample: evening performance at Teatro Capit\u00f3lio",
+   "venue": "Teatro Capit\u00f3lio"
+  },
+  {
+   "as_of": "2026-09-23T22:00:18.734664Z",
+   "category": "sport",
+   "city_id": "lisbon",
+   "ends_at": "2026-09-25T21:00:00Z",
+   "id": "sample:lisbon:2026-09-25:stadium",
+   "is_sample": true,
+   "revision": 1,
+   "source": "generated sample - NOT a real listing (see services/ingestor/make_samples.py)",
+   "source_url": "http://www.wikidata.org/entity/Q2645332",
+   "starts_at": "2026-09-25T18:00:00Z",
+   "title": "Sample: league fixture at Est\u00e1dio Universit\u00e1rio de Lisboa",
+   "venue": "Est\u00e1dio Universit\u00e1rio de Lisboa"
+  }
+ ],
+ "facts": [
+  {
+   "as_of": "2026-09-23T21:52:25.344823+00:00",
+   "city_id": "lisbon",
+   "id": "wikipedia:Atelier-Museu_J\u00falio_Pomar",
+   "is_sample": false,
+   "revision": 1,
+   "source": "Wikipedia (CC BY-SA 4.0)",
+   "source_url": "https://en.wikipedia.org/wiki/Atelier-Museu_J%C3%BAlio_Pomar",
+   "summary": "The Atelier-Museum J\u00falio Pomar is a museum in Lisbon, Portugal, that preserves and promotes the work of J\u00falio Pomar (1926\u20132018) through temporary exhibitions, events, conferences, and educational activities. Located between Bairro Alto and Madragoa, two of the city's most popular neighborhoods, the museum building was designed by architect \u00c1lvaro Siza, winner of the 1992 Pritzker Architecture Prize. The museum's holdings include approximately 1,500 works by J\u00falio Pomar and other artists who were close to him.",
+   "title": "Atelier-Museu J\u00falio Pomar",
+   "topic": "landmark"
+  },
+  {
+   "as_of": "2026-09-23T21:52:25.344823+00:00",
+   "city_id": "lisbon",
+   "id": "wikipedia:Centro_de_Arte_Moderna_Gulbenkian",
+   "is_sample": false,
+   "revision": 1,
+   "source": "Wikipedia (CC BY-SA 4.0)",
+   "source_url": "https://en.wikipedia.org/wiki/Centro_de_Arte_Moderna_Gulbenkian",
+   "summary": "The Centro de Arte Moderna Gulbenkian (CAM) is a major venue for contemporary art in Portugal and holds one of the largest collections of modern and contemporary Portuguese artworks. Its building is currently under renovation and will reopen to the public, with a reformulated building, by Kengo Kuma, to celebrate its 40th anniversary in 2023. The CAM continues to develop its activities beyond the limits of the building until its reopening.",
+   "title": "Centro de Arte Moderna Gulbenkian",
+   "topic": "landmark"
+  },
+  {
+   "as_of": "2026-09-23T21:52:25.344823+00:00",
+   "city_id": "lisbon",
+   "id": "wikipedia:Lisbon",
+   "is_sample": false,
+   "revision": 1,
+   "source": "Wikipedia (CC BY-SA 4.0)",
+   "source_url": "https://en.wikipedia.org/wiki/Lisbon",
+   "summary": "Lisbon is the capital and most populous city of Portugal, with an estimated population of 658,236 as of 2025, within its administrative limits and 3,353,000 within the metropolis, as of 2025. The city lies on the Atlantic Ocean in the western part of the Iberian Peninsula, fronting the northern shore of the River Tagus. The western portion of its metro area, the Portuguese Riviera, hosts the westernmost point of Continental Europe, culminating at Cabo da Roca.",
+   "title": "Lisbon",
+   "topic": "history"
+  }
+ ],
+ "health": {
+  "database": true,
+  "outbox": {
+   "pending": 0,
+   "total": 4
+  },
+  "status": "ok"
+ },
+ "itineraries": [
+  {
+   "city_id": "lisbon",
+   "end_date": "2026-09-24",
+   "id": "11111111-2222-3333-4444-555555555555",
+   "revision": 1,
+   "start_date": "2026-09-23",
+   "title": "Two days in Lisbon",
+   "updated_at": "2026-09-23T18:16:44.438338Z"
+  }
+ ],
+ "places": [
+  {
+   "address": null,
+   "as_of": "2026-09-23T21:39:03.575554Z",
+   "category": "concert_hall",
+   "city_id": "lisbon",
+   "id": "wikidata:Q1108805",
+   "is_sample": false,
+   "lat": 38.71675,
+   "lon": -9.14016667,
+   "name": "Coliseu dos Recreios",
+   "revision": 1,
+   "source": "Wikidata (CC0)",
+   "source_url": "http://www.wikidata.org/entity/Q1108805"
+  },
+  {
+   "address": null,
+   "as_of": "2026-09-23T21:39:03.575554Z",
+   "category": "concert_hall",
+   "city_id": "lisbon",
+   "id": "wikidata:Q2384556",
+   "is_sample": false,
+   "lat": 38.705757,
+   "lon": -9.148307,
+   "name": "TMN ao Vivo",
+   "revision": 1,
+   "source": "Wikidata (CC0)",
+   "source_url": "http://www.wikidata.org/entity/Q2384556"
+  },
+  {
+   "address": null,
+   "as_of": "2026-09-23T21:39:03.575554Z",
+   "category": "gallery",
+   "city_id": "lisbon",
+   "id": "wikidata:Q16495045",
+   "is_sample": false,
+   "lat": 38.711366,
+   "lon": -9.150426,
+   "name": "Atelier-Museu J\u00falio Pomar",
+   "revision": 1,
+   "source": "Wikidata (CC0)",
+   "source_url": "http://www.wikidata.org/entity/Q16495045"
+  },
+  {
+   "address": null,
+   "as_of": "2026-09-23T21:39:03.575554Z",
+   "category": "gallery",
+   "city_id": "lisbon",
+   "id": "wikidata:Q1054339",
+   "is_sample": false,
+   "lat": 38.7354647,
+   "lon": -9.1540155,
+   "name": "Centro de Arte Moderna Gulbenkian",
+   "revision": 1,
+   "source": "Wikidata (CC0)",
+   "source_url": "http://www.wikidata.org/entity/Q1054339"
+  },
+  {
+   "address": null,
+   "as_of": "2026-09-23T21:39:03.575554Z",
+   "category": "gallery",
+   "city_id": "lisbon",
+   "id": "wikidata:Q2745620",
+   "is_sample": false,
+   "lat": 38.70888889,
+   "lon": -9.14111111,
+   "name": "Chiado Museum",
+   "revision": 1,
+   "source": "Wikidata (CC0)",
+   "source_url": "http://www.wikidata.org/entity/Q2745620"
+  },
+  {
+   "address": null,
+   "as_of": "2026-09-23T21:39:03.575554Z",
+   "category": "gallery",
+   "city_id": "lisbon",
+   "id": "wikidata:Q10333400",
+   "is_sample": false,
+   "lat": 38.72223,
+   "lon": -9.15576,
+   "name": "Museu Arpad Szenes - Vieira da Silva",
+   "revision": 1,
+   "source": "Wikidata (CC0)",
+   "source_url": "http://www.wikidata.org/entity/Q10333400"
+  }
+ ],
+ "scores": [
+  {
+   "activity": "art_gallery",
+   "activity_label": "An art gallery",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 59,
+   "status": "ready",
+   "text": "A fair day to visit the art gallery: mild temperatures and sunny skies [trimmed]",
+   "updated_at": "2026-09-23T23:01:28.239895Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "beach_day",
+   "activity_label": "A day at the beach",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "no rule was violated"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 100,
+   "status": "ready",
+   "text": "A good day to enjoy the beach with pleasant temperatures and clear ski [trimmed]",
+   "updated_at": "2026-09-23T22:05:23.254215Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "boat_ride",
+   "activity_label": "A boat ride",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 16-32C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 93,
+   "status": "ready",
+   "text": "A good day for a boat ride in Lisbon on 2026-09-23. The weather is war [trimmed]",
+   "updated_at": "2026-09-23T22:05:37.170360Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "farmers_market",
+   "activity_label": "An open-air farmers' market",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 8-28C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 69,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "fishing",
+   "activity_label": "Fishing",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 8-30C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 81,
+   "status": "ready",
+   "text": "A good day for fishing with warm temperatures and clear skies. [trimme [trimmed]",
+   "updated_at": "2026-09-23T22:05:39.842507Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "hiking",
+   "activity_label": "Hiking or a long walk",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 6-24C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 55,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "indoor_gaming",
+   "activity_label": "Staying in to play computer games",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 41,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "mall",
+   "activity_label": "Shopping at the mall",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 53,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "museums",
+   "activity_label": "Visiting a museum",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 64,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "music_festival",
+   "activity_label": "An open-air music festival",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 12-30C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 81,
+   "status": "ready",
+   "text": "A good day to attend the music festival with mild temperatures and cle [trimmed]",
+   "updated_at": "2026-09-23T22:05:40.974538Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "outdoor_workout",
+   "activity_label": "An outdoor workout",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 10-26C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 57,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "running",
+   "activity_label": "Running",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 8-20C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 55,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "sightseeing",
+   "activity_label": "Sightseeing on foot",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 12-26C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 57,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "soccer",
+   "activity_label": "A game of football",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 6-26C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 57,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "standup_comedy",
+   "activity_label": "A stand-up comedy show",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 56,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "sunset_watching",
+   "activity_label": "Watching the sunset",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 10-30C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 81,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "surfing",
+   "activity_label": "Surfing",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 16-32C range for this",
+    "only 9km/h of wind, too flat for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 86,
+   "status": "ready",
+   "text": "Surfing in Lisbon on 2026-09-23 is a good day with warm temperatures a [trimmed]",
+   "updated_at": "2026-09-23T22:05:38.742908Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "swimming",
+   "activity_label": "Swimming in the sea",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "no rule was violated"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 100,
+   "status": "ready",
+   "text": "A pleasant day for swimming in the sea, with warm temperatures and cle [trimmed]",
+   "updated_at": "2026-09-23T22:05:24.349824Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "art_gallery",
+   "activity_label": "An art gallery",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 59,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "beach_day",
+   "activity_label": "A day at the beach",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "no rule was violated"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 100,
+   "status": "ready",
+   "text": "A good day to enjoy the beach with pleasant temperatures and clear ski [trimmed]",
+   "updated_at": "2026-09-23T22:06:09.079363Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "boat_ride",
+   "activity_label": "A boat ride",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 16-32C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 93,
+   "status": "ready",
+   "text": "A good day for a boat ride in Lisbon on 2026-09-24. The weather is war [trimmed]",
+   "updated_at": "2026-09-23T22:06:23.012535Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "farmers_market",
+   "activity_label": "An open-air farmers' market",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 8-28C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 69,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "fishing",
+   "activity_label": "Fishing",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 8-30C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 81,
+   "status": "ready",
+   "text": "A good day for fishing with pleasant temperatures and clear skies. [tr [trimmed]",
+   "updated_at": "2026-09-23T22:06:35.984616Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "hiking",
+   "activity_label": "Hiking or a long walk",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 6-24C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 55,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "indoor_gaming",
+   "activity_label": "Staying in to play computer games",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 41,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "mall",
+   "activity_label": "Shopping at the mall",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 53,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "museums",
+   "activity_label": "Visiting a museum",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 64,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "music_festival",
+   "activity_label": "An open-air music festival",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 12-30C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 81,
+   "status": "ready",
+   "text": "A good day to attend the music festival with mild temperatures and cle [trimmed]",
+   "updated_at": "2026-09-23T22:06:34.888974Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "outdoor_workout",
+   "activity_label": "An outdoor workout",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 10-26C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 57,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "running",
+   "activity_label": "Running",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 8-20C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 55,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "sightseeing",
+   "activity_label": "Sightseeing on foot",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 12-26C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 57,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "soccer",
+   "activity_label": "A game of football",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 6-26C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 57,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "standup_comedy",
+   "activity_label": "A stand-up comedy show",
+   "band": "fair",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "a good day to be indoors: hot at 33C"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 56,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "sunset_watching",
+   "activity_label": "Watching the sunset",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": null,
+   "reasons": [
+    "33C is above the 10-30C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 81,
+   "status": "deferred",
+   "text": null,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "surfing",
+   "activity_label": "Surfing",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "33C is above the 16-32C range for this"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 93,
+   "status": "ready",
+   "text": "A good day for surfing with warm temperatures and clear skies. [trimme [trimmed]",
+   "updated_at": "2026-09-23T22:06:24.101814Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  },
+  {
+   "activity": "swimming",
+   "activity_label": "Swimming in the sea",
+   "band": "good",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "last_error": null,
+   "model": "Qwen3-1.7B-Q4_K_M",
+   "reasons": [
+    "no rule was violated"
+   ],
+   "requested": false,
+   "rule_version": 2,
+   "score": 100,
+   "status": "ready",
+   "text": "A pleasant day for swimming in the sea, with warm temperatures and cle [trimmed]",
+   "updated_at": "2026-09-23T22:06:10.281658Z",
+   "weather_as_of": "2026-09-23T18:16:43.925372Z"
+  }
+ ],
+ "weather": [
+  {
+   "as_of": "2026-09-23T18:16:43.925372Z",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-23",
+   "precip_mm": 0.0,
+   "precip_prob": 0,
+   "provider": "open-meteo",
+   "revision": 1,
+   "source_url": "https://api.open-meteo.com/v1/forecast?latitude=38.7223&longitude=-9.1393&daily=temperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_sum%2Cprecipitation_probability_max%2Cwind_speed_10m_max%2Cuv_index_max%2Csunshine_duration%2Csunrise%2Csunset%2Cweather_code&timezone=Europe%2FLisbon&forecast_days=16",
+   "sunrise": "2026-09-23T06:25:00Z",
+   "sunset": "2026-09-23T18:32:00Z",
+   "sunshine_hours": 11.25,
+   "temp_max_c": 33.2,
+   "temp_min_c": 20.7,
+   "updated_at": "2026-09-23T22:04:04.775244Z",
+   "uv_index": 6.25,
+   "weather_code": 1,
+   "wind_kmh": 9.0
+  },
+  {
+   "as_of": "2026-09-23T18:16:43.925372Z",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-24",
+   "precip_mm": 0.0,
+   "precip_prob": 0,
+   "provider": "open-meteo",
+   "revision": 1,
+   "source_url": "https://api.open-meteo.com/v1/forecast?latitude=38.7223&longitude=-9.1393&daily=temperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_sum%2Cprecipitation_probability_max%2Cwind_speed_10m_max%2Cuv_index_max%2Csunshine_duration%2Csunrise%2Csunset%2Cweather_code&timezone=Europe%2FLisbon&forecast_days=16",
+   "sunrise": "2026-09-24T06:25:00Z",
+   "sunset": "2026-09-24T18:30:00Z",
+   "sunshine_hours": 11.35,
+   "temp_max_c": 33.3,
+   "temp_min_c": 18.6,
+   "updated_at": "2026-09-23T22:04:04.782693Z",
+   "uv_index": 6.15,
+   "weather_code": 1,
+   "wind_kmh": 15.0
+  },
+  {
+   "as_of": "2026-09-23T18:16:43.925372Z",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-25",
+   "precip_mm": 0.0,
+   "precip_prob": 0,
+   "provider": "open-meteo",
+   "revision": 1,
+   "source_url": "https://api.open-meteo.com/v1/forecast?latitude=38.7223&longitude=-9.1393&daily=temperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_sum%2Cprecipitation_probability_max%2Cwind_speed_10m_max%2Cuv_index_max%2Csunshine_duration%2Csunrise%2Csunset%2Cweather_code&timezone=Europe%2FLisbon&forecast_days=16",
+   "sunrise": "2026-09-25T06:26:00Z",
+   "sunset": "2026-09-25T18:28:00Z",
+   "sunshine_hours": 11.37,
+   "temp_max_c": 28.6,
+   "temp_min_c": 17.2,
+   "updated_at": "2026-09-23T22:04:04.790510Z",
+   "uv_index": 6.15,
+   "weather_code": 3,
+   "wind_kmh": 16.5
+  },
+  {
+   "as_of": "2026-09-23T18:16:43.925372Z",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-26",
+   "precip_mm": 0.0,
+   "precip_prob": 0,
+   "provider": "open-meteo",
+   "revision": 1,
+   "source_url": "https://api.open-meteo.com/v1/forecast?latitude=38.7223&longitude=-9.1393&daily=temperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_sum%2Cprecipitation_probability_max%2Cwind_speed_10m_max%2Cuv_index_max%2Csunshine_duration%2Csunrise%2Csunset%2Cweather_code&timezone=Europe%2FLisbon&forecast_days=16",
+   "sunrise": "2026-09-26T06:27:00Z",
+   "sunset": "2026-09-26T18:27:00Z",
+   "sunshine_hours": 11.07,
+   "temp_max_c": 31.4,
+   "temp_min_c": 19.9,
+   "updated_at": "2026-09-23T22:04:04.798298Z",
+   "uv_index": 5.65,
+   "weather_code": 3,
+   "wind_kmh": 16.4
+  },
+  {
+   "as_of": "2026-09-23T18:16:43.925372Z",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-27",
+   "precip_mm": 0.0,
+   "precip_prob": 5,
+   "provider": "open-meteo",
+   "revision": 1,
+   "source_url": "https://api.open-meteo.com/v1/forecast?latitude=38.7223&longitude=-9.1393&daily=temperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_sum%2Cprecipitation_probability_max%2Cwind_speed_10m_max%2Cuv_index_max%2Csunshine_duration%2Csunrise%2Csunset%2Cweather_code&timezone=Europe%2FLisbon&forecast_days=16",
+   "sunrise": "2026-09-27T06:28:00Z",
+   "sunset": "2026-09-27T18:25:00Z",
+   "sunshine_hours": 9.45,
+   "temp_max_c": 29.9,
+   "temp_min_c": 21.2,
+   "updated_at": "2026-09-23T22:04:04.806660Z",
+   "uv_index": 5.65,
+   "weather_code": 3,
+   "wind_kmh": 15.5
+  },
+  {
+   "as_of": "2026-09-23T18:16:43.925372Z",
+   "city_id": "lisbon",
+   "forecast_date": "2026-09-28",
+   "precip_mm": 0.0,
+   "precip_prob": 8,
+   "provider": "open-meteo",
+   "revision": 1,
+   "source_url": "https://api.open-meteo.com/v1/forecast?latitude=38.7223&longitude=-9.1393&daily=temperature_2m_max%2Ctemperature_2m_min%2Cprecipitation_sum%2Cprecipitation_probability_max%2Cwind_speed_10m_max%2Cuv_index_max%2Csunshine_duration%2Csunrise%2Csunset%2Cweather_code&timezone=Europe%2FLisbon&forecast_days=16",
+   "sunrise": "2026-09-28T06:29:00Z",
+   "sunset": "2026-09-28T18:24:00Z",
+   "sunshine_hours": 10.61,
+   "temp_max_c": 25.1,
+   "temp_min_c": 20.3,
+   "updated_at": "2026-09-23T22:04:04.814082Z",
+   "uv_index": 6.0,
+   "weather_code": 3,
+   "wind_kmh": 19.6
+  }
+ ]
+}

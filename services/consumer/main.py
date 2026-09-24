@@ -98,6 +98,31 @@ def seed_cities(conn: psycopg.Connection) -> None:
     log.info("seeded %d cities (%d coastal)", len(cities), sum(COASTAL.values()))
 
 
+def enforce_event_mode(conn: psycopg.Connection) -> int:
+    """Demo rows must not survive a return to a default run.
+
+    Generated sample events (`is_sample`) are a demonstration aid, not data the
+    system claims. Gating them at the ingestor stops a default run from
+    *accepting* them, but a database that once ran in demo mode would still be
+    holding them. So the consumer -- the only role with write grants, which is
+    what keeps this inside M4 -- deletes them on startup whenever demo mode is
+    off.
+
+    The effect is that `AOW_DEMO_EVENTS` describes the database, not just the
+    run: start without it and the sample rows are gone, however they got there.
+    """
+    if config.DEMO_EVENTS:
+        log.warning("DEMO MODE: generated sample events are permitted in this database")
+        return 0
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM events WHERE is_sample")
+        removed = cur.rowcount
+    conn.commit()
+    if removed:
+        log.info("removed %d generated sample events left over from a demo run", removed)
+    return removed
+
+
 # ------------------------------------------------------------- upserting ----
 
 
@@ -395,11 +420,27 @@ def apply_patch(cur: psycopg.Cursor, p: schemas.RecordPatch) -> None:
         raise Poison(f"no such record: {p.entity}/{p.entity_id}")
 
 
+def upsert_event(cur: psycopg.Cursor, p) -> None:
+    """Store an event, unless it is a generated sample and demo mode is off.
+
+    The ingestor already decides not to replay the sample file, so in practice
+    nothing gets here. This is the same check repeated at the write boundary,
+    because "no generated row is stored by default" is a claim the README
+    makes, and it should hold for any producer, not only for the one we wrote.
+    Dropping is deliberate: a sample arriving with demo mode off is a
+    configuration mismatch, not a corrupt message, so it is not poison.
+    """
+    if getattr(p, "is_sample", False) and not config.DEMO_EVENTS:
+        log.warning("dropping generated sample event %s: demo mode is off", p.id)
+        return
+    upsert_by_id(cur, "events", EVENT_COLS, p.model_dump())
+
+
 HANDLERS = {
     config.RK_WEATHER: None,  # handled inline, it also creates pending rows
     config.RK_PLACE: lambda cur, p: upsert_by_id(cur, "places", PLACE_COLS, p.model_dump()),
     config.RK_FACT: lambda cur, p: upsert_by_id(cur, "facts", FACT_COLS, p.model_dump()),
-    config.RK_EVENT: lambda cur, p: upsert_by_id(cur, "events", EVENT_COLS, p.model_dump()),
+    config.RK_EVENT: lambda cur, p: upsert_event(cur, p),
     config.RK_RECOMMENDATION_REQUEST: store_recommendation_request,
     config.RK_LLM_RECOMMENDATION: store_llm_recommendation,
     config.RK_PATCH: apply_patch,
@@ -474,6 +515,7 @@ def handle(routing_key: str, body: bytes, _message_id: str | None) -> None:
 def main() -> None:
     conn = pool.conn
     seed_cities(conn)
+    enforce_event_mode(conn)
     log.info("consuming %s", config.QUEUE)
     consume(handle, name="aow-consumer")
 
