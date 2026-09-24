@@ -27,7 +27,7 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..common import config, queries, schemas
+from ..common import config, queries, refresh_state, schemas
 from ..common.db import Pool
 from ..common.envelope import Envelope
 from ..common.outbox import Outbox
@@ -259,6 +259,27 @@ def outbox_status(message_id: str) -> dict[str, Any]:
     result["stored"] = stored is not None
     result["stored_at"] = stored["processed_at"] if stored else None
     return result
+
+
+@app.get("/refresh/last")
+def refresh_last() -> dict[str, Any]:
+    """What the last operator refresh actually did (M12, F4).
+
+    A read of one JSON file on a volume this service mounts read-only, filed by
+    `scripts/refresh.sh` on its way out. It is deliberately not a row: a refresh
+    whose provider refused every city accepts no messages, so the queue has
+    nothing to carry and the consumer has nothing to store -- see
+    services/common/refresh_state.py.
+
+    `recorded: false` rather than a 404, because "no refresh has been recorded on
+    this stack" is the normal state of a fresh install and the UI has something
+    to say about it. There is no matching write route: the only way to record a
+    run is to run the command on the host.
+    """
+    report = refresh_state.read()
+    if report is None:
+        return {"recorded": False}
+    return {"recorded": True, "report": report}
 
 
 # ----------------------------------------------------------------- writes ----

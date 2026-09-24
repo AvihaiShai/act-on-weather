@@ -36,6 +36,7 @@ help:
 	@echo ""
 	@echo "Connected maintenance:"
 	@echo "  make refresh        re-fetch the forecast through a temporary egress window"
+	@echo "                      (reports the run at GET /refresh/last)"
 	@echo "  make refresh-check  prove that window opens and closes (no internet needed)"
 	@echo "  make snapshot       rebuild data/snapshot/ from source"
 	@echo "  make samples        regenerate the labelled sample events (no network)"
@@ -137,6 +138,10 @@ demo: offline questions no-data-loss update reenrich
 # The portable form -- what the README documents, and what a Windows reviewer
 # runs -- is the compose line below, executing this same script from this same
 # working tree.
+#
+# Both targets act on the `aow` project. Set AOW_PROJECT to point them at another
+# stack; that is how the drills run the shipped command against an isolated
+# project instead of editing compose.tools.yml.
 refresh:
 	$(COMPOSE) $(TOOLS) run --rm refresh
 

@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from services.api.main import app
+from services.common import refresh_state
 
 client = TestClient(app)
 
@@ -77,3 +78,50 @@ def test_record_patch_body_stays_open():
     response = client.patch("/records/places/rome-colosseum", json={"summary": "corrected"})
     assert response.status_code == 202, response.text
     assert response.json()["message_id"]
+
+
+# ------------------------------------------------- the last refresh run (F4) --
+# `GET /refresh/last` is the UI's only source for what the operator refresh
+# actually did. It reads one JSON file from a read-only volume, so it needs no
+# database and belongs here with the rest of the request contract.
+
+
+def test_no_recorded_refresh_is_a_200_not_a_404(monkeypatch, tmp_path):
+    """A fresh install has never run a refresh. That is a normal state the UI has
+    something to say about, so it is a body and not an error."""
+    monkeypatch.setattr(refresh_state.config, "REFRESH_STATE_PATH", tmp_path / "absent.json")
+    response = client.get("/refresh/last")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"recorded": False}
+
+
+def test_a_recorded_refresh_is_served_back(monkeypatch, tmp_path):
+    report = {"outcome": "cities-failed", "exit_code": 2, "failed_cities": ["reykjavik"]}
+    target = tmp_path / "last-run.json"
+    refresh_state.write(report, target)
+    monkeypatch.setattr(refresh_state.config, "REFRESH_STATE_PATH", target)
+
+    body = client.get("/refresh/last").json()
+    assert body["recorded"] is True
+    assert body["report"]["outcome"] == "cities-failed"
+
+
+def test_a_corrupt_report_reads_as_nothing_recorded(monkeypatch, tmp_path):
+    """The route is called on every UI rerun. A hand-edited or truncated file must
+    not turn the Update tab into a 500."""
+    target = tmp_path / "last-run.json"
+    target.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(refresh_state.config, "REFRESH_STATE_PATH", target)
+    assert client.get("/refresh/last").json() == {"recorded": False}
+
+
+def test_there_is_no_route_that_starts_a_refresh():
+    """The whole design of F4: the only way to open an egress window is to run a
+    command on the Docker host. Nothing reachable over HTTP may start one, so the
+    only route with `refresh` in its path is this read-only GET."""
+    refresh_routes = {
+        (route.path, tuple(sorted(route.methods)))
+        for route in app.routes
+        if getattr(route, "methods", None) and "refresh" in route.path
+    }
+    assert refresh_routes == {("/refresh/last", ("GET",))}
