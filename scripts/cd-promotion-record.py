@@ -73,6 +73,8 @@ GATES = [
     "model_checksum_verified",
     "bundle_built_by_package_offline_sh",
     "bundle_verified_by_verify_bundle_images_sh",
+    "bundle_installed_without_pulls",
+    "release_smoke_serves_data",
 ]
 
 # Not every image alias in the bundle carries the same proof. Three tiers,
