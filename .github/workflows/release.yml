@@ -34,13 +34,12 @@ on:
 permissions:
   contents: read
 
-# Only one release build per commit at a time. package-offline.sh refuses to
-# run a second time into an existing dist/aow-<sha>/ (see its `test ! -e
-# "$out"` guard), so two concurrent dispatches for the same sha would collide
-# on that directory rather than producing two independent results. A dispatch
-# for a DIFFERENT sha gets its own group and runs in parallel normally.
-# cancel-in-progress is false on purpose: a queued second run should wait its
-# turn, not cancel a build that might be minutes from a verified bundle.
+# Serialize releases for the same commit so duplicate dispatches do not
+# produce competing promotion artifacts. Each hosted runner has its own
+# checkout and dist/ directory; the package script's local output guard does
+# not serialize separate runs. Different commits can release in parallel.
+# Keep an active build running if another dispatch arrives. GitHub can still
+# replace an older *pending* run in the same group with a newer pending one.
 concurrency:
   group: release-${{ inputs.sha }}
   cancel-in-progress: false

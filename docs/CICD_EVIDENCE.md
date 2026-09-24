@@ -34,7 +34,7 @@ Listed first, because a matrix that silently corrects its own source is not evid
 | Claim | Status | Evidence |
 |---|---|---|
 | Git repo with all code and configuration | **PASS** | Public repo; 8 compose files, `.env.example`, `IMAGES.lock`, `models.lock`, `ruff.toml`, `pytest.ini`, `edge/nginx.conf`, `db/migrations/` all tracked |
-| CI/CD definitions present and running | **PASS** | `ci.yml` (8 jobs), `release.yml`; every run on `main` green |
+| CI/CD definitions present and running | **PASS** | `ci.yml` (8 jobs), `release.yml`; the current `main` push run is green, including publish |
 | README present and substantive | **PASS** | `README.md`, plus `docs/ARCHITECTURE.md`, `TECHNICAL_DECISIONS.md`, `docs/RELEASE.md` |
 | README counts are not stale | **PASS** | `scripts/snapshot_manifest.py --check` runs in `guard` on every PR |
 | No secrets committed | **PASS** | `guard` rejects a tracked `.env` and any non-placeholder password in `.env.example`; gitleaks runs on every PR; secret scanning and push protection enabled at the repo level |
@@ -78,12 +78,12 @@ All timings from real GitHub-hosted runners, not estimates.
 |---|---|---|---|
 | `lint` | ruff check + format | every PR | ~10s, green on every run |
 | `unit` | 1170 tests, `--network none` | every PR | 1m11s on PR #37 |
-| `guard` | no hosted-LLM SDK; no committed secret; gitleaks; every compose image, Dockerfile base and workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR | ~9s |
+| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR and push | main guard run `36056250209` scanned 2.08 MB of committed content |
 | `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
 | `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | 1m30s–1m35s; last run 153 same-origin, 0 external |
 | `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | run `36055211121`: **82s**, 8/8 grounded; upgraded cache action ran on a cache miss |
 | `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | run `36055211121`: **104s**, measured RPO 19s, RTO 20–21s |
-| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `862a08f` (run `36055198116`) |
+| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `2f92999` (run `36056250209`) |
 
 **Why `model-grounding` and `restore-drill` are release-candidate rather than per-PR:**
 not cost — 82s and 104s in the latest run are cheap next to `build-and-scan`. Blast radius. The restore
@@ -141,7 +141,7 @@ PR #40 raised the **one-shot** model-staging container's memory cap from
 256 MiB to 2 GiB after the unexplained exit 137. The identical rerun and a
 local full download at 256 MiB both passed, so the cap change is headroom,
 not a proven root-cause repair. Staging exits before the runtime services
-start. The final hosted release, [`36055978771`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36055978771),
+start. Hosted release [`36055978771`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36055978771)
 exercised this configuration on merged commit `862a08f`: staging, bundle
 build and verification, no-pull install, and the data smoke all passed;
 the runner had **78 GB free after install**. Its downloaded promotion artifact
@@ -150,6 +150,16 @@ and the bundle checksum, `SHA256SUMS` seals the record, and the recorded CI
 run is the exact commit's successful push run `36055198116`. The live branch
 protection read remains explicitly unverified (HTTP 403), as in the earlier
 record.
+
+After PR #42 added the committed-tree secret scan, release
+[`36057235570`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36057235570)
+targeted its merged commit `2f92999`. The same build, verification, no-pull
+install and data smoke passed. Runner disk free was **86 GB before packaging,
+78 GB after packaging, and 78 GB after install**. The uploaded record was
+downloaded and checked for its 12 distinct gates, exact successful push CI run
+`36056250209`, model path and SHA against `models.lock` and the bundle, and
+its own SHA256SUMS entry. The live protection read again returned HTTP 403
+and is recorded as unverified.
 
 ### The two install claims are not the same claim
 
