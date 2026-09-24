@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from ..common import config, queries, rules
+from ..common import config, metrics, queries, rules
 from ..common.db import Pool
 from ..common.llm import LlmClient, LlmInvalidOutput, LlmUnavailable
 from . import dates, grounding
@@ -38,6 +38,13 @@ logging.basicConfig(
 log = logging.getLogger("agent")
 
 app = FastAPI(title="act-on-weather agent", version="1.0")
+
+# Request metrics and the internal `/metrics` endpoint (B2). The agent has no
+# outbox -- it never writes -- so it exports HTTP metrics only. Its latency
+# histogram is the interesting one in this stack: a single `/ask` waits on a
+# CPU llama.cpp call that the enricher is also queueing against, which is why
+# the buckets in common/metrics.py run out to a minute.
+metrics.mount_metrics(app, "agent")
 
 pool = Pool(config.reader_dsn(), autocommit=True)
 client = LlmClient()

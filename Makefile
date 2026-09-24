@@ -12,7 +12,8 @@ PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a
 
 .PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
         grounding offline no-data-loss update reenrich questions refresh \
-        refresh-check snapshot samples manifest redrive dlq clean
+        refresh-check snapshot samples manifest redrive dlq clean \
+        monitor monitor-down backup restore backup-restore
 
 help:
 	@echo "Staging (needs the internet, once):"
@@ -32,6 +33,7 @@ help:
 	@echo "  make reenrich       the local model is not on the critical path"
 	@echo "  make questions      M7/M8 -- agent breadth, including what it refuses"
 	@echo "  make grounding      M7 -- adversarial grounding against the local model"
+	@echo "  make backup-restore B3  -- back up, destroy the volumes, restore, verify"
 	@echo "  make demo           all of the above, in order"
 	@echo ""
 	@echo "Connected maintenance:"
@@ -45,6 +47,9 @@ help:
 	@echo "Operations:"
 	@echo "  make dlq            list what is quarantined"
 	@echo "  make redrive        move dead letters back onto the exchange"
+	@echo "  make monitor        start Prometheus and Grafana (optional overlay)"
+	@echo "  make backup         back up Postgres, the outboxes and the broker topology"
+	@echo "  make restore DIR=backups/<id>  restore one into an isolated project"
 
 # ---------------------------------------------------------------- staging --
 stage: stage-fetch stage-build
@@ -125,6 +130,11 @@ no-data-loss:  ; bash demos/02_no_data_loss.sh
 update:        ; bash demos/03_update.sh
 reenrich:      ; bash demos/04_reenrich.sh
 questions:     ; bash demos/05_questions.sh
+# Deliberately not part of `make demo`. Every proof above runs against the
+# stack that is already up; this one builds an isolated project of its own
+# and destroys its volumes, which takes about two minutes and would be a
+# surprising thing for `make demo` to do to a reviewer.
+backup-restore: ; bash demos/06_backup_restore.sh
 
 demo: offline questions no-data-loss update reenrich
 
@@ -181,3 +191,31 @@ dlq:
 
 redrive:
 	$(COMPOSE) exec consumer python -m services.tools.redrive
+
+# ------------------------------------------------------------ monitoring --
+# Opt-in, and that is the whole point of it being an overlay. Prometheus and
+# Grafana are pinned in IMAGES.lock and travel in the offline bundle, but
+# nothing starts them unless this file is passed, so a reviewer who wants only
+# the application never pays for them.
+#
+# Grafana is the only thing published, on loopback like everything else.
+# Prometheus stays on the internal network and is reached through Grafana.
+monitor:
+	$(COMPOSE) -f compose.yml -f compose.observability.yml up -d
+	@echo ""
+	@echo "Grafana http://127.0.0.1:3000 -- admin / GRAFANA_ADMIN_PASSWORD from .env"
+
+monitor-down:
+	$(COMPOSE) -f compose.yml -f compose.observability.yml stop \
+	  prometheus grafana edge-observability
+
+# ------------------------------------------------------- backup / restore --
+# Operational recovery of live state. Distinct from the release installer's
+# rollback, which restores a previous *release*; this restores the data a
+# running stack accepted. See docs/RUNBOOK-BACKUP-RESTORE.md.
+backup:
+	bash scripts/backup-state.sh
+
+# make restore DIR=backups/2026-09-24T15-44-00Z
+restore:
+	bash scripts/restore-state.sh $(DIR)

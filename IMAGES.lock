@@ -9,3 +9,10 @@ ghcr.io/ggml-org/llama.cpp@sha256:fb8f521cdfee1b763a6ef0d6633922e780c1393c03b499
 # Tooling only -- never part of the running stack. Base for demos/Dockerfile,
 # the container that runs the proofs on any OS (see compose.tools.yml).
 docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+# Monitoring, pinned by compose.observability.yml. That overlay is opt-in: a
+# run without `-f compose.observability.yml` pulls neither image. Both are
+# multi-arch index digests, like every pin above. A single-platform manifest
+# digest here would pin every reviewer to our architecture, and cannot be
+# exported into an offline bundle.
+prom/prometheus@sha256:76947e7ef22f8a698fc638f706685909be425dbe09bd7a2cd7aca849f79b5f64
+grafana/grafana@sha256:74144189b38447facf737dfd0f3906e42e0776212bf575dc3334c3609183adf7

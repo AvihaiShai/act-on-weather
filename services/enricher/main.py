@@ -23,7 +23,7 @@ import os
 import time
 from typing import Any
 
-from ..common import config
+from ..common import config, metrics
 from ..common.db import Pool
 from ..common.envelope import Envelope
 from ..common.llm import LlmClient, LlmInvalidOutput, LlmUnavailable
@@ -131,11 +131,42 @@ def drain(box: Outbox, publisher: Publisher) -> bool:
             publisher.publish(row["routing_key"], row["body"], row["message_id"])
         except PublishError as exc:
             box.mark_failed(row["seq"], str(exc))
+            metrics.OUTBOX_PUBLISH_FAILURES.labels(service="enricher").inc()
             log.warning("cannot publish %s: %s", row["message_id"], exc)
             publisher.close()
             return False
         box.mark_published(row["seq"])
+        # Counted on the confirm, so the wording a traveller will eventually see
+        # is counted when it is actually owed to the consumer, not when it was
+        # written.
+        metrics.MESSAGES_PUBLISHED.labels(
+            service="enricher", routing_key=metrics.safe_routing_key(row["routing_key"])
+        ).inc()
     return True
+
+
+def call_model(client: LlmClient, row: dict[str, Any]) -> dict[str, Any]:
+    """The one model call, timed.
+
+    Timed here rather than around `enrich_one` so the histogram measures the
+    model and not the validation and the outbox write that follow it. Calls that
+    fail are observed too: a call that ran into `LLM_TIMEOUT_S` is the slowest
+    thing this service does, and leaving it out of the histogram would make the
+    tail look healthy exactly when it is not.
+    """
+    started = time.perf_counter()
+    try:
+        return client.chat_json(SYSTEM, build_prompt(row), SCHEMA)
+    except LlmUnavailable:
+        # A separate result from `invalid`, because they are different failures
+        # with different fixes -- the model being unreachable versus the model
+        # being wrong -- and because that is the distinction
+        # ENRICH_MAX_INVALID_ATTEMPTS already makes in the pipeline. Only one of
+        # the two consumes an attempt.
+        metrics.ENRICHMENT_REQUESTS.labels(result="unavailable").inc()
+        raise
+    finally:
+        metrics.ENRICHMENT_DURATION.observe(time.perf_counter() - started)
 
 
 def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
@@ -147,7 +178,7 @@ def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
         "weather_as_of": row["weather_as_of"].isoformat() if row["weather_as_of"] else None,
     }
     try:
-        parsed = client.chat_json(SYSTEM, build_prompt(row), SCHEMA)
+        parsed = call_model(client, row)
         text = validate_text(parsed.get("recommendation"))
     except LlmInvalidOutput as exc:
         log.warning(
@@ -158,6 +189,7 @@ def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
             exc,
         )
         accept_result(box, {**base, "status": "invalid", "error": str(exc)[:400]}, row["city_id"])
+        metrics.ENRICHMENT_REQUESTS.labels(result="invalid").inc()
         return "invalid"
 
     accept_result(
@@ -165,6 +197,10 @@ def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
         {**base, "status": "ready", "text": text, "model": config.LLM_MODEL},
         row["city_id"],
     )
+    # Counted after the result is in the outbox, which is the point from which
+    # it is owed to the consumer. A wording counted before that could be one the
+    # process died holding.
+    metrics.ENRICHMENT_REQUESTS.labels(result="ready").inc()
     return "ready"
 
 
@@ -173,6 +209,17 @@ def main() -> None:
     client = LlmClient()
     box = Outbox(config.OUTBOX_PATH)
     publisher = Publisher(name="aow-enricher")
+
+    metrics.start_metrics_server()
+    # Exported through a separate read-only handle: the loop below owns the
+    # writable one and takes no lock, so sharing it with a scrape thread would
+    # be introducing a race for the sake of a gauge.
+    metrics.register_outbox_file("enricher", config.OUTBOX_PATH)
+    # The backlog gauge reads the same rows PENDING_SQL polls, through the same
+    # read-only pool, cached so a scrape cannot cost the enricher a round trip
+    # each time.
+    metrics.register_enrichment_backlog(pool)
+
     log.info(
         "polling pending recommendations every %.0fs (batch %d)",
         config.ENRICH_POLL_SECONDS,

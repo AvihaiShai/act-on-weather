@@ -27,7 +27,7 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..common import config, queries, refresh_state, schemas
+from ..common import config, metrics, queries, refresh_state, schemas
 from ..common.db import Pool
 from ..common.envelope import Envelope
 from ..common.outbox import Outbox
@@ -45,6 +45,13 @@ pool = Pool(config.reader_dsn(), autocommit=True)
 outbox = Outbox(config.OUTBOX_PATH)
 _outbox_lock = threading.Lock()
 
+# Request metrics and the internal `/metrics` endpoint (B2). The outbox gauges
+# are read at scrape time under the same lock the request threads and the
+# publisher thread already share -- the API's SQLite handle is used from
+# several threads and is only safe because every caller takes this one lock.
+metrics.mount_metrics(app, "api")
+metrics.register_outbox_metrics("api", outbox, lock=_outbox_lock)
+
 
 # ------------------------------------------------------- publisher thread ----
 
@@ -61,11 +68,18 @@ def _publisher_loop() -> None:
                 except PublishError as exc:
                     with _outbox_lock:
                         outbox.mark_failed(row["seq"], str(exc))
+                    metrics.OUTBOX_PUBLISH_FAILURES.labels(service="api").inc()
                     log.warning("publish failed for %s: %s", row["message_id"], exc)
                     publisher.close()
                     break
                 with _outbox_lock:
                     outbox.mark_published(row["seq"])
+                # After the confirm, never before it: this counter is what a
+                # dashboard reads as "delivered", and a publish counted at the
+                # attempt would make a broker outage look like traffic.
+                metrics.MESSAGES_PUBLISHED.labels(
+                    service="api", routing_key=metrics.safe_routing_key(row["routing_key"])
+                ).inc()
         except Exception as exc:  # noqa: BLE001 - the loop must never die
             log.exception("publisher loop error: %s", exc)
         time.sleep(2)

@@ -1,0 +1,237 @@
+# Monitoring. An overlay, deliberately, and not part of compose.yml.
+#
+#   docker compose -f compose.yml -f compose.observability.yml up -d
+#
+# Two reasons it lives here rather than in the running system's file:
+#
+#   1. Cost. Prometheus (440 MB) and Grafana (974 MB) are 1.4 GB of image on
+#      top of a stack that already ships a model server. A reviewer who only
+#      wants to see the pipeline answer a question should not pay for that,
+#      and on a 16 GB machine running a local LLM the 1 GB of extra memory
+#      limits below is not free either.
+#   2. compose.yml should read as the system. `stage`, `demos` and `refresh`
+#      are kept out of it for the same reason (see compose.tools.yml). Nothing
+#      in here produces or stores application data; it only observes.
+#
+# ---------------------------------------------------------------- topology --
+#
+# The rule compose.yml states at the top holds here without exception:
+# `backend` is `internal: true`, so Docker itself guarantees no route out, and
+# `frontend` is a routable bridge that holds proxies and nothing else.
+#
+# Grafana and Prometheus therefore sit on `backend` ONLY. This is the design
+# point a reviewer should test, so it is worth stating plainly: putting
+# Grafana on `frontend` to publish 3000 directly would be one line shorter and
+# would hand Grafana a working route to the internet. Grafana is a program
+# that, unless told otherwise, phones grafana.com for version checks, plugin
+# updates, a news feed and gravatar avatars. The GF_* variables below turn all
+# of that off -- but "we asked it not to" is a weaker claim than "it cannot",
+# and the whole air-gap argument in the README rests on the second one. So the
+# network keeps the guarantee and the environment variables are defence in
+# depth, not the defence.
+#
+# That leaves the same problem `edge` already solves: Docker cannot publish a
+# port from an internal network. So a second nginx -- `edge-observability` --
+# straddles `frontend` and `backend` and publishes Grafana, exactly as `edge`
+# publishes the UI and the API, and for exactly the same reason. It holds no
+# state, no credentials and no outbound client; it is 64 MB of reverse proxy.
+# It reuses the nginx image compose.yml already pins, so this overlay adds two
+# images to the bundle, not three.
+#
+# Prometheus is not published at all. Its only client is Grafana, which
+# reaches it at http://prometheus:9090 over `backend`. An operator who wants
+# the expression browser can reach it deliberately:
+#
+#   docker compose -f compose.yml -f compose.observability.yml \
+#     exec prometheus wget -qO- 'http://127.0.0.1:9090/api/v1/rules'
+#
+# RabbitMQ's management UI (15672) and its Prometheus exporter (15692) are not
+# published either. Enabling a port inside the stack is not the same as
+# putting it on the host, and only the second one is a decision.
+#
+# -------------------------------------------------------------- alerting ----
+#
+# There is no Alertmanager. observability/prometheus/alerts.yml explains why
+# in full; the short version is that an air-gapped single host has no mail
+# relay and no webhook target, so a routing component would have nowhere to
+# route. Rules are evaluated by Prometheus and surfaced as the ALERTS series,
+# which the service-health dashboard renders.
+
+volumes:
+  # Prometheus' TSDB. Named, because an alert that fires on "no successful
+  # ingestion for a day" needs more than a day of history to be worth
+  # anything, and `docker compose down` must not take it.
+  promdata:
+  # Grafana's SQLite: dashboard state, users, annotations. The dashboards
+  # themselves are provisioned from files and are reproducible without this,
+  # but the admin user and anything an operator annotated are not.
+  grafanadata:
+
+services:
+  prometheus:
+    image: prom/prometheus@sha256:76947e7ef22f8a698fc638f706685909be425dbe09bd7a2cd7aca849f79b5f64
+    restart: unless-stopped
+    # Nine targets, ~1,500 series after the relabel drops in prometheus.yml.
+    # 512 MB is generous for that and still small enough to sit beside the
+    # model server on a 16 GB machine.
+    mem_limit: 512m
+    volumes:
+      # Config and rules, read-only: Prometheus never writes here, and a
+      # writable config directory is a way for a compromised scrape target to
+      # become a compromised rule set.
+      - ./observability/prometheus:/etc/prometheus:ro
+      - promdata:/prometheus
+    # The image's default command is repeated because adding flags to it
+    # replaces it wholesale -- omit --config.file and Prometheus silently
+    # starts on its own built-in config with no scrape targets and no rules.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Two bounds, not one. A demo host that is left running should not fill
+      # a disk, and whichever limit is hit first wins.
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+      - --web.listen-address=0.0.0.0:9090
+      # The reload/quit API, explicitly off. It is off by default, and saying
+      # so costs one line: a reviewer checking whether an unauthenticated
+      # "re-read your config" and "shut down" endpoint is reachable from every
+      # container on `backend` should find the answer here rather than have to
+      # know a default. What it would buy is one
+      # `docker compose restart prometheus`, which costs a second and keeps
+      # the TSDB, because the TSDB is on a volume.
+      #
+      # Spelled as the kingpin negative form. `--web.enable-lifecycle=false`
+      # looks like it should work and does not -- Prometheus exits with
+      # "unexpected false" and the container crash-loops.
+      - --no-web.enable-lifecycle
+    # The image runs as uid 65534 (nobody) and owns /prometheus, so no `user:`
+    # override is needed -- and adding one would break the volume's ownership.
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  grafana:
+    image: grafana/grafana@sha256:74144189b38447facf737dfd0f3906e42e0776212bf575dc3334c3609183adf7
+    restart: unless-stopped
+    mem_limit: 512m
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      # ---- credentials -------------------------------------------------
+      # From .env like every other password in this stack. `:?` so a missing
+      # value fails the `up` rather than quietly leaving Grafana on its
+      # built-in admin/admin, which is the failure mode that matters: this is
+      # published on the host, even if only on loopback.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+
+      # ---- everything that would otherwise reach the internet -----------
+      # Each of these is a real outbound call Grafana makes by default. They
+      # are listed one per line rather than collapsed, because a reviewer
+      # checking the air-gap claim should be able to tick them off. The
+      # network already makes all of them impossible (`backend` is internal);
+      # turning them off as well means Grafana is not spending its start-up
+      # timing out on DNS that will never resolve, and the logs stay readable.
+      #
+      # usage statistics -> stats.grafana.org
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # "a new version is available" -> grafana.com/api/grafana/versions
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # per-plugin update checks -> grafana.com/api/plugins
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      # "give feedback" links in the UI, which resolve against grafana.com
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      # the news panel on the home dashboard -> grafana.com/blog/news.rss
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      # Grafana 11.5+ preinstalls a default set of plugins on first start by
+      # downloading them from grafana.com. Both forms are set: the explicit
+      # disable flag, and an empty list, so the behaviour is the same whether
+      # this image honours one or the other.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL: ""
+      GF_INSTALL_PLUGINS: ""
+      # Found by reading the logs rather than the documentation, which is why
+      # it is worth a comment. With everything above set, Grafana STILL fetches
+      # https://grafana.com/api/plugins/ci/keys on start -- the public keys it
+      # uses to verify plugin signatures -- and retries it every 60 seconds
+      # forever:
+      #
+      #   logger=plugin.signature.key_retriever level=error
+      #   msg="Error downloading plugin manifest keys" error="Get
+      #   \"https://grafana.com/api/plugins/ci/keys\": dial tcp: lookup
+      #   grafana.com on 127.0.0.11:53: server misbehaving"
+      #
+      # The internal network already stopped it -- that log line IS the air-gap
+      # working -- but a minute-by-minute error in a monitoring container is
+      # the kind of noise that trains an operator to ignore the logs. There
+      # are no plugins to verify here, so the retrieval is switched off and
+      # Grafana's log stays clean enough to read.
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      # Avatars are fetched by the BROWSER from gravatar.com, so no container
+      # network can stop them; this and the CSP in observability/edge/nginx.conf
+      # are what keep the reviewer's browser off the internet too.
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+
+      # ---- provisioning -------------------------------------------------
+      # File-provisioned, not clicked together in the UI. The datasource and
+      # both dashboards are in Git, so a rebuilt stack has the same dashboards
+      # and a reviewer can read them as text.
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      # Grafana is served through edge-observability on the host's port 3000,
+      # and the path is unchanged, so this is just the published address.
+      GF_SERVER_ROOT_URL: http://localhost:3000/
+    volumes:
+      # The two provisioning subdirectories individually, NOT the whole
+      # /etc/grafana/provisioning tree. Mounting the parent replaces the
+      # image's own directory, which also contains empty `plugins/`,
+      # `alerting/`, `notifiers/` and `access-control/` folders that Grafana
+      # reads on start. Their absence is not fatal, but it produces two error
+      # lines on every boot ("can't read alerting provisioning files from
+      # directory") that look like a misconfiguration and are not one.
+      # Mounting only what we actually provide leaves the rest intact.
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # The dashboard JSON itself, read-only, at the path
+      # provisioning/dashboards/dashboards.yml points to.
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    # No `user:`. The image runs as uid 472 and owns /var/lib/grafana, which a
+    # fresh named volume inherits; pinning a different uid here would leave
+    # Grafana unable to write its own database.
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # The second straddle. See the topology note at the top of this file: this
+  # container exists only because Grafana must not be on a routable network,
+  # and Docker cannot publish a port from an internal one.
+  edge-observability:
+    image: nginx:alpine@sha256:1ed1b0e1d7652937d6cbdaf4018c7b6fc009a7dd6c3047351e2eddda745de43f
+    restart: unless-stopped
+    mem_limit: 64m
+    volumes:
+      - ./observability/edge/nginx.conf:/etc/nginx/nginx.conf:ro
+    # Loopback, for the same reason as `edge`: Grafana has a login form, and a
+    # 0.0.0.0 binding would offer it to every client that can route to this
+    # host. AOW_BIND_ADDR moves the boundary deliberately, and the README's
+    # Security section is the place that says what else has to be true first.
+    ports:
+      - "${AOW_BIND_ADDR:-127.0.0.1}:3000:3000"   # Grafana
+    networks: [frontend, backend]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s

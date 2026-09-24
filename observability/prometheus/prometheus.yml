@@ -1,0 +1,132 @@
+# Prometheus scrape configuration for the act-on-weather stack.
+#
+# Every target below is a hostname on the `backend` network, which is
+# `internal: true`. Prometheus has no route out and needs none: there is no
+# remote_write, no service discovery that calls an API, and no Alertmanager.
+# Service discovery is `static_configs`, which is the honest choice for a
+# fixed nine-service Compose stack -- dns_sd or docker_sd would be machinery
+# in front of a list that is already written down in compose.yml.
+
+global:
+  # 15s everywhere. The alerts below are all written with `for:` windows of
+  # minutes, so a faster interval would buy nothing but disk.
+  scrape_interval: 15s
+  # Shorter than the interval, so a hung target cannot overlap its own next
+  # scrape. The llm target is the one that can actually be slow: llama.cpp
+  # serves /metrics from the same process that is generating tokens.
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    stack: aow
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# No `alerting:` block. There is no Alertmanager in this stack, on purpose --
+# observability/prometheus/alerts.yml gives the full argument. Prometheus
+# evaluates the rules regardless and exposes the result as the ALERTS series,
+# which is what the service-health dashboard renders.
+
+scrape_configs:
+  # ---------------------------------------------------------- application --
+  #
+  # Five services, three shapes:
+  #   * api and agent are FastAPI/uvicorn, so /metrics is a route on the same
+  #     port the service already serves.
+  #   * ingestor, consumer and enricher have no HTTP server of their own, so
+  #     each runs prometheus_client's start_http_server on 9100. Same port
+  #     number in all three because they are different containers -- there is
+  #     no collision, and one number is easier to remember than three.
+  #
+  # `service` is not set here. Each application metric already carries a
+  # `service` label of its own (see the metric contract), and a scrape-time
+  # label would either duplicate it or, worse, disagree with it.
+
+  - job_name: aow-api
+    static_configs:
+      - targets: ["api:8000"]
+
+  - job_name: aow-agent
+    static_configs:
+      - targets: ["agent:8100"]
+
+  - job_name: aow-ingestor
+    static_configs:
+      - targets: ["ingestor:9100"]
+
+  - job_name: aow-consumer
+    static_configs:
+      - targets: ["consumer:9100"]
+
+  - job_name: aow-enricher
+    static_configs:
+      - targets: ["enricher:9100"]
+
+  # --------------------------------------------------------------- broker --
+  #
+  # Two jobs against the same exporter, because RabbitMQ 4.x splits what we
+  # need across two endpoints. This was checked against the running exporter
+  # rather than assumed, and the result was not what it looked like from the
+  # documentation:
+  #
+  #   /metrics          -- aggregated. It DOES publish `rabbitmq_queue_messages`,
+  #                        but with no `queue` label at all: the value is the
+  #                        sum over every queue. With aow.ingest at 1 and
+  #                        aow.dlq at 1 it reads 2, which is exactly the number
+  #                        that would make a dead-letter alert fire for a
+  #                        healthy backlog and never fire for a backlog of one
+  #                        poisoned message.
+  #   /metrics/detailed -- per-object, and the families are selected by query
+  #                        parameter. `queue_coarse_metrics` yields
+  #                        `rabbitmq_detailed_queue_messages{vhost,queue}`,
+  #                        which is the series the alerts actually use.
+  #
+  # So: the aggregated endpoint for broker health, the detailed one for the
+  # two numbers that must be per-queue.
+
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+    metric_relabel_configs:
+      # Measured: this endpoint returns 4,901 series, of which 3,408 are
+      # `erlang_vm_allocators` and a further ~850 are `erlang_vm_msacc_*`.
+      # Those are Erlang memory-allocator and scheduler-microstate internals.
+      # Nobody on this project can act on them, and keeping them would make
+      # the broker four-fifths of the whole TSDB. Dropped at ingestion, so the
+      # cost is paid once here rather than every time a dashboard loads.
+      - source_labels: [__name__]
+        regex: "erlang_vm_allocators|erlang_vm_msacc_.*"
+        action: drop
+
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      # One family. The detailed endpoint will happily return everything, and
+      # everything is 460 KB per scrape; this is 2.3 KB and contains the only
+      # honest source of queue depth there is. It has to come from the broker:
+      # a consumer that has crashed cannot report how far behind it is, and
+      # that is precisely when the number matters.
+      family: ["queue_coarse_metrics"]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  # ---------------------------------------------------------------- model --
+  #
+  # llama.cpp's own exporter, already switched on by `--metrics` in
+  # compose.yml. We scrape it for one reason above all: `up{job="llm"}`. The
+  # model being down is a state the system is designed to survive (weather
+  # keeps flowing, recommendations go to `pending`), and an operator still
+  # needs to know it is in that state rather than discovering it from a UI
+  # full of pending rows.
+  - job_name: llm
+    static_configs:
+      - targets: ["llm:8080"]
+
+  # ----------------------------------------------------------------- self --
+  #
+  # Prometheus scraping itself. It is how `up` exists for the rule evaluator
+  # to compare against, and how a rule-evaluation failure becomes visible
+  # (`prometheus_rule_evaluation_failures_total`) instead of silent.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

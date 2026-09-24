@@ -28,7 +28,7 @@ from typing import Any
 
 import yaml
 
-from ..common import config
+from ..common import config, metrics
 from ..common.envelope import Envelope
 from ..common.outbox import Outbox
 from ..common.rabbit import Publisher, PublishError
@@ -150,6 +150,18 @@ def accept_live_weather(
     needs to see: the provider answered for four cities and refused the fifth,
     whose stored forecast is now quietly older than the rest. The accepted
     message ids come back too, so the wrapper can follow them to the database.
+
+    One ingestion run is counted per city for the same reason: the failure that
+    matters here is partial, and a single per-refresh counter would round it to
+    "it worked". The city is not a label -- five cities times two outcomes would
+    be fine today and would not be if the list grew -- so the per-city detail
+    stays in the returned report and in `refresh_state`, and the metric carries
+    only the source and the outcome.
+
+    When `scripts/refresh.sh` runs the refresh module, this runs in a
+    short-lived container that nothing scrapes, so those increments are lost.
+    That path reports itself through `refresh_state.py`, which the API serves at
+    `GET /refresh/last`; what these counters cover is the ingestor's own loop.
     """
     from .providers import get_provider
 
@@ -173,11 +185,15 @@ def accept_live_weather(
         except Exception as exc:  # noqa: BLE001 - one city must not stop the rest
             log.error("forecast fetch failed for %s: %s", city["slug"], exc)
             result["error"] = f"{type(exc).__name__}: {exc}"
+            metrics.INGESTION_RUNS.labels(source=provider.name, result="failed").inc()
             results.append(result)
             continue
         if not payloads:
             log.error("forecast fetch returned no days for %s", city["slug"])
             result["error"] = "provider returned no forecast days"
+            # A 200 with an empty forecast is a failed ingestion, not a quiet
+            # success: nothing was accepted, so nothing will reach the database.
+            metrics.INGESTION_RUNS.labels(source=provider.name, result="failed").inc()
             results.append(result)
             continue
         ids = box.accept_many(list(envelopes_from(config.RK_WEATHER, payloads, provider.name)))
@@ -191,6 +207,10 @@ def accept_live_weather(
             last_date=dates[-1],
         )
         results.append(result)
+        # Counted after `accept_many` returned, so success means the days are
+        # fsynced into the outbox and therefore owed -- not merely fetched.
+        metrics.INGESTION_RUNS.labels(source=provider.name, result="ok").inc()
+        metrics.INGESTION_LAST_SUCCESS.labels(source=provider.name).set(time.time())
         log.info("accepted %d forecast days for %s", len(ids), city["slug"])
     return results
 
@@ -208,10 +228,16 @@ def drain(box: Outbox, publisher: Publisher, limit: int = 200) -> int:
             # The row stays unpublished on purpose: this is the broker-down
             # path, and it must look like a delay, not a loss.
             box.mark_failed(row["seq"], str(exc))
+            metrics.OUTBOX_PUBLISH_FAILURES.labels(service="ingestor").inc()
             log.warning("publish failed for %s: %s", row["message_id"], exc)
             publisher.close()
             break
         box.mark_published(row["seq"])
+        # Only reached once the broker confirmed the publish, which is what
+        # makes this counter mean "delivered" rather than "attempted".
+        metrics.MESSAGES_PUBLISHED.labels(
+            service="ingestor", routing_key=metrics.safe_routing_key(row["routing_key"])
+        ).inc()
         published += 1
     return published
 
@@ -226,10 +252,25 @@ def main() -> int:
     publisher = Publisher(name="aow-ingestor")
     log.info("starting in %s mode, outbox=%s", mode, config.OUTBOX_PATH)
 
+    metrics.start_metrics_server()
+    # Exported through a separate read-only handle: the loop below owns the
+    # writable one and takes no lock, because it is the only thread that touches
+    # it, and handing that handle to a scrape thread would be introducing a race
+    # for the sake of a gauge.
+    metrics.register_outbox_file("ingestor", config.OUTBOX_PATH)
+
     def accept_once() -> int:
         if mode == "live":
+            # accept_live_weather counts its own runs, one per city.
             return sum(r["accepted"] for r in accept_live_weather(box, cities, days))
-        return accept_snapshot(box, config.SNAPSHOT_DIR)
+        try:
+            accepted = accept_snapshot(box, config.SNAPSHOT_DIR)
+        except Exception:
+            metrics.INGESTION_RUNS.labels(source="snapshot", result="failed").inc()
+            raise
+        metrics.INGESTION_RUNS.labels(source="snapshot", result="ok").inc()
+        metrics.INGESTION_LAST_SUCCESS.labels(source="snapshot").set(time.time())
+        return accepted
 
     accepted = accept_once()
     log.info("accepted %d records; outbox %s", accepted, box.counts())

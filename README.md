@@ -1046,6 +1046,85 @@ air-gap certification.
 
 ---
 
+## Monitoring
+
+Opt-in, and deliberately so. `docker compose up -d` starts the application and
+nothing else; a reviewer who does not want a time-series database and a
+dashboard server on their laptop never pays for them.
+
+```sh
+make monitor     # docker compose -f compose.yml -f compose.observability.yml up -d
+                 # Grafana http://127.0.0.1:3000  (admin / GRAFANA_ADMIN_PASSWORD)
+```
+
+Both images are pinned by digest in `IMAGES.lock` and travel in the offline
+bundle, so turning monitoring on for the first time on an air-gapped host
+downloads nothing.
+
+**What is measured.** Request count, error count and latency for the API and the
+agent; queue and dead-letter depth; per-producer outbox backlog and the age of
+the oldest unpublished record; consumer throughput by outcome; enrichment
+backlog and model-call latency; ingestion freshness. Eleven alert rules cover
+service death, model unavailability, queue backlog, dead letters, a stuck
+outbox, stale ingestion, server errors, latency and enrichment failure. Each one
+carries an annotation saying what to do about it.
+
+**The labels cannot grow without bound.** HTTP metrics are labelled with the
+route *template* — `/weather/{city}`, one series for every city — and a request
+matching no route is labelled `<unmatched>`, so a scanner walking random URLs
+costs one series rather than one per URL. Methods and routing keys are folded to
+known sets for the same reason, and a test asserts it.
+
+**Nothing monitoring-related is published.** Prometheus and Grafana sit on the
+`internal: true` backend with no route out; a second nginx straddles the
+boundary and publishes Grafana on loopback, which is the same reason `edge`
+exists. The RabbitMQ management UI, the RabbitMQ metrics endpoint and Prometheus
+itself are reachable only from inside. `/metrics` is blocked at the edge, so the
+route map and latency distribution are not served on the published API port.
+
+**There is no Alertmanager**, on purpose: an air-gapped single host has no mail
+relay or webhook target, so a routing component would have nowhere to route.
+Rules are evaluated by Prometheus and surfaced in Grafana. Alertmanager belongs
+in the [production path](#production-path-kubernetes--openshift).
+
+Grafana is configured for a machine with no internet — analytics, update checks,
+plugin-update checks, the news feed, plugin preinstall and the plugin *signature
+key retrieval* are all disabled. That last one is easy to miss: with every other
+switch off, Grafana still calls `grafana.com` once a minute.
+
+## Backup and restore
+
+Operational recovery of live state. This is not the release installer's
+rollback, which restores a previous *release*; this restores the data a running
+stack accepted.
+
+```sh
+make backup                        # Postgres, all three outboxes, broker topology
+make restore DIR=backups/<id>      # into an isolated project, never over the live one
+make backup-restore                # the whole drill: back up, destroy, restore, verify
+```
+
+The drill accepts specific records, backs up, accepts more, destroys every
+volume, restores, and then verifies **from a separate reader** — `psql` against
+the restored database, not the API that accepted the writes — that each
+pre-backup id is present exactly once. Records accepted after the backup are
+asserted *absent*, because that is the honest boundary of a point-in-time
+backup rather than something to hide.
+
+Measured on 2026-09-24: **RPO 24 s, RTO 31 s**, whole drill 116 s. The RPO is a
+property of the drill; in production it is the backup interval.
+
+Queue message bodies are not backed up. Confirmed envelopes return through
+`reconcile.py --replay` during the restore — the drill proves this with a record
+that is provably absent from the dump — and unpublished ones drain from the
+producer outbox on restart.
+
+Full procedure, retention and every limit of the guarantee:
+[docs/RUNBOOK-BACKUP-RESTORE.md](docs/RUNBOOK-BACKUP-RESTORE.md). Dated evidence
+with commands, ids and results:
+[docs/EVIDENCE-observability-and-recovery.md](docs/EVIDENCE-observability-and-recovery.md).
+
+
 ## Requirements traceability
 
 IDs are from `ASSIGNMENT.md`, which decomposes the brief. "Verify" is a command
@@ -1068,8 +1147,8 @@ you can run.
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
 | B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |
-| B2 | LLM observability metrics | **not attempted** — `llm` exposes llama.cpp's own `--metrics`, unscraped | — |
-| B3 | Automatic recovery from failures | **partial, and not as a bonus feature** — reconnect-with-backoff everywhere, `restart: unless-stopped`, healthchecks, automatic re-enrichment | `docker compose -f compose.tools.yml run --rm demos reenrich`, then `… demos no-data-loss` |
+| B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and two provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at `http://127.0.0.1:3000`; [evidence](docs/EVIDENCE-observability-and-recovery.md) |
+| B3 | Automatic recovery from failures | **partial, and not as a bonus feature** — reconnect-with-backoff everywhere, `restart: unless-stopped`, healthchecks, automatic re-enrichment, plus an operator backup/restore with a measured RPO/RTO (`make backup-restore`) | `docker compose -f compose.tools.yml run --rm demos reenrich`, then `… demos no-data-loss` |
 
 ---
 
@@ -1087,6 +1166,14 @@ docker compose -f compose.tools.yml run --rm demos reenrich      # the model is 
 docker compose -f compose.tools.yml run --rm demos all           # all of them, in order
 ```
 
+The recovery drill is separate, because unlike every proof above it does not run
+against the stack that is already up — it builds an isolated project of its own
+and destroys its volumes:
+
+```sh
+make backup-restore   # or: bash demos/06_backup_restore.sh   (~2 minutes)
+```
+
 | | |
 |---|---|
 | `offline` | air-gapped operation, and the no-guessing rule |
@@ -1094,6 +1181,7 @@ docker compose -f compose.tools.yml run --rm demos all           # all of them, 
 | `no-data-loss` | four drills, each tracing one accepted `message_id` |
 | `update` | an edit through the queue, with its history |
 | `reenrich` | the local model is a presentation layer, not a dependency |
+| `backup-restore` | back up, destroy every volume, restore, verify each accepted id exactly once |
 
 The unit tests need no stack and no network:
 
@@ -1309,9 +1397,17 @@ Stated, not implied:
   page then shows an older run or none. It is operator telemetry rather than
   data, and it is deliberately not in the database —
   [The operator refresh](#the-operator-refresh) gives the reason.
-* **The bonus items (B1–B3) are partial**: CI covers the queue/database/API
-  integration path, but not the full model and UI flows. There is no
-  Prometheus/Grafana stack; `llm` exposes llama.cpp's own `--metrics`.
+* **The bonus items (B1 and B3) are partial**: CI covers the
+  queue/database/API integration path, but not the full model and UI flows.
+  B2 is met — see [Monitoring](#monitoring) — but the monitoring overlay is
+  opt-in and nothing alerts off-host, because an air-gapped single machine has
+  no mail relay or webhook to route to.
+* **Backups are logical dumps, not point-in-time recovery**, and they land on
+  the same disk as the volumes they protect unless an operator copies them off.
+  A restore also brings RabbitMQ's users back with the *backup's* password
+  hashes, so a restore after a password change needs the contemporaneous
+  `.env`. All of it is in
+  [the runbook](docs/RUNBOOK-BACKUP-RESTORE.md).
 
 ---
 

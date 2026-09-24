@@ -1,0 +1,44 @@
+# The one datasource, provisioned from a file rather than clicked together in
+# the UI.
+#
+# That matters more here than it usually does. A datasource created through
+# the UI lives only in Grafana's SQLite, which lives only in a named volume:
+# `docker compose down -v` would take it, and nothing in Git would say it had
+# ever existed. Provisioned, it is reproducible from the repository on a host
+# that has never run this stack -- which is the same property the rest of the
+# air-gapped bundle has to have.
+#
+# `http://prometheus:9090` is a hostname on the `backend` network, which is
+# `internal: true`. Grafana is on that network and no other, so this is not
+# only where Prometheus is -- it is the only place Grafana can reach at all.
+
+apiVersion: 1
+
+# Removes a datasource that was provisioned under this name and then renamed
+# or dropped here, so the file stays the source of truth instead of
+# accumulating orphans in Grafana's database across upgrades.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # Fixed, rather than left to Grafana's auto-generated id. The dashboard
+    # JSON in observability/grafana/dashboards/ refers to this string, so a
+    # dashboard file can be read -- and reviewed -- without having to look up
+    # what uid the running instance happened to assign.
+    uid: aow-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # Provisioned config is read-only in the UI on purpose: an operator who
+    # edits the URL in a browser produces a running system that disagrees with
+    # the repository, and the disagreement survives a restart.
+    editable: false
+    jsonData:
+      # Must match `global.scrape_interval` in prometheus.yml. Grafana uses it
+      # to pick a sensible default step for `rate()` windows; set too low it
+      # generates queries that return gaps between scrapes.
+      timeInterval: 15s
+      httpMethod: POST
