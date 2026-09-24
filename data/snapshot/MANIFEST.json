@@ -24,9 +24,9 @@
     "places": {
       "cities": 5,
       "file": "data/snapshot/places.jsonl",
-      "lines": 282,
-      "sha256": "a3155bbfff36ebd099f711e262dac5d7aa3101e7455520497951ac4550038a23",
-      "stored": 272
+      "lines": 620,
+      "sha256": "b23c985a01ac3684a5ce3d6c9d5b60a036905c10ee7fa8275d2c604052f966b6",
+      "stored": 620
     },
     "weather": {
       "cities": 5,

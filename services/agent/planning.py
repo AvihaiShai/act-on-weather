@@ -16,6 +16,10 @@ neither of them touches the stored score itself. The score stays the source of
 truth and is what the heatmap, the API and the agent report. This is a
 presentation ordering laid over it -- and it is deterministic, so the same
 request rebuilds the same plan.
+
+`venue_places` fixes the other half of that sentence. Interests filtered the
+places list, but the day's chosen activity did not, so a beach day and a museum
+day in the same city were handed the same three rows.
 """
 
 from __future__ import annotations
@@ -29,6 +33,52 @@ from typing import Any
 # perfect beach day because someone ticked "museums".
 INTEREST_BONUS = 15
 REPEAT_PENALTY = 18
+
+# How many venue places a day may name before the list stops being a
+# suggestion and starts being a directory.
+MAX_VENUE_PLACES = 3
+
+
+def venue_places(
+    activity: str | None,
+    meta: dict[str, dict[str, Any]],
+    places: list[dict[str, Any]],
+    used: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """The stored places that ARE a venue for the day's activity.
+
+    The planner used to pick a day's places purely from the traveller's stated
+    interests, with no reference to what the day was actually for. So a Tel
+    Aviv day whose activity was "a day at the beach" listed parks, because
+    `outdoors` resolves to parks and gardens -- and, until the beach vocabulary
+    landed in the ingestor, because there was no beach row to list either.
+
+    This is the narrow fix: an activity that declares `place_categories` in
+    data/activities.yml gets the matching rows named first. Two properties
+    matter more than the ordering.
+
+    1. It claims nothing the source did not say. Only `beach_day` carries a
+       coastal venue category, because "beach" is what Wikidata Q40080 and OSM
+       `natural=beach` assert. Surfing, swimming, fishing and boat rides carry
+       none: a beach is not evidence of surf, a lifeguard, legal angling or a
+       boat for hire.
+    2. Nothing exists, nothing is shown. An activity with no venue category, or
+       one whose categories match no stored row, returns an empty list, and the
+       caller renders the honest gap rather than substituting a park for a
+       beach.
+
+    `used` carries the place ids already spent on earlier days, so a week does
+    not open on Gordon Beach seven times. Ordering is by stored `category` then
+    `name` -- the order `queries.places` already returns -- so the same request
+    rebuilds the same plan.
+    """
+    wanted = set((meta.get(activity) or {}).get("place_categories") or []) if activity else set()
+    if not wanted:
+        return []
+    spent = used or set()
+    return [p for p in places if p["category"] in wanted and p["id"] not in spent][
+        :MAX_VENUE_PLACES
+    ]
 
 
 def plan_day(
