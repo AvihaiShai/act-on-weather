@@ -220,14 +220,21 @@ redrive:
 # Grafana is the only thing published, on loopback like everything else.
 # Prometheus stays on the internal network and is reached through Grafana.
 #
-# In an installed offline release AOW_IMAGE_VERSION is set and the images are
-# the bundle's local aliases, so the two bundle overlays go on the end. On a
-# developer checkout the variable is empty and this expands to nothing, which
-# is why the same target works in both places.
+# The installer exports AOW_IMAGE_VERSION only for its own process. A later
+# `make monitor` reads the release's version file itself, so it still selects
+# the bundle aliases from a fresh shell. A developer checkout has no version
+# file and uses the registry-pinned observability overlay directly.
+ifeq ($(strip $(AOW_IMAGE_VERSION)),)
+ifneq ($(wildcard release-version.txt),)
+AOW_IMAGE_VERSION := $(shell cat release-version.txt)
+endif
+endif
+export AOW_IMAGE_VERSION
 OBS_BUNDLE = $(if $(AOW_IMAGE_VERSION),-f compose.bundle.yml -f compose.observability.bundle.yml,)
+OBS_OFFLINE_ARGS = $(if $(AOW_IMAGE_VERSION),--no-build --pull never,)
 
 monitor:
-	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) up -d
+	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) up -d $(OBS_OFFLINE_ARGS)
 	@echo ""
 	@echo "Grafana http://127.0.0.1:3000 -- admin / GRAFANA_ADMIN_PASSWORD from .env"
 
