@@ -35,7 +35,12 @@ done
 dc() { docker compose -p "$project" -f compose.yml -f "$overlay" --env-file "$env_file" "$@"; }
 
 dc config --quiet
-dc pull postgres rabbitmq
+# `edge` belongs here too, and its absence is not theoretical: this gate is the
+# only one that starts nginx, so on a clean runner the first real run failed
+# with `No such image: nginx:alpine@sha256:...` while passing locally, where
+# the image happened to already be in the store. Everything below runs with
+# --pull never on purpose, so every image the stack needs must be fetched here.
+dc pull postgres rabbitmq edge
 dc up -d --no-build --pull never postgres rabbitmq migrate ingestor consumer api ui edge
 
 # `edge` reporting healthy only means nginx itself answered /healthz -- it
