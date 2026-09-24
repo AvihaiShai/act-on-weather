@@ -12,7 +12,7 @@ chmod 600 "$env_file"
 cleanup() {
   local status=$?
   if [ "$status" -ne 0 ]; then
-    docker compose -p "$project" -f compose.yml -f "$overlay" --env-file "$env_file" logs --tail=80 migrate consumer api || true
+    docker compose -p "$project" -f compose.yml -f "$overlay" --env-file "$env_file" logs --tail=80 migrate consumer enricher api || true
   fi
   docker compose -p "$project" --env-file "$env_file" down --volumes --remove-orphans || true
   rm -f "$env_file"
@@ -28,8 +28,9 @@ dc() { docker compose -p "$project" -f compose.yml -f "$overlay" --env-file "$en
 # The overlay selects the exact images that were scanned and later published.
 dc config --quiet
 dc pull postgres rabbitmq
-dc up -d --no-build --pull never postgres rabbitmq migrate ingestor consumer api
+dc up -d --no-build --pull never postgres rabbitmq migrate ingestor consumer enricher api
 dc exec -T api python - < tests/integration/smoke.py
+dc exec -T enricher python - < tests/integration/enricher_running.py
 dc exec -T consumer python - < tests/integration/reconnect.py
 # F2: the local-date derivation lives in SQL, so only a real Postgres with real
 # tzdata can prove it. Asserted against the committed snapshot, whose dates are
