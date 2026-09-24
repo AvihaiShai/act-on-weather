@@ -297,7 +297,16 @@ jobs:
           from pathlib import Path
 
           bad = []
-          for path in Path(".github/workflows").glob("*.yml"):
+          # Both suffixes: GitHub runs *.yaml as readily as *.yml, so globbing
+          # only one of them leaves a workflow that can carry a bare tag past
+          # this check without printing anything.
+          workflows = sorted(
+              set(Path(".github/workflows").glob("*.yml"))
+              | set(Path(".github/workflows").glob("*.yaml"))
+          )
+          if not workflows:
+              raise SystemExit("::error::no workflow files found to check")
+          for path in workflows:
               for number, line in enumerate(path.read_text().splitlines(), 1):
                   # Anchored to the YAML key, so this script does not
                   # match its own source when it reads this file.

@@ -323,13 +323,53 @@ now a separate job, so that token scope exists only on push-to-main. Every job c
 `timeout-minutes` and a concurrency group (`main` excluded from `cancel-in-progress`: a
 cancelled run there would leave a commit's image manifest unpublished).
 
-**Issue #4 (Node 20 annotations) is reviewed and deliberately left open**, with evidence
-posted to the issue. Its premise was wrong: `actions/cache@0400d5f6` appears nowhere in
-`ci.yml` and is pulled in **transitively** by `trivy-action`'s composite, so bumping our
-own four pins cannot clear it. Nothing is failing — the runner already forces Node 24. The
-two bumps that would change behaviour rather than quiet a log line, `gitleaks-action`
-v2→v3 and `trivy-action` v0.35→v0.36, both alter a **security gate**, and bumping a scanner
-to silence an annotation is how a gate stops gating.
+**Issue #4 (Node 20 annotations) is closed**, and both halves of the reasoning that first
+kept it open are kept here, because one of them was wrong. The wrong half was its premise
+that our own four pins were the source: `actions/cache@0400d5f6` appears nowhere in
+`ci.yml` and was pulled in **transitively** by `trivy-action`'s composite, so no sweep of
+our own pins could have cleared it. The right half was the order of work. The two bumps
+that change behaviour rather than quiet a log line, `gitleaks-action` v2→v3 and
+`trivy-action` v0.35→v0.36, both alter a **security gate**, and bumping a scanner to
+silence an annotation is how a gate stops gating.
+
+So the sweep was taken as two attributable changes rather than one. #39 moved the core and
+artifact actions (`checkout` v7.0.1, `setup-python` v7.0.0, `upload-artifact` v7.0.1,
+`download-artifact` v8.0.1, `cache` v6.1.0); #38 moved the two scanners, in a commit each.
+What was checked before closing:
+
+- **The annotation is gone.** Run `36050580394` (`804b5df`) carries six Node 20 warnings;
+  run `36055198116` (`862a08f`) carries none. `model-grounding` and `restore-drill` are
+  skipped on an ordinary push, so a push run alone would not have exercised every pin
+  — dispatch run `36055211121` on the same commit covers those two, `actions/cache`
+  included.
+- **Nothing node20 is left in the transitive closure either**, which is the part the issue
+  said a version sweep could not reach. `trivy-action` v0.36.0 pulls `setup-trivy` v0.2.6
+  and `actions/cache` v5.0.5; `setup-trivy` pulls `cache/restore`, `cache/save` and
+  `checkout` v6.0.1. All node24, and that is the bottom of the tree.
+- **Trivy still gates.** The bundled binary moved to v0.70.0 and all three scans report
+  zero, so the newer scanner surfaced no new HIGH/CRITICAL to suppress.
+- **Gitleaks v3 is a runtime migration** — no input, output or behaviour change — and
+  the canary committed with it proves the pinned binary still detects a generated token.
+- **The artifact chain survived the majors.** `if-no-files-found` and `retention-days` are
+  unchanged in `upload-artifact` v7, and the least-common-ancestor rule still puts
+  `images.lock` at the artifact root, so `package-offline.sh` finds what it expects. The
+  v5 path-behaviour break in `download-artifact` is by artifact **ID**; every download here
+  is by **name**. The one new behaviour that reaches us is v8's `digest-mismatch: error`
+  default, which fails a corrupt image tar at the download rather than at `docker load`.
+
+The canary earned its place immediately, though not in the way it was meant to. It passes
+while proving only that the binary detects a token in a directory — and on a merge push
+the action's own generated range (`--no-merges --first-parent`) scanned **zero commits**
+and still reported success. That is not a v3 regression; v2 generated the identical range.
+The committed-tree scan in #42 closes it, and it is the argument for positive controls:
+the gate the canary vindicated was the one that was not running.
+
+The pinning guard had a matching blind spot, fixed here. It globbed
+`.github/workflows/*.yml` only, so a workflow added as `*.yaml` would have been skipped in
+silence rather than checked, and an empty glob would have reported success. It now reads
+both suffixes and fails when it finds no workflow at all. It still cannot see transitive
+pins — a composite action's internals are fetched at run time, never read from this tree
+— which is exactly why the `actions/cache` above needed a human to catch.
 
 `dependabot.yml` groups pip updates across all three directories, for **both** version and
 security updates. Dependabot's first security PR failed `unit` in 21s: `requests` is
@@ -344,7 +384,7 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
 | Item | Why it is not a gate |
 |---|---|
 | Air-gap install certification | A hosted runner has internet throughout. Requires a separate engine with egress dropped; manual by construction. **Executed** — see §4 |
-| Action major upgrades | A behaviour change to security gates; deliberately a human decision (§8) |
+| Action major upgrades | Taken in #38/#39 and verified in §8. Future majors stay a human decision: Dependabot keeps the two scanners ungrouped so a new finding is attributable to one bump |
 | Enricher container coverage | Not started in CI; recorded, not closed |
 | `consumer.handle()` routing unit tests | Covered only where integration happens to exercise a key |
 
