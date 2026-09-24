@@ -154,6 +154,56 @@ images.tar cannot load ui as linux/amd64:
     aa0557fd8e55: 8 of 11 blobs (its config and layers) are not in the archive
 ```
 
+### The gate is now tested, and testing it found a second hole
+
+The check above was written in response to the defect and then had no test of
+its own — the existing bundle fixtures build only complete, single-platform
+amd64 archives. `tests/unit/test_bundle_archive.py` closes that. It builds
+synthetic `docker save` archives and runs the **real** script against them: a
+complete single-platform archive passes; a manifest blob with no config or
+layers fails, naming the alias and the missing blob count; an image whose
+config declares `linux/arm64` fails; and a multi-platform index whose
+non-target children are absent **passes**, which is the property this section
+says must stay legal. Disabling the completeness block leaves every case in
+`test_bundle_tamper.py` green and fails exactly four of these, which is the
+measurement that says the file earns its place.
+
+Writing it found one more hole of the same class. The per-alias loop was driven
+by the list of child manifests whose blobs are *present*, so an alias that is an
+index with **no** present children produced no rows, fell out of the loop and
+was reported complete:
+
+```
+$ # the pre-fix script, against an index-shaped empty archive
+images.tar is complete: every image has its config and layers, as linux/amd64
+$ echo $?
+0
+```
+
+That is the original defect in the exact shape both application images now
+have, passing the check written to catch it. The loop is now driven by every
+alias that reached that stage, and an index with nothing present says so
+(`its index lists no manifest whose blobs are in the archive`) instead of
+printing a bare colon.
+
+### The installer reports release alias tags already in the store
+
+`scripts/install-offline.sh` takes a census of the release alias tags in the
+image store before it loads, and reports how many it found and which ones.
+An absent alias tag does not prove the engine lacks that image's blobs;
+`images.tar` is checked for completeness directly by `verify-bundle.sh`.
+A store with those alias tags is still allowed, because every legitimate upgrade and
+re-install has one; `AOW_REQUIRE_CLEAN_IMAGE_STORE=1` makes it a hard failure
+when any release alias tag is already present.
+
+This counts **tags, not content**. An engine holding the same layers untagged
+reads as clean, and no post-load query to the daemon can do better: `docker
+load` resolves content by digest against the local store, so the tag-to-manifest
+mapping it leaves behind is identical whether the archive supplied the blobs or
+the store already had them. That is precisely why the bad bundle passed every
+drill until one ran on an empty engine, and it is why the census is a report
+rather than a proof.
+
 ---
 
 ## 2. Staging and offline environments
@@ -215,6 +265,43 @@ with no image cache to fall back on and no reachable egress**, which is
 precisely the property the previous same-host drill could not establish and the
 property that exposed §1. What it does not establish: operation on physically
 disconnected hardware.
+
+### What the bundle needs from a transfer medium, measured
+
+Three properties that read as unexamined risks are in fact closed by the
+bundle's own shape, and are recorded here so nobody has to re-derive them:
+
+| property | measured | consequence |
+|---|---|---|
+| largest single file | `models/*.gguf`, 1,282,439,264 B; `images.tar` 1,231,824,896 B | both under FAT32's 4 GiB per-file cap, so no split or reassembly step is needed, and none exists |
+| executable bits | `git ls-files -s scripts/ demos/` reports mode `100644` for every `.sh`; every documented invocation is `bash scripts/<x>.sh`, and the container entrypoints are `["bash", …]` | a medium that cannot carry a mode bit breaks nothing |
+| symlinks and path length | no tracked symlink (`git ls-files -s` has no `120000` entry); longest bundle path 41 characters | a case-insensitive, symlink-less filesystem carries the folder intact |
+
+What is **not** closed is the copy itself. The transport measured in §3 was a
+hypervisor filesystem share at 218 MiB/s, which no USB 2.0 device and few USB
+3.0 devices will match; and no removable device, one-way diode, interrupted
+copy or torn write has been exercised.
+
+One failure mode of a real removable-media copy **was** reproduced, and it is
+the likeliest way an operator meets this system's refusal for the wrong reason.
+Copying the folder with Finder or Explorer rather than with `tar` or `rsync`
+leaves the file manager's own metadata in it, and `scripts/verify-bundle.sh`
+refuses any file `SHA256SUMS` does not list:
+
+```
+files present that SHA256SUMS does not list:
+  ./.DS_Store
+  ./._images.tar
+  ./desktop.ini
+```
+
+Those files are still refused — a release folder holds what the release put in
+it — but the message now names them as file-manager metadata and says to
+re-copy with `tar` or `rsync`. The same reproduction found that
+`promotion-record.json`, the one file `docs/RELEASE.md` tells the operator to
+add, was refused the same way; it is now tolerated as unlisted while still
+being verified when a release sealed it in. Both are regression-tested in
+`tests/unit/test_bundle_tamper.py`.
 
 One consequence of the shared namespace that will bite anyone repeating this:
 the Windows-side development stack already holds `127.0.0.1:8000` and `:8080`,
@@ -335,7 +422,88 @@ adding if this is ever run often.
 - **Layer blobs are checked for presence, not re-hashed, before load.** A
   changed layer breaks `SHA256SUMS`; an internally inconsistent archive is
   refused at load, because `install-offline.sh` no longer trusts `docker load`
-  to exit non-zero.
+  to exit non-zero. That behaviour is now asserted rather than assumed
+  (`test_the_gate_checks_that_blobs_are_present_not_that_they_are_intact`), so
+  the gate's success line cannot be read as a content check.
+- **No artifact signing and no provenance attestation.** There is no `cosign`
+  signature over `SHA256SUMS` and no SLSA/build-provenance attestation on the
+  published images; `release.yml` does not even request the `id-token: write`
+  scope that keyless signing would need. The digest anchoring in §4's first
+  bullet is what stands in for it.
+- **The proof is anchored to the commits it names, not to `main`'s head.**
+  Releases A and B are `f192241` and `bf4a2df`. A later commit that changes the
+  migration set, the schema or the images is not covered by this drill until it
+  is re-run; the fault-injection exercise in §3 lists the migrations it actually
+  ran, for exactly this reason. In particular, the current tree contains
+  `004_itinerary_delete.sql` and `005_user_data_wipe.sql`; neither was in the
+  drilled A/B bundles. The local feature HEAD on 2026-09-25 was `f543f1e`,
+  while `main` was `6ab0711e83937423d7b5dbfe3ae49cb84bfbedb3`.
+  The feature HEAD's CI image-publishing job was skipped, so it has no
+  published image artifact from which to repackage the drill yet.
+- **A real transfer medium.** See §2: the file-size, mode-bit and path
+  properties are measured, the copy itself is not.
+- **The new per-release clean-engine gate has no CI result yet.** The current
+  `release.yml` source starts a second Docker daemon, requires a distinct
+  engine ID and zero images and volumes, sets
+  `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, and installs with `--pull never`.
+  Earlier hosted release runs used the packaging daemon, whose image content
+  could mask an incomplete archive. The new step remains unproven until these
+  uncommitted workflow edits merge and a release run succeeds. Its daemon is
+  on the connected hosted runner, so it does not close the physical air gap.
+
+### Branch protection checked separately
+
+An authenticated `gh api repos/AvihaiShai/act-on-weather/branches/main/protection`
+read on 2026-09-25 confirmed that `main` requires `lint`, `unit`, `guard` and
+`build-and-scan`, with admin enforcement enabled. The required checks are
+`strict: false`; stale reviews are dismissed and zero approvals are required.
+Force pushes and deletions were disabled, required signatures were off, and
+there were no repository rulesets. This is a dated settings read, separate
+from the earlier release workflow promotion records, whose default token
+received HTTP 403 and recorded `verified: false`.
+
+### Closing the physical air gap: the operator procedure
+
+This is the one item no amount of work on this machine can close, because
+`Microsoft-Hyper-V` and `Microsoft-Hyper-V-All` both report
+`InstallState=2 (Disabled)` here and enabling them needs elevation plus a
+reboot. It is left open deliberately. An operator with the equipment closes it
+like this:
+
+1. A second x86_64 machine, Ubuntu 24.04 with `docker-ce`, that has never held
+   this project's images. Confirm with `docker images` reporting none and
+   `docker info` reporting a different engine ID from the packaging host.
+2. Disable its networking in hardware before the first boot of the stack:
+   ethernet unplugged, Wi-Fi off at the hardware switch or with the adapter
+   removed. Not a firewall rule — the point of this exercise is that the
+   isolation is not enforced by software the stack could influence.
+3. Carry `dist/aow-<sha>/` in on removable media. Copy it with `tar` or
+   `rsync`, not a file manager (§2).
+4. Run, in order: `sha256sum -c SHA256SUMS`;
+   `AOW_SHA256SUMS=sha256:<digest carried out of band> bash scripts/verify-bundle.sh .`;
+   `AOW_REQUIRE_CLEAN_IMAGE_STORE=1 bash scripts/install-offline.sh`;
+   `bash scripts/prove-offline.sh`.
+5. Capture the first-install and offline-answer evidence below. To repeat the
+   upgrade and restore sequence in exercises 12–16 of §3, also bring two
+   distinct CI-proven releases and a deliberately failing test migration,
+   prepared on the connected staging machine. Record their commits and
+   migration lists; the old A/B measurements do not cover today's tree.
+
+Evidence checklist for that run — what has to be captured for it to count:
+
+- [ ] `docker info` from both hosts, showing different engine IDs
+- [ ] `docker images` and `docker volume ls` on the target, both empty, **before** the load
+- [ ] a photograph or console record of the disconnected link, plus `ip link` showing the interface down
+- [ ] `sha256sum` of `images.tar` on the source medium and again on the target
+- [ ] the out-of-band `SHA256SUMS` digest, recorded separately from the folder
+- [ ] `install-offline.sh` output including the clean-store census line and the pull count
+- [ ] `prove-offline.sh` exit code and all five sections
+- [ ] the two reviewer questions and the out-of-coverage question, with their as-of stamps
+- [ ] wall-clock timings for transport, verify, install and first answer
+
+Until that exists, the strongest claim this project makes is the one in §2: a
+separate Docker engine with an empty image store and no reachable egress. Not
+separate physical hardware, and not a separate VM.
 
 ---
 

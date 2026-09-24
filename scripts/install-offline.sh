@@ -40,6 +40,33 @@ if [ -n "$running_pg" ]; then
   test -s "$dump" || { echo "pre-upgrade dump is empty; refusing to continue" >&2; exit 1; }
 fi
 
+# Which of this release's images the engine already holds, recorded before
+# anything is loaded. `docker load` cannot answer that afterwards: it prints
+# "Loaded image" whether it unpacked the archive's bytes or found the content
+# already in the store, which is exactly how the empty-archive bundle of
+# docs/RELEASE-PROOF.md section 1 installed perfectly on the machine that
+# packaged it and nowhere else. Every release drill before that one ran on that
+# machine, so none of them could have caught it even in principle.
+#
+# This counts tags, not content: an engine that pulled the same layers but never
+# tagged them reads as clean here. It is a floor under the claim, not a proof of
+# it -- what proves the archive is self-contained is verify-bundle.sh above,
+# which reads the archive's own bytes and never asks the daemon anything.
+already=()
+while read -r alias _; do
+  test -n "$alias" || continue
+  # </dev/null so nothing in the loop body can eat the lock file this loop is
+  # reading; a half-consumed census would silently under-report.
+  if docker image inspect "aow-bundle/$alias:$AOW_IMAGE_VERSION" >/dev/null 2>&1 </dev/null; then
+    already+=("$alias")
+  fi
+done < images.bundle.lock
+
+if [ -n "${AOW_REQUIRE_CLEAN_IMAGE_STORE:-}" ] && [ "${#already[@]}" -gt 0 ]; then
+  echo "AOW_REQUIRE_CLEAN_IMAGE_STORE is set, and these release tags already exist: ${already[*]}" >&2
+  exit 1
+fi
+
 # `docker load` exits 0 even when it could not unpack an image. A layer blob
 # whose bytes do not match the digest its manifest names is refused by the
 # content store, the tag is still created, and the only sign is a line in the
@@ -58,6 +85,17 @@ loaded_images="$(grep -c '^Loaded image' "$load_log" || true)"
 if [ "$loaded_images" != "$expected_images" ]; then
   echo "docker load reported $loaded_images images, the release ships $expected_images" >&2
   exit 1
+fi
+
+# Say which install this was. An install onto an engine that already held these
+# images is a legitimate re-install or upgrade, so it is reported rather than
+# refused -- but it is not evidence that images.tar can install anywhere else,
+# and the log has to stop reading as though it were.
+if [ "${#already[@]}" -eq 0 ]; then
+  echo "image store: this engine held none of the $expected_images release tags before the load; archive verification found their config and layers in images.tar"
+else
+  echo "image store: ${#already[@]} of $expected_images release tags were already in this engine before the load: ${already[*]}"
+  echo "  A load that finds content already in the store succeeds even from an incomplete archive, so this install does not show that images.tar is self-contained. scripts/verify-bundle.sh checks that from the archive's bytes; only an install on an engine that has never held these images demonstrates it."
 fi
 dc config --quiet
 dc up -d --no-build --pull never

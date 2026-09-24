@@ -43,15 +43,41 @@ sha256sum -c SHA256SUMS
 # that was added, so list those too: the same `find` that wrote SHA256SUMS,
 # minus the paths an install legitimately creates afterwards (the pre-upgrade
 # dumps in backup/, the operator's .env, a half-written model download).
+#
+# promotion-record.json is excluded for a different reason. When release.yml
+# builds the bundle it writes the record in and reseals SHA256SUMS over it, so
+# there it IS listed and the `sha256sum -c` above checks it like any other
+# file. But the bundle an operator actually ships is rebuilt by
+# package-offline.sh, which does not write the record -- it is downloaded
+# separately, as the aow-promotion-<sha> workflow artifact. docs/RELEASE.md
+# tells the operator to compare it against the folder, so the folder has to
+# tolerate it being dropped in. Excluding it here does not weaken the check:
+# listed, it is still verified; unlisted, it is the one file the documented
+# procedure legitimately adds.
 unlisted="$(
   comm -23 \
     <(find . -type f ! -name SHA256SUMS ! -name .env ! -name '*.part' \
+        ! -path './promotion-record.json' \
         ! -path './backup/*' ! -path '*/__pycache__/*' -print | LC_ALL=C sort) \
     <(awk '{print substr($0, 67)}' SHA256SUMS | LC_ALL=C sort)  # 64 hex + 2 separators, then the name
 )"
 if [ -n "$unlisted" ]; then
   echo "files present that SHA256SUMS does not list:" >&2
   printf '%s\n' "$unlisted" | sed 's/^/  /' >&2
+  # A release folder copied to removable media by a file manager rather than
+  # by tar or rsync arrives with the file manager's own metadata in it, and
+  # that is by far the most likely way an operator meets this error. Name it,
+  # because "files present that SHA256SUMS does not list" on a .DS_Store reads
+  # like a tampered bundle and is not one. These are still refused rather than
+  # ignored: a release folder holds what the release put in it, and nothing a
+  # reviewer has to take on trust.
+  if printf '%s\n' "$unlisted" | grep -qE '(^|/)(\.DS_Store|\._[^/]*|desktop\.ini|Thumbs\.db|\.Spotlight-V100|\.Trashes|\.fseventsd)$'; then
+    echo >&2
+    echo "Some of those are file-manager metadata, not release content. They are" >&2
+    echo "added by copying the folder with Finder or Explorer, typically via" >&2
+    echo "removable media. Delete them and re-run, or re-copy the folder with" >&2
+    echo "'tar -cf - dist/aow-<sha> | ...' or rsync, which do not create them." >&2
+  fi
   exit 1
 fi
 

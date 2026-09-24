@@ -291,29 +291,90 @@ jobs:
           df -h .
           du -sh "dist/aow-${{ inputs.sha }}" "dist/aow-${{ inputs.sha }}"/* 2>/dev/null || true
 
-      # Proves the bundle installs from its own bytes, with no pulls, on
-      # every release -- not just that it was built and verified. This does
-      # NOT duplicate F10's air-gap rig: that uses a separate Docker engine
-      # and Linux userspace with nftables blocking egress, but shares the
-      # same WSL2 utility VM. This is the repeatable check that runs on every
-      # release: the tar this exact job just built actually boots the stack
-      # and the stack actually holds data, using scripts/install-offline.sh
-      # unmodified. See docs/RELEASE.md, "What the install exercise proves
-      # and what it does not", for how the two relate.
+      # The packaging daemon already holds every image in images.tar. Start a
+      # second, empty Docker daemon for the install, so a missing archive blob
+      # cannot be supplied by the packaging daemon's content store. This is a
+      # separate engine on the same hosted VM, not a physical air gap. Bind
+      # the checkout at its original absolute path: Compose bind mounts are
+      # resolved by the daemon, and it must see the bundle at that same path.
       #
       # install-offline.sh's own `dc up -d --no-build --pull never` (see that
       # script) is what makes a missing image a hard failure rather than a
-      # silent pull -- nothing here duplicates that with a second mechanism.
+      # silent pull. Require its clean-store census as well.
       # Its own last step already runs `dc exec -T api python - <
       # scripts/release-smoke.py`, so that is not invoked a second time here.
-      - name: Install the bundle and prove it serves data (no pulls)
+      - name: Install on an empty Docker engine and prove it serves data (no pulls)
         env:
           COMPOSE_PROJECT_NAME: aow-release-${{ github.run_id }}
           AOW_IMAGE_VERSION: ${{ inputs.sha }}
+          AOW_REQUIRE_CLEAN_IMAGE_STORE: "1"
         run: |
           set -euo pipefail
           bundle="dist/aow-${{ inputs.sha }}"
+          clean_engine="aow-release-clean-${{ github.run_id }}"
+          daemon_config="$RUNNER_TEMP/aow-clean-docker.json"
+          nested_ready=0
           dc() { docker compose -f "$bundle/compose.yml" -f "$bundle/compose.bundle.yml" --env-file "$bundle/.env" "$@"; }
+
+          cleanup() {
+            local status=$?
+            if [ "$nested_ready" -eq 1 ]; then
+              if [ "$status" -ne 0 ]; then
+                dc logs --tail=120 migrate ingestor consumer api llm agent enricher ui edge || true
+              fi
+              dc down --volumes --remove-orphans || true
+            fi
+            if [ "$status" -ne 0 ]; then
+              docker --host unix:///var/run/docker.sock logs --tail=120 "$clean_engine" || true
+            fi
+            docker --host unix:///var/run/docker.sock rm -f "$clean_engine" >/dev/null 2>&1 || true
+            rm -f "$bundle/.env" "$daemon_config"
+          }
+          trap cleanup EXIT
+
+          printf '%s\n' '{"features":{"containerd-snapshotter":true}}' > "$daemon_config"
+          docker --host unix:///var/run/docker.sock run --rm --detach --privileged \
+            --name "$clean_engine" -p 127.0.0.1::2375 \
+            -e DOCKER_TLS_CERTDIR= \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$daemon_config:/etc/docker/daemon.json:ro" \
+            docker.io/library/docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0
+          endpoint="$(docker --host unix:///var/run/docker.sock port "$clean_engine" 2375/tcp)"
+          test -n "$endpoint"
+          nested_host="tcp://$endpoint"
+          for attempt in {1..60}; do
+            nested_id="$(docker --host "$nested_host" info --format '{{.ID}}' 2>/dev/null || true)"
+            if [[ "$nested_id" != "null" && -n "$nested_id" ]]; then break; fi
+            sleep 1
+          done
+          test -n "$nested_id" && test "$nested_id" != null || {
+            echo "::error::the clean Docker engine did not become ready"
+            exit 1
+          }
+          docker --host "$nested_host" info --format '{{json .DriverStatus}}' \
+            | grep -q 'io.containerd.snapshotter.v1' || {
+            echo "::error::the clean engine lacks the containerd image store"
+            exit 1
+          }
+          host_id="$(docker --host unix:///var/run/docker.sock info --format '{{.ID}}')"
+          test -n "$nested_id" && test "$nested_id" != "$host_id" || {
+            echo "::error::the install must use a different Docker engine"
+            exit 1
+          }
+          images="$(docker --host "$nested_host" image ls -q)"
+          test -z "$images" || {
+            echo "::error::the install engine is not empty before docker load"
+            exit 1
+          }
+          volumes="$(docker --host "$nested_host" volume ls -q)"
+          test -z "$volumes" || {
+            echo "::error::the install engine has volumes before install"
+            exit 1
+          }
+          export DOCKER_HOST="$nested_host"
+          unset DOCKER_CONTEXT
+          nested_ready=1
+          echo "clean install engine: $nested_id (packaging engine: $host_id)"
 
           cp .env.example "$bundle/.env"
           for key in POSTGRES_PASSWORD POSTGRES_WRITER_PASSWORD POSTGRES_READER_PASSWORD RABBITMQ_PASSWORD; do
@@ -321,29 +382,20 @@ jobs:
             sed -i "s/^${key}=.*/${key}=${value}/" "$bundle/.env"
           done
 
-          # Same shape as scripts/ci-integration.sh's own cleanup trap: dump
-          # logs only on failure, always tear down, and do not call `exit`
-          # explicitly -- bash preserves the triggering exit status as the
-          # step's own once the EXIT trap returns, exactly as that script
-          # relies on.
-          cleanup() {
-            local status=$?
-            if [ "$status" -ne 0 ]; then
-              dc logs --tail=120 migrate ingestor consumer api llm agent enricher ui edge || true
-            fi
-            dc down --volumes --remove-orphans || true
-            rm -f "$bundle/.env"
-          }
-          trap cleanup EXIT
-
           bash "$bundle/scripts/install-offline.sh"
           echo "post-install disk usage (docker load + running stack's fresh volumes):"
           df -h .
 
-      # Written INTO the bundle (not alongside it), so it travels with the
-      # bundle to the offline host and the SHA256SUMS reseal below covers it
-      # for free. See scripts/cd-promotion-record.py's docstring for the full
-      # schema and the per-image provenance tiers it records.
+      # Written INTO this job's copy of the bundle, so the SHA256SUMS reseal
+      # below covers it for free and the record is verified by the same
+      # `sha256sum -c` as everything else. It does NOT thereby travel to the
+      # offline host: this bundle is deleted with the runner, and the one the
+      # operator ships is rebuilt by scripts/package-offline.sh, which does not
+      # write a promotion record. The operator gets it from the
+      # aow-promotion-<sha> artifact below and drops it into their folder --
+      # which scripts/verify-bundle.sh tolerates as an unlisted file for
+      # exactly this reason. See scripts/cd-promotion-record.py's docstring for
+      # the full schema and the per-image provenance tiers it records.
       - name: Write the promotion record into the bundle
         env:
           RELEASE_SHA: ${{ inputs.sha }}
@@ -379,8 +431,15 @@ jobs:
       # What is uploaded is the entire proof trail: the promotion record
       # (with its per-image provenance tiers), the CI-provenance lock file,
       # the bundle's own manifest lock, and the resealed checksums -- small
-      # enough to review inline and enough for an operator to rebuild and
-      # verify the identical bundle from scratch.
+      # enough to review inline.
+      #
+      # What an operator can reproduce from these is the bundle's *content*,
+      # not its bytes. images.bundle.lock and models.lock are content-addressed
+      # and must match exactly. SHA256SUMS must not: `docker save` output is
+      # not bit-reproducible across engines, which this repository measured
+      # rather than assumed -- see docs/RELEASE-PROOF.md, where packaging the
+      # same release on a classic-store engine re-serialised all eight image
+      # digests. Compare the locks, not the tar.
       - name: Upload the promotion record and bundle manifests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
