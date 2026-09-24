@@ -100,6 +100,34 @@ VERDICT_WORDS = (
     "suitability",
     "well suited",
     "recommended for",
+    "favourable",
+    "favorable",
+)
+
+# Anything that reads as the forecast. An activity with no stored score gets
+# one sentence -- that there is no record -- and a clause that names it beside
+# any of these is reasoning its way to the verdict it was told not to give.
+WEATHER_WORDS = (
+    "weather",
+    "forecast",
+    "temperature",
+    "temperatures",
+    "rain",
+    "rainy",
+    "wind",
+    "windy",
+    "sun",
+    "sunny",
+    "sunshine",
+    "warm",
+    "cold",
+    "mild",
+    "wet",
+    "dry",
+    "conditions",
+    "degrees",
+    "c",
+    "°c",
 )
 
 # Capitalised words that are not a claim about anything: calendar vocabulary,
@@ -286,6 +314,28 @@ def _tokens(sentence: str) -> list[str]:
     return re.findall(r"[A-Za-z][A-Za-z'’-]*", sentence)
 
 
+_NUMBER = re.compile(r"\d[\d,. ]*")
+
+
+def _numbers_in(text: str) -> set[str]:
+    """Every number a piece of text states, as a bare digit string.
+
+    Thousands separators and trailing punctuation are stripped and leading
+    zeros dropped, so "2,000", "2000" and "02000" are one number, and the month
+    in "2026-09-25" is the same 9 the model writes as "September 9".
+    """
+    found: set[str] = set()
+    for raw in _NUMBER.findall(text):
+        for part in re.split(r"[., ]", raw):
+            digits = part.strip().lstrip("0")
+            if digits:
+                found.add(digits)
+        joined = re.sub(r"[, ]", "", raw).rstrip(".").lstrip("0")
+        if joined and "." not in joined:
+            found.add(joined)
+    return found
+
+
 # ------------------------------------------------------------- typed facts --
 
 
@@ -405,31 +455,51 @@ class Brief:
             | set(self.window_days)
         )
 
-    def allowed_names(self) -> frozenset[str]:
-        """Every word the answer is allowed to capitalise.
+    def vocabulary(self) -> str:
+        """Every scrap of retrieved text the answer may draw on, in one string.
 
-        Built from the rows themselves plus the traveller's own question, so
-        echoing what they typed is never an invention. A capitalised word from
-        nowhere else -- "Roman", "Alfama", "European" -- is the model writing
-        from its weights, which is the one thing it is not here to do.
+        The traveller's own question is in it too: echoing back what they typed
+        is never an invention.
         """
-        vocabulary = " ".join(
+        return " ".join(
             [
                 self.city,
                 self.country,
                 self.question,
                 self.supporting_text(),
+                *(d.day for d in self.days),
+                *(d.text for d in self.days),
                 *(p.name for p in self.places),
                 *(p.category.replace("_", " ") for p in self.places),
                 *(e.title for e in self.events),
                 *(e.venue or "" for e in self.events),
                 *(e.category for e in self.events),
+                *(day for e in self.events for day in e.days()),
+                *(v.day for v in self.verdicts),
                 *(v.label for v in self.verdicts),
                 *(v.band for v in self.verdicts),
+                *(str(v.score) for v in self.verdicts if v.score is not None),
                 *(v.text or "" for v in self.verdicts),
+                *self.window_days,
             ]
         )
-        return frozenset(t.lower() for t in _tokens(vocabulary)) | NAME_STOPWORDS
+
+    def allowed_names(self) -> frozenset[str]:
+        """Every word the answer is allowed to capitalise.
+
+        A capitalised word from nowhere else -- "Roman", "Alfama", "European"
+        -- is the model writing from its weights, which is the one thing it is
+        not here to do.
+        """
+        return frozenset(t.lower() for t in _tokens(self.vocabulary())) | NAME_STOPWORDS
+
+    def allowed_numbers(self) -> frozenset[str]:
+        """Every quantity the rows carry, normalised.
+
+        Scores are out of 100, so that is always allowed even when no verdict
+        happens to sit at it.
+        """
+        return frozenset(_numbers_in(self.vocabulary())) | {"100"}
 
 
 # ------------------------------------------------------------------ build --
@@ -740,6 +810,7 @@ def violations(answer: str, brief: Brief) -> list[str]:
     claims = claim_words()
     allowed_dates = brief.allowed_dates()
     allowed_names = brief.allowed_names()
+    allowed_numbers = brief.allowed_numbers()
     place_names = {p.name.lower(): p for p in brief.places if len(p.name) >= 5}
     event_titles = {e.title.lower(): e for e in brief.events if len(e.title) >= 5}
     # Whether the question was about scheduled things, which is what lets check
@@ -790,11 +861,20 @@ def violations(answer: str, brief: Brief) -> list[str]:
 
             # 5. A verdict on an activity this city has no row for. The
             #    observed shape is agreement followed by an invented
-            #    weather-based reason.
-            if verdict and not negated:
-                for key in brief.unscored:
-                    if _says(sentence, key.replace("_", " ")):
-                        found.append(f"gives a verdict on {key}, which has no stored score")
+            #    weather-based reason, and it survived a check that looked only
+            #    for verdict words: "which is not favorable for surfing" is the
+            #    same answer in wording the list did not hold. So the weather
+            #    itself is the trigger now. An activity with no score gets one
+            #    sentence -- that there is no record -- and a clause naming it
+            #    beside the forecast is reasoning towards the verdict either
+            #    way, whether or not it lands on a word.
+            for key in brief.unscored:
+                if not _says(sentence, key.replace("_", " ")):
+                    continue
+                if verdict and not negated:
+                    found.append(f"gives a verdict on {key}, which has no stored score")
+                if any(_says(sentence, word) for word in WEATHER_WORDS):
+                    found.append(f"reasons from the weather about {key}, which has no stored score")
 
             # 6. A description of a place we hold only a name and a category
             #    for.
@@ -835,6 +915,15 @@ def violations(answer: str, brief: Brief) -> list[str]:
                 continue
             if token.lower() not in allowed_names:
                 found.append(f"names {token!r}, which appears in no retrieved row")
+
+        # 9. A quantity from the same place. Asked about the history of Lisbon
+        #    the model wrote "a history dating back over 2,000 years" from a
+        #    summary that gives a population and a river and no age at all.
+        #    Only three digits and up: a stray "5 days" is a restatement, while
+        #    a number this size is a fact, and it has to have come from a row.
+        for number in sorted(_numbers_in(raw)):
+            if len(number) >= 3 and number not in allowed_numbers:
+                found.append(f"states the figure {number}, which no retrieved row carries")
 
     # Stable and deduplicated: this string ends up in a log line and a note.
     return sorted(set(found))

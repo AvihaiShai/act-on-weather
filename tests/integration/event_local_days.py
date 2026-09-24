@@ -99,6 +99,33 @@ window = f"/events?city=london&start={LOCAL_START}&end={LOCAL_END}"
 assert EVENT_ID not in ids(get(window + "&category=concert"))
 assert EVENT_ID in ids(get(window + "&category=sport"))
 
+# The verified London concert on the same local day, from the widened feed
+# (F9). It is what E2 now answers from, so the day it lands on is load-bearing:
+#   starts_at 2026-09-25T12:30:00+01:00, ends_at 13:15 the same day
+CONCERT_ID = "lso:free-friday-lunchtime-2026-09-25"
+assert CONCERT_ID in ids(get(window + "&category=concert")), "the seeded concert is not on the 25th"
+assert CONCERT_ID not in ids(get(window + "&category=sport"))
+assert CONCERT_ID not in ids(day("2026-09-26")), "a lunchtime recital ran into the next day"
+
+# ------------- 2b. the same rules against the other rows the feed now holds ----
+
+# Another local-midnight start, in the same zone but three weeks later, so the
+# expression is exercised on a row the F2 work did not have in front of it:
+#   Niall Horan, 2026-10-02T00:00:00+01:00 -> 2026-10-01T23:00:00Z
+NIALL = "theo2:niall-horan-2026"
+assert NIALL in ids(day("2026-10-02")), "the local-midnight concert lost its own day"
+assert NIALL not in ids(day("2026-10-01")), "the UTC day matched again"
+assert NIALL in ids(day("2026-10-03")), "the second day of a two-day run is missing"
+
+# A multi-day row in a different city, so the join really is per-city and not a
+# single server zone: Lisbon, 2026-09-30T21:30+01:00 to 2026-10-02T23:59+01:00.
+RADIO_MACAU = "coliseulisboa:radio-macau-2026-09-30"
+for active in ("2026-09-30", "2026-10-01", "2026-10-02"):
+    assert RADIO_MACAU in ids(
+        get(f"/events?city=lisbon&start={active}&end={active}&limit=50")
+    ), f"the Lisbon run is missing on {active}"
+assert RADIO_MACAU not in ids(get("/events?city=lisbon&start=2026-10-03&end=2026-10-03&limit=50"))
+
 # ---------------------------------- 3. the half-open rule, against tzdata ----
 
 # An event billed as ending at local midnight ends on the previous day rather

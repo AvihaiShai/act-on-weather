@@ -494,8 +494,15 @@ class Router:
                 city_id, resolution.activities
             )
         elif "places" in resolution.intents or resolution.categories:
+            # Spread the budget across the categories the question named. E2
+            # asks about concerts, shopping and fine dining, and a flat limit
+            # returned eighteen concert halls and nothing else.
             result.places = queries.places(
-                self.conn, city_id, categories=resolution.categories or None, limit=18
+                self.conn,
+                city_id,
+                categories=resolution.categories or None,
+                limit=18,
+                per_category=6 if len(resolution.categories) > 1 else None,
             )
 
         if "events" in resolution.intents or (

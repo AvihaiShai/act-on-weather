@@ -971,3 +971,135 @@ def test_context_block_is_the_grounded_prompt_after_the_merge():
     block = router.context_block(result)
     assert block == grounding.prompt_block(grounding.build(result))
     assert "NOT scheduled events" in block
+
+
+# ---------------------------------------------- quantities from nowhere ----
+
+
+def test_a_figure_no_row_carries_is_rejected():
+    """Asked about the history of Lisbon the model wrote "a history dating back
+    over 2,000 years" from a summary giving a population and a river."""
+    result = retrieval("Tell me about the history of Lisbon", city=LISBON)
+    result.facts = [
+        {
+            "title": "Lisbon",
+            "summary": "Lisbon is the capital of Portugal, on the River Tagus, "
+            "with a population of 658,236 as of 2025.",
+        }
+    ]
+    brief = grounding.build(result)
+
+    answer = "Lisbon has a history dating back over 2,000 years."
+    assert any("2000" in v for v in grounding.violations(answer, brief))
+
+    # The figures the summary does carry are fine, however they are spelled.
+    assert grounding.violations("Lisbon had 658236 people in 2025.", brief) == []
+    assert grounding.violations("Lisbon had 658,236 people in 2025.", brief) == []
+
+
+def test_scores_and_temperatures_are_not_read_as_invented_figures():
+    """A false positive here costs every answer its wording, so the numbers the
+    system states about itself have to pass."""
+    result = retrieval(
+        "What can I do in London this week?",
+        forecast=[forecast_row(DAY1, high=22.0, low=14.0)],
+        recommendations=[verdict_row(DAY1, "museums", "A museum day", 80)],
+    )
+    brief = grounding.build(result)
+    answer = "On 2026-09-24 the high is 22C and the low is 14C, and a museum day " "scores 80/100."
+    assert grounding.violations(answer, brief) == []
+
+
+def test_a_multi_interest_question_spreads_its_place_budget(monkeypatch):
+    """E2 names three interests. London holds more than eighteen concert halls,
+    and `ORDER BY category, name LIMIT 18` gave the traveller all concert halls
+    and no restaurant. The cap is per category now."""
+    seen = {}
+
+    def places(_conn, _city, *, categories=None, limit=50, per_category=None):
+        seen.update(categories=categories, limit=limit, per_category=per_category)
+        return []
+
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
+    monkeypatch.setattr(router.queries, "coverage", lambda _conn: COVERAGE)
+    monkeypatch.setattr(router.queries, "places", places)
+    monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "recommendations", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "events", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "facts", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
+
+    router.Router(object()).retrieve(
+        "What activities can I do with my wife this week in London? "
+        "We like concerts, shopping and fine dining."
+    )
+
+    assert len(seen["categories"]) > 1, seen["categories"]
+    assert seen["per_category"] == 6
+    assert seen["limit"] == 18
+
+
+def test_an_open_places_question_keeps_the_flat_limit(monkeypatch):
+    """No category was named, so there is nothing to spread a budget across
+    and the extra SQL is not paid for."""
+    seen = {}
+
+    def places(_conn, _city, *, categories=None, limit=50, per_category=None):
+        seen.update(categories=categories, per_category=per_category)
+        return []
+
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
+    monkeypatch.setattr(router.queries, "coverage", lambda _conn: COVERAGE)
+    monkeypatch.setattr(router.queries, "places", places)
+    monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "recommendations", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "events", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "facts", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
+
+    router.Router(object()).retrieve("What is there to visit in London?")
+
+    assert seen["categories"] is None, "no interest was named, so nothing is filtered"
+    assert seen["per_category"] is None
+
+
+# ------------------------------- an unscored activity gets one sentence ----
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # The live model's wording, which the verdict-word list did not hold.
+        "The weather forecast for 2026-09-25 shows a low of 12C and rain, "
+        "which is not favorable for surfing.",
+        "There is no surfing score on record. The wind is light, so surfing is fine.",
+        "Surfing is not on record, but the mild temperatures would suit surfing.",
+        "No surfing score is stored; conditions for surfing look dry.",
+    ],
+)
+def test_reasoning_from_the_weather_about_an_unscored_activity_is_rejected(answer):
+    result = retrieval(
+        "Is it a good day for surfing in London tomorrow?",
+        forecast=[forecast_row(DAY2, high=19.0, low=12.0)],
+    )
+    result.resolution.activities = ["surfing"]
+    result.unscored_activities = ["surfing"]
+    brief = grounding.build(result)
+    assert any("surfing" in v for v in grounding.violations(answer, brief))
+
+
+def test_stating_the_absence_and_the_forecast_separately_is_allowed():
+    """The traveller still gets the forecast. It just does not get attached to
+    an activity the system never scored."""
+    result = retrieval(
+        "Is it a good day for surfing in London tomorrow?",
+        forecast=[forecast_row(DAY2, high=19.0, low=12.0)],
+    )
+    result.resolution.activities = ["surfing"]
+    result.unscored_activities = ["surfing"]
+    brief = grounding.build(result)
+    answer = (
+        "There is no surfing score on record for London. On 2026-09-25 the "
+        "stored forecast is a high of 19C and a low of 12C."
+    )
+    assert grounding.violations(answer, brief) == []

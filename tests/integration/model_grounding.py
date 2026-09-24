@@ -178,7 +178,7 @@ PLACES = [
 # lunchtime recital on 2026-09-25 at LSO St Luke's. It is the row E2 now has to
 # answer from.
 FREE_FRIDAY = event(
-    "lso:free-friday-2026-09-25",
+    "lso:free-friday-lunchtime-2026-09-25",
     "Free Friday Lunchtime Concert",
     "concert",
     DAY2,
@@ -291,8 +291,14 @@ CASES: list[tuple[str, object, list[str], list[str]]] = [
         surfing_retrieval(),
         ["surf"],
         # The review saw "there is no record" followed by a weather-based
-        # verdict in the same answer. Any of these is that failure.
-        ["good for surfing", "ideal for surfing", "good day for surf", "suitable", "unsuitable"],
+        # verdict in the same answer, and the first run of this probe let one
+        # through in wording the verdict list did not hold: "which is not
+        # favorable for surfing". So the assertion is now the weather itself --
+        # no forecast word may appear in the same breath as surfing.
+        # `violations` is what actually forbids the weather-beside-surfing
+        # shape now; these are the words the delivered answer must never reach
+        # for, kept as a second, blunter net.
+        ["suitable", "unsuitable", "favorable", "favourable", "good for surfing"],
     ),
     (
         "the history of Lisbon",
