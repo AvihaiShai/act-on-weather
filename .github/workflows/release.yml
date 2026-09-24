@@ -48,11 +48,10 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Sized from the estimate in docs/RELEASE.md (build+verify ~8-15 min,
-    # install+smoke up to ~15 min more -- release-smoke.py itself budgets 8
-    # min for a cold CPU model load) plus real headroom, so a genuine hang
-    # (e.g. the smoke poll never becoming healthy) fails in a bounded time
-    # instead of consuming the runner minutes budget silently.
+    # Bound the connected model stage, bundle build, install and smoke. The
+    # first full hosted run took under three minutes, but cold downloads and
+    # model startup vary; release-smoke.py alone budgets eight minutes for a
+    # cold CPU load. The job-level timeout also stops a hung Docker command.
     timeout-minutes: 40
     # contents:read   -- checkout the release commit.
     # actions:read    -- query the Actions API for ci.yml's run on that

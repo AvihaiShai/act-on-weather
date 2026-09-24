@@ -137,6 +137,12 @@ SHA `d2387ca2…d9bc7b5`, matching `models.lock` and the bundle's checksum;
 gates are present. The record still says branch protection `verified: false`
 because the workflow token's live read received HTTP 403.
 
+PR #40 raised the **one-shot** model-staging container's memory cap from
+256 MiB to 2 GiB after the unexplained exit 137. The identical rerun and a
+local full download at 256 MiB both passed, so the cap change is headroom,
+not a proven root-cause repair. Staging exits before the runtime services
+start; the final release run must exercise this changed configuration.
+
 ### The two install claims are not the same claim
 
 | | What it proves | Where |
@@ -344,6 +350,13 @@ now a separate job, so that token scope exists only on push-to-main. Every job c
 `timeout-minutes` and a concurrency group (`main` excluded from `cancel-in-progress`: a
 cancelled run there would leave a commit's image manifest unpublished).
 
+That exclusion alone did not protect a *pending* run: GitHub replaced the
+pending push-to-main run `36053918189` when a manual RC run entered the same
+concurrency group. PR #41 gives each `main` run a unique group while retaining
+superseded-run cancellation for PR branches. The affected push CI was rerun;
+this matters because release gating requires a successful push-to-main run
+and the `aow-images-<sha>` artifact for that exact commit.
+
 **Issue #4 (Node 20 annotations) is closed**, and both halves of the reasoning that first
 kept it open are kept here, because one of them was wrong. The wrong half was its premise
 that our own four pins were the source: `actions/cache@0400d5f6` appears nowhere in
@@ -434,3 +447,5 @@ PR #10 was closed as superseded.
   artifact was inspected from the successful retry of run `36052133435` (§4).
   Its first attempt exited 137 while staging the model. A local reproduction
   at the same 256 MiB container limit passed, so the cause remains unproven.
+  PR #40 increased staging headroom, but a successful run cannot by itself
+  establish which resource caused the original kill.
