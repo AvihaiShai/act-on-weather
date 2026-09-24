@@ -224,8 +224,16 @@ def events(
     start: date | None = None,
     end: date | None = None,
     category: str | None = None,
+    categories: list[str] | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    """`category` is the API's single-value filter; `categories` is the agent's.
+
+    They exist side by side because a question can ask about more than one kind
+    at once ("concerts or theatre this weekend"), and because answering a
+    question about concerts with a tennis tournament is the exact defect this
+    argument was added to close.
+    """
     sql = [
         "SELECT id, city_id, title, category, venue, starts_at, ends_at, source,",
         "       source_url, is_sample, as_of, revision",
@@ -244,6 +252,9 @@ def events(
     if category:
         sql.append("AND category = %(category)s")
         params["category"] = category
+    if categories:
+        sql.append("AND category = ANY(%(categories)s)")
+        params["categories"] = list(categories)
     sql.append("ORDER BY starts_at LIMIT %(limit)s")
     return conn.execute("\n".join(sql), params).fetchall()
 

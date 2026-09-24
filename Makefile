@@ -6,6 +6,7 @@ COMPOSE        ?= docker compose
 CONNECTED      := -f compose.yml -f compose.connected.yml
 DEMO           := -f compose.yml -f compose.demo.yml
 TOOLS          := -f compose.tools.yml
+PROBE          := -p aow-f3 -f compose.yml -f compose.model-probe.yml
 
 .PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
         offline no-data-loss update reenrich questions refresh snapshot \
@@ -28,6 +29,7 @@ help:
 	@echo "  make update         M12 -- an edit through the queue, with history"
 	@echo "  make reenrich       the local model is not on the critical path"
 	@echo "  make questions      M7/M8 -- agent breadth, including what it refuses"
+	@echo "  make grounding      M7 -- adversarial grounding against the local model"
 	@echo "  make demo           all of the above, in order"
 	@echo ""
 	@echo "Connected maintenance:"
@@ -96,6 +98,17 @@ clean:
 test:
 	docker build -q -f tests/Dockerfile -t aow/tests:dev .
 	docker run --rm aow/tests:dev
+
+# The grounding gate (F3). Its own Compose project, so it never touches a
+# running stack: it starts a second llm on an isolated network, replays the
+# questions that produced ungrounded answers, and fails if anything the agent
+# would deliver is not supported by the rows it retrieved. Kept out of CI
+# because CI has no model and no network to fetch one; run it before a release.
+grounding:
+	docker build -q -f tests/Dockerfile -t aow/tests:probe .
+	$(COMPOSE) $(PROBE) up -d --no-build --pull never llm
+	@$(COMPOSE) $(PROBE) run --rm --no-deps probe; status=$$?; \
+	  $(COMPOSE) $(PROBE) down; exit $$status
 
 # ------------------------------------------------------------------ demos --
 # A convenience for hosts that have bash. The portable form -- what the README

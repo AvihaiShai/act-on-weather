@@ -1,0 +1,60 @@
+# Scheduled-event vocabulary: the words a user types -> events.category values.
+#
+# Deliberately a separate file from data/interests.yml, which maps the same
+# kind of words onto places.category. The distinction is the whole point of
+# this file. A concert hall is a building we hold a name and a category for.
+# A concert is a dated listing that came from a named source with an as-of
+# date. Answering the first as though it were the second is the failure this
+# vocabulary exists to prevent: asked for concerts, the agent used to offer
+# nine concert halls and one tennis tournament.
+#
+# Two lists per category, and they are not the same list:
+#
+#   words   what the ROUTER matches to decide which event rows to retrieve.
+#           Generous: a question saying "gig" means the concert rows.
+#   claims  what the VALIDATOR treats as an assertion that such an event is
+#           scheduled. Conservative on purpose -- a false positive here throws
+#           away a good model answer, so words with an ordinary non-event
+#           reading ("show", "game", "play", "race") are left out.
+#
+# Categories are the ones the pipeline can actually store: the staged feed uses
+# concert and sport, and services/ingestor/make_samples.py can generate
+# theatre, market, festival and exhibition rows, all labelled as samples.
+event_types:
+
+  concert:
+    label: concert
+    words: ["concert", "concerts", "gig", "gigs", "live music", "live band", "band"]
+    claims: ["concert", "concerts", "gig", "gigs", "live music"]
+
+  sport:
+    label: sports event
+    words:
+      ["sport", "sports", "match", "matches", "fixture", "fixtures", "game", "games",
+       "tournament", "tournaments", "race", "races", "football", "tennis", "boxing",
+       "rugby", "cricket", "basketball"]
+    claims: ["fixture", "fixtures", "tournament", "sports event", "sporting event"]
+
+  theatre:
+    label: theatre performance
+    words: ["theatre", "theater", "play", "plays", "musical", "musicals", "show", "shows",
+            "performance", "performances", "opera", "ballet"]
+    claims: ["theatre performance", "stage performance", "musical", "opera", "ballet"]
+
+  exhibition:
+    label: exhibition
+    words: ["exhibition", "exhibitions", "exhibit", "exhibits"]
+    claims: ["exhibition", "exhibitions"]
+
+  festival:
+    label: festival
+    words: ["festival", "festivals"]
+    claims: ["festival", "festivals"]
+
+  market:
+    label: market event
+    # "market" is also a places.category, so a shopping question legitimately
+    # matches it. That is why the gap sentence below is only emitted for a
+    # question the router gave the `events` intent.
+    words: ["market", "markets", "street market", "farmers market"]
+    claims: ["weekend market", "market day"]

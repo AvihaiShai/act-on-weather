@@ -1,0 +1,43 @@
+# The grounding gate against the real local model (F3).
+#
+# An overlay, not a stack: it starts `llm` on its own project network and runs
+# tests/integration/model_grounding.py beside it. No database, no queue, no
+# published port -- the probe builds its rows in Python, so the only thing
+# under test is what the model does with a prompt and what the validator does
+# with its answer.
+#
+#   docker compose -p aow-f3 -f compose.yml -f compose.model-probe.yml \
+#       --env-file .env.example up -d --no-build --pull never llm
+#   docker compose -p aow-f3 -f compose.yml -f compose.model-probe.yml \
+#       --env-file .env.example run --rm --no-deps probe
+#   docker compose -p aow-f3 -f compose.yml -f compose.model-probe.yml down
+#
+# `-p aow-f3` is what keeps this away from a running `aow` stack: its own
+# project, its own networks, its own containers. It reads the staged model
+# read-only and changes nothing.
+
+services:
+  llm:
+    # AOW_MODELS_DIR lets a worktree or a release test point at an already
+    # staged model directory instead of copying 1.2 GB of weights next to it.
+    volumes:
+      - ${AOW_MODELS_DIR:-./models}:/models:ro
+
+  probe:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    image: ${AOW_TESTS_IMAGE:-aow/tests:probe}
+    mem_limit: 512m
+    environment:
+      LLM_BASE_URL: http://llm:8080
+      LLM_MODEL: ${LLM_MODEL:-Qwen3-1.7B-Q4_K_M}
+      PROBE_TIMEOUT_S: ${PROBE_TIMEOUT_S:-180}
+      # The probe never opens the outbox or the database, but
+      # services.common.config builds both at import time and refuses an empty
+      # password. These are placeholders and nothing dials with them.
+      POSTGRES_READER_PASSWORD: probe
+      POSTGRES_WRITER_PASSWORD: probe
+      AOW_OUTBOX_PATH: /tmp/probe-outbox.sqlite3
+    networks: [backend]
+    command: ["python", "-m", "tests.integration.model_grounding"]
