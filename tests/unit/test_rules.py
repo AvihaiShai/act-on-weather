@@ -154,32 +154,55 @@ def test_coastal_activities_are_dropped_inland(activities):
         assert key in inland
 
 
-def test_surfing_wants_wind_and_a_flat_day_is_penalised(activities):
-    """`min_wind_kmh` is the one rule that penalises too *little* of something.
+def test_no_activity_infers_the_sea_from_land_wind(activities):
+    """The rule that replaced `min_wind_kmh` (rule_version 4).
 
-    Read below the ceiling. Surfing is capped at 69 because nothing here
-    measures the sea (`test_coastal_evidence.py`), and on a warm dry day both a
-    flat sea and a blowing one land on that cap, so the wind rule is invisible
-    in the final number. It still decides the day the moment anything else
-    costs a point, and it still says so in the reasons -- so the comparison is
-    made against the same config with the ceiling lifted, and the reason is
-    asserted on the shipped one.
+    Surfing used to carry `min_wind_kmh: 12` and tell a calm day "only 8km/h
+    of wind, too flat for this" -- a verdict on the waves assembled out of a
+    wind reading taken on shore, which is the one inference
+    `sea_state_unmeasured` exists to forbid. A marine model disagreed with it
+    in both directions on the system's own coast points, so it is gone rather
+    than retuned.
+
+    Two assertions, because either alone can be satisfied by accident: no
+    activity declares the key, and the engine no longer reads it if one did.
     """
-    flat = {**HOT_BEACH_DAY, "wind_kmh": 2.0}
-    blowing = {**HOT_BEACH_DAY, "wind_kmh": 22.0}
-    uncapped = {k: v for k, v in activities["surfing"].items() if k != "score_ceiling"}
+    assert not [k for k, cfg in activities.items() if "min_wind_kmh" in cfg]
 
+    still = {**HOT_BEACH_DAY, "wind_kmh": 0.0}
+    blowing = {**HOT_BEACH_DAY, "wind_kmh": 22.0}
+    # Uncapped, so the ceiling cannot hide a difference the wind rule made.
+    uncapped = {k: v for k, v in activities["surfing"].items() if k != "score_ceiling"}
     assert (
-        rules.score_activity("surfing", uncapped, flat).score
-        < rules.score_activity("surfing", uncapped, blowing).score
+        rules.score_activity("surfing", uncapped, still).score
+        == rules.score_activity("surfing", uncapped, blowing).score
     )
-    assert any("flat" in r for r in score(activities, "surfing", flat).reasons)
-    # The same flat day must not be penalised for a boat ride, which wants
-    # calm: its score is held down by the sea-state cap and by nothing else.
-    boat = score(activities, "boat_ride", flat)
+
+    # And the reason a dead-calm day carries says nothing about the sea: the
+    # cap, and nothing else.
+    calm = score(activities, "surfing", still)
+    assert calm.score == 69
+    assert calm.reasons[0] == "no rule was violated"
+    assert "capped at 69" in calm.reasons[1]
+    assert not any("flat" in reason for reason in calm.reasons)
+
+    # A boat ride wants calm and was never penalised for it. Unchanged.
+    boat = score(activities, "boat_ride", still)
     assert boat.score == 69
     assert boat.reasons[0] == "no rule was violated"
     assert "capped at 69" in boat.reasons[1]
+
+
+def test_a_min_wind_key_would_no_longer_do_anything(activities):
+    """Belt and braces on the line above: even handed the old config, the
+    engine scores the day on what it actually measures. This is what stops the
+    rule being reintroduced by copying a block from an older revision."""
+    revived = {**activities["surfing"], "min_wind_kmh": 12}
+    still = {**HOT_BEACH_DAY, "wind_kmh": 0.0}
+    assert (
+        rules.score_activity("surfing", revived, still).score
+        == score(activities, "surfing", still).score
+    )
 
 
 def test_indoor_activities_do_not_all_score_alike(activities):

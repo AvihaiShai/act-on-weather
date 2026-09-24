@@ -23,6 +23,14 @@
 # water. The score ceiling in data/activities.yml and the caveat in
 # services/common/coast.py exist because of that gap.
 #
+# These four points are a location reference and nothing more. They are NOT a
+# marine query point, and no weather is fetched for them -- the forecast is
+# taken at the city `lat`/`lon` above. Open-Meteo's marine endpoint does answer
+# for all four (probed 2026-09-25), but from its own grid cell 2.9-13.2 km away
+# and for only 10 of the 16 days stored here, so ingesting it would trade this
+# one honest distance for two fuzzier ones. The numbers are in
+# services/ingestor/providers.py.
+#
 # London stays false and carries no coast block. The Thames is tidal, but it
 # is not a coast, and there is no reference point that would make it one.
 cities:

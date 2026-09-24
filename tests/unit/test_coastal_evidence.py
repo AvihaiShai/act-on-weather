@@ -6,8 +6,12 @@ about 25 km from the sea -- and the scores it unlocked were computed from wind,
 rain and temperature and then reported as a verdict on surfing, swimming,
 fishing and boat rides, none of which are decided by the air.
 
-No marine data was added to close it, because a wave feed is a second provider
-to stage into the offline bundle. What was added is evidence and a limit:
+No marine data was added to close it. Open-Meteo's keyless marine endpoint was
+probed against these exact coast points and does answer, but over 10 days
+against the 16 stored here and from a grid cell up to 13 km away, so it would
+be a second provider in the offline bundle that narrowed the gap rather than
+closing it; the numbers are in services/ingestor/providers.py. What was added
+is evidence and a limit:
 
   * every coastal city names a real point on its coast, and the distance from
     its forecast point to that point is derived, never committed, so it cannot
@@ -17,7 +21,10 @@ to stage into the offline bundle. What was added is evidence and a limit:
     the system reports them as at best `fair` and says why;
   * and every answer that shows one of those scores carries a sentence naming
     the forecast point, its distance from the coast, and the fact that nothing
-    in the stored data measures the water.
+    in the stored data measures the water;
+  * and, as of rule_version 4, no rule may infer a sea state from a land
+    measurement at all -- surfing's `min_wind_kmh` did, and the reason string
+    it wrote walked a verdict about the waves straight past the ceiling.
 
 These tests hold all three. The wording ones go through the agent's real
 render path rather than re-deriving a sentence, because a caveat that only a
@@ -45,10 +52,11 @@ ACTIVITIES_YML = ROOT / "data" / "activities.yml"
 # them fails a test instead of silently narrowing the rule it protects.
 SEA_STATE = ("surfing", "swimming", "fishing", "boat_ride")
 
-# Warm, dry, sunny, with enough breeze to satisfy surfing's `min_wind_kmh` and
-# little enough to stay inside a boat ride's limit: every land rule these four
-# have is satisfied, so the only thing that can hold their score down is the
-# ceiling.
+# Warm, dry, sunny, with little enough wind to stay inside a boat ride's
+# limit: every land rule these four have is satisfied, so the only thing that
+# can hold their score down is the ceiling. (Until rule_version 4 the wind
+# also had to clear surfing's `min_wind_kmh`; that rule is gone -- see
+# `test_no_reason_ever_describes_the_sea` below and test_rules.py.)
 PERFECT_COASTAL_DAY = {
     "temp_max_c": 27.0,
     "temp_min_c": 21.0,
@@ -136,6 +144,34 @@ def test_the_cap_is_silent_when_the_weather_already_decided(activities, activity
     result = rules.score_activity(activity, activities[activity], storm)
     assert result.score < 69
     assert not any(CAPPED in reason for reason in result.reasons)
+
+
+def test_no_reason_ever_describes_the_sea(activities):
+    """The cap limits the number; this limits the sentence.
+
+    Reasons are not debug output. They are what the model is handed to write a
+    recommendation from and what the UI shows under the score, so a reason is
+    as much of a claim as the band is. For a sea-dependent activity exactly one
+    of them may mention the water, and it is the cap saying the water is *not*
+    measured. Anything else -- "too flat", "choppy", "good swell" -- is the
+    system describing a sea it never looked at, which is how surfing's old
+    `min_wind_kmh` got its verdict past the ceiling that was meant to stop it.
+
+    Swept across the wind range rather than asserted on one day, because the
+    old rule only fired below a threshold and a single fixture would have
+    missed it.
+    """
+    sea_words = ("flat", "choppy", "swell", "wave", "surf", "sea", "water", "tide")
+    for activity in SEA_STATE:
+        for wind in (0.0, 2.0, 8.0, 11.9, 12.0, 14.0, 25.0, 60.0):
+            day = {**PERFECT_COASTAL_DAY, "wind_kmh": wind}
+            reasons = rules.score_activity(activity, activities[activity], day).reasons
+            about_the_sea = [
+                reason for reason in reasons if any(word in reason.lower() for word in sea_words)
+            ]
+            assert about_the_sea == [
+                reason for reason in reasons if CAPPED in reason
+            ], f"{activity} at {wind}km/h: {reasons}"
 
 
 def test_the_ceiling_sits_one_point_below_the_good_band(activities):
