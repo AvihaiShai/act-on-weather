@@ -577,23 +577,58 @@ jobs:
           elapsed=$(( $(date +%s) - started ))
           echo "model-grounding wall clock: ${elapsed}s" | tee -a "$GITHUB_STEP_SUMMARY"
 
-# ---------------------------------------------------------------------------
-# F8 integration seam (not implemented here -- F8 owns it).
-#
-# F8 is adding operational backup/restore and monitoring in a parallel
-# session. When that lands, add a `restore-drill` job here (RC-only, the same
-# shape as model-grounding above: it stops a service mid-flow, takes or
-# restores a backup, and needs its own runtime budget) that runs whatever
-# script F8 lands under scripts/ (e.g. scripts/restore-drill.sh -- confirm
-# the exact name with F8/the coordinator when it exists) and asserts:
-#
-#     every message ID accepted before the drill is present in the database,
-#     exactly once, after the restore.
-#
-# A healthcheck or a "service came back up" is NOT this assertion -- M11's
-# guarantee is about accepted records, not process liveness, and this repo
-# already has the pattern for it: scripts/ci-integration.sh's
-# `verify_db_recovery.py` reads back a list of traced message IDs and fails
-# if any is missing or duplicated. The restore drill's assertion should read
-# the same way: trace IDs in before the drill, assert them all present after.
-# ---------------------------------------------------------------------------
+  # The recovery drill (F8/B3/M11). Release-candidate only, on the same
+  # trigger as model-grounding -- not on cost, at ~120s it is cheap next to
+  # build-and-scan, but on blast radius: it destroys its own volumes, and a
+  # stateful full-stack drill is the wrong default for every dependabot bump
+  # and docs typo. One "expensive or stateful" tier, not two conventions.
+  #
+  # What it asserts, and why this job exists rather than a healthcheck: the
+  # drill accepts message IDs, backs up, accepts more, destroys pgdata,
+  # rabbitdata and all three outbox volumes, restores, and then asserts with
+  # a SEPARATE READER (psql, not the API that accepted the writes) that
+  # `SELECT count(*) FROM ingest_log WHERE message_id = '<id>'` is exactly 1
+  # for every pre-backup ID. Exactly once, not at least once. The post-backup
+  # IDs are asserted absent AND asserted to have been committed before the
+  # disruption, so a regression where the API quietly stops accepting writes
+  # cannot make "all of them are gone" trivially true and pass proving
+  # nothing. M11's guarantee is about accepted records, not process liveness.
+  restore-drill:
+    runs-on: ubuntu-latest
+    needs: [lint, unit, guard]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/heads/release/') ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'release-candidate'))
+    # Measured by F8 at 116s on a branch and 120s on the merged tree. The
+    # headroom is deliberate and goes here rather than in the script: a
+    # `docker compose exec` hangs indefinitely if the daemon disappears
+    # mid-call, and there is no portable `timeout` across Git Bash and macOS,
+    # so the job-level bound is the only place that reliably stops it.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # `aow/services:ci` is local-only and nothing in the drill builds it.
+      # Inside build-and-scan it already exists; this is a separate job, so it
+      # starts with an empty image store and the drill would die on a missing
+      # image. That is exactly the failure this repo's browser gate hit on its
+      # first real runner run ("No such image: nginx:alpine@sha256:..."), which
+      # passed locally only because the image happened to be in the store.
+      # Everything else the drill starts is digest-pinned and it uses
+      # --no-build without --pull never, so those resolve normally.
+      - name: Build the service image the drill runs against
+        run: docker build -f services/Dockerfile -t aow/services:ci .
+
+      - name: Backup and restore drill (accepted IDs must survive)
+        env:
+          AOW_COMPOSE_OVERLAY: compose.ci.yml
+          AOW_CI_SERVICES_IMAGE: aow/services:ci
+        run: |
+          started=$(date +%s)
+          bash demos/06_backup_restore.sh
+          elapsed=$(( $(date +%s) - started ))
+          echo "restore-drill wall clock: ${elapsed}s" | tee -a "$GITHUB_STEP_SUMMARY"
