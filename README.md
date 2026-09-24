@@ -1019,9 +1019,12 @@ as a single-platform manifest, that stale record wins over a later re-pull, and
 `docker save` will keep writing an archive with no layers in it — silently,
 exiting 0. Purge those digests (`docker system prune -af`, **with the
 containerd store active**; purging under `overlay2` leaves the containerd
-records untouched) and pull again. A CI runner is clean per job and is safe by
-construction. `package-offline.sh` fails rather than ship such a bundle, so the
-worst case is a failed packaging run, not a bad release — see
+records untouched) and pull again. Note that `docker rmi` of the tag is *not*
+enough — the record survives it, and only removing the image by ID, or a prune,
+clears it. A CI runner is clean per job, and a machine that never pulled the
+pre-fix images cannot be affected at all, so both are safe by construction.
+`package-offline.sh` fails rather than ship such a bundle, so the worst case is
+a failed packaging run, not a bad release — see
 [docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) §1.
 
 `dist/aow-<commit>/` contains the exact CI images, the digest-pinned upstream
@@ -1095,36 +1098,41 @@ The bundle overlay also points the operator refresh's detached window guard
 at the packaged `demos` image, so `refresh --check` can enforce its deadline
 without a locally built `aow/demos:dev` tag.
 
-**Last release drill.** Run on a **separate Docker engine** — its own
-`docker-ce` daemon, its own image store, no Docker Desktop integration — with
-outbound network cut by nftables and the cut verified from inside a container
-(DNS, raw-IP HTTP, raw TCP, raw-IP HTTPS and ICMP all dead). Three releases
-were packaged from three commits, so the upgrade moved image tags and code
+**Last release drill.** Packaged on a connected Windows staging host and
+installed on a **separate Docker engine** — its own `docker-ce` daemon, its own
+image store, no Docker Desktop integration, **0 images and 0 volumes before the
+install**, so `docker load` was the only thing that could supply one. Outbound
+network cut with nftables and verified dead from inside a container on a
+routable network: HTTPS, HTTP and DNS all blocked. Two releases, each packaged
+from its own green `main` CI build, so the upgrade moves image tags and code
 rather than a version string.
 
 | Exercise | Result |
 |---|---|
-| First install, empty volumes, `--pull never` | `PASS` in 16 s, **0 pull attempts**; weather 80, places 620, events 26, facts 81 |
+| Transport, 2.4 GB | 11 s |
+| `verify-bundle.sh`, with the `SHA256SUMS` digest carried out of band | exit 0 in 2 s; 194 files + the model; 10 images by verified manifest digest; archive complete for `linux/amd64` |
+| First install, empty volumes, `--pull never` | `PASS` in 40 s, **0 pull attempts**; weather 80, places 620, events 39, facts 81 |
 | Live data through the queue | a recommendation, an itinerary and a `PATCH`, all three `message_id`s traced to `stored` |
-| Upgrade with that data in place | `PASS` in 14 s; pre-upgrade dump written first; every traced ID and record survived |
-| Deliberately failed migration | install aborted, `migrate` exit 3, dump taken first, `weather_daily` 80 → 0 |
+| Upgrade with that data in place | `PASS` in 38 s, 0 pulls; pre-upgrade dump written first; every traced ID and record survived |
+| Monitoring overlay, from the bundle | 0 pulls; Grafana healthy; 11 alert rules; seven scrape targets up; `grafana.com` unreachable; no error or warn lines |
+| Deliberately failed migration | install aborted, `migrate` exit 3, dump taken first, `weather_daily` 80 → 0, every other table untouched |
 | Image rollback | images and migrations reverted; smoke **failed, correctly**, on the still-empty forecast |
 | Restore from the failed install's dump | `PASS` in 18 s; all counts and all traced IDs back |
 | Packaged proof runner, E1 and E2 | exit 0; both answered from stored data with source and as-of |
-| Out-of-coverage question | refused in code, `llm_called: False` |
+| Out-of-coverage question | refused in code, `local model called: False` |
 
-**That drill found a real defect, and it is the reason this section no longer
-describes a same-host test.** The bundle it started from was unloadable: CI
-publishes the two application images as a manifest with no platform
-descriptor, and a containerd-store `docker save` exports such an image as its
-manifest alone — no config, no layers — while exiting 0. The archive passed
-`SHA256SUMS` and the digest check and then died on the clean host with
-`failed to read config content`.
+**That drill found a real defect, and it is why this section no longer
+describes a same-host test.** An earlier bundle was unloadable: the application
+images were published as a manifest with no platform descriptor, and a
+containerd-store `docker save` exports such an image as its manifest alone — no
+config, no layers — while exiting 0. The archive passed `SHA256SUMS` and the
+digest check and then died on the clean host with `failed to read config
+content`.
 
 It had passed every previous drill because those installed on the machine that
 packaged the bundle, and that engine already held the layers from its own
 `docker pull`. A same-host install cannot detect this even in principle, so
-**the earlier `a129bb6` drill is not evidence that its archive was complete**;
+**the earlier `a129bb6` drill is not evidence that its archive was complete** —
 it is evidence about the installer and the recovery path only.
 `scripts/verify-bundle-images.sh` now refuses an archive whose images are not
 physically complete for this release's platform, so it cannot recur silently.

@@ -106,13 +106,29 @@ archive.
 
 Consequences:
 
-- A staging host that ever pulled the old shape must have those digests purged
-  before it can build a valid bundle. A CI runner is clean per job and is
-  therefore safe by construction.
+- A staging host that ever pulled the old shape must have those records purged
+  before it can build a valid bundle. A CI runner is clean per job, and a
+  reviewer's machine never pulled the pre-fix images at all, so both are safe
+  by construction. The only engines that can hit this are the two used to
+  investigate it.
+- **`docker rmi <tag>` does not clear it.** Removing both the alias tag and the
+  `repo@digest` reference and re-pulling still produced an empty archive, three
+  times, which is what made this look like a property of the image rather than
+  of the store. The records only cleared when the images were removed **by
+  image ID** as well. Anyone diagnosing this has to purge by ID or prune, or
+  they will reach the wrong conclusion — as both people looking at it here did,
+  in opposite directions, before the store state was isolated as the variable.
 - Switching the image store and *then* purging does not work: the records are
   per-store, and a purge under `overlay2` leaves the containerd store intact.
   This was observed directly — after a purge the engine reported 0 images, and
   switching back to containerd revealed 10 surviving records.
+- The media type is **not** the variable, and an earlier draft of this document
+  said it was. On the same engine, `application/vnd.oci.image.index.v1+json`
+  exported correctly while
+  `application/vnd.docker.distribution.manifest.list.v2+json` did not, which
+  looked decisive; it was a coincidence of which images had stale records. A
+  freshly published image of the *same* Docker media type exports correctly on
+  that engine, and so does the one that failed, once its records are purged.
 - The staging engine's image store is a release-critical property, so
   `scripts/verify-bundle-images.sh` now fails packaging rather than relying on
   anyone remembering it.
@@ -140,115 +156,142 @@ images.tar cannot load ui as linux/amd64:
 
 ---
 
-## 2. The environment the drill ran on
+## 2. The two machines
 
-A **separate Docker engine**: a dedicated Ubuntu 24.04 WSL2 distribution
-running its own `docker-ce` 29.8.1 daemon, its own `/var/lib/docker`, its own
-networks, and no Docker Desktop integration — verified by a distinct engine ID
-(`f99ef3b5-…` against Docker Desktop's `375fa6b6-…`) and an empty integration
-socket directory. Compose v5.5.1, buildx 0.37.1, `linux/amd64`, 32 CPUs, 15 GB
-RAM, 952 GB free.
+**Staging (connected).** Windows 11, Docker Desktop 29.8.0, containerd image
+store, `linux/amd64`. This is where `scripts/package-offline.sh` ran.
 
-Outbound network was cut inside that environment with nftables rules dropping
-all traffic via `eth0` plus the WSL loopback DNS-tunnel resolver
-(`10.255.255.254`), installed at hook priority −300 ahead of Docker's own
-rules, which were never edited. The cut was verified positively **from inside a
-container on that engine**:
+**Offline host.** A *separate Docker engine*: a dedicated Ubuntu 24.04 WSL2
+distribution running its own `docker-ce` 29.8.1 daemon, its own
+`/var/lib/docker`, its own networks, and no Docker Desktop integration —
+verified by a distinct engine ID (`f99ef3b5-300a-47a5-96e2-73fc62aa9b06`
+against Docker Desktop's `375fa6b6-973d-435a-ad5d-9bfe642fb556`) and an empty
+integration socket directory. Compose v5.5.1, `linux/x86_64`, overlayfs,
+15 GB RAM, 952 GB free. Before each install it held **0 images and 0 volumes**,
+so `docker load` was the only thing that could supply an image.
+
+Outbound network was cut with nftables rules dropping all traffic via `eth0`
+plus the WSL loopback DNS-tunnel resolver (`10.255.255.254`), at hook priority
+−300 ahead of Docker's own rules, which were never edited. Measured at install
+time, from the distribution:
 
 ```
-                                     BASELINE      AIRGAP ON
-  distro DNS                         RESOLVES      BLOCKED
-  distro HTTPS                       REACHES       BLOCKED
-  DNS   resolve cloudflare.com       RESOLVED      BLOCKED
-  DNS   direct 10.255.255.254        RESOLVED      BLOCKED
-  HTTP  raw-IP 1.1.1.1:80            REACHED       BLOCKED
-  TCP   raw-IP 8.8.8.8:443           CONNECTED     BLOCKED
-  HTTPS raw-IP 1.1.1.1:443           REACHED       BLOCKED
-  ICMP  ping 1.1.1.1                 REPLY         BLOCKED
+DNS    : BLOCKED
+TCP443 : BLOCKED
 ```
 
-Not just DNS: raw IP, raw TCP and ICMP are all dead, while container-to-
-container networking and published ports keep working.
+and from a container **on a routable network** — deliberately not the stack's
+`internal: true` backend, so this tests the host firewall rather than Docker's
+own isolation:
 
-The rules are in memory. WSL terminates an idle distribution, which restarts
-`dockerd` and every container with `restart: unless-stopped` — and clears the
-rules, fail-**open**. They are therefore installed as a systemd unit ordered
-`Before=docker.service`, so the engine and everything it restarts come up with
-egress already severed rather than in a brief connected window.
+```
+HTTPS raw-IP 1.1.1.1 : BLOCKED
+HTTP  raw-IP 1.1.1.1 : BLOCKED
+DNS   ghcr.io        : BLOCKED
+```
+
+The rules are in memory, and WSL terminates an idle distribution — which
+restarts `dockerd` and every container with `restart: unless-stopped`, and
+clears the rules **fail-open**. An earlier run of this drill hit exactly that.
+They are therefore installed as a systemd unit ordered `Before=docker.service`,
+so the engine and everything it restarts come up with egress already severed
+rather than in a brief connected window.
 
 ### What this is not
 
-**It is not a separate physical machine, and not a separate VM.** All WSL2
+**Not a separate physical machine, and not a separate VM.** All WSL2
 distributions on this host share one Hyper-V utility VM, one kernel and one
-network namespace root, so the isolation is enforced by firewall rules inside a
+network namespace root, so the cut is enforced by firewall rules inside a
 shared virtual machine rather than by the absence of a physical link. The
-bundle was transported over a hypervisor filesystem share (drvfs), not physical
+bundle travelled over a hypervisor filesystem share (drvfs), not physical
 media. The WSL localhost-forwarding relay runs over vsock and stays available
 under the rules, so published ports remained reachable from Windows during the
-offline phase.
+offline phase. Hyper-V was not available to build a true VM:
+`Microsoft-Hyper-V` and `Microsoft-Hyper-V-All` report `InstallState=2`
+(Disabled), and enabling them needs elevation plus a reboot.
 
-Hyper-V was not available to build a true VM: `Microsoft-Hyper-V` and
-`Microsoft-Hyper-V-All` report `InstallState=2` (Disabled), and enabling them
-needs elevation plus a reboot.
+What this establishes: the bundle installs and runs against a **clean engine
+with no image cache to fall back on and no reachable egress**, which is
+precisely the property the previous same-host drill could not establish and the
+property that exposed §1. What it does not establish: operation on physically
+disconnected hardware.
 
-What this demonstrates: the bundle installs and runs against a **clean engine
-with no image cache to fall back on and no reachable network egress** — which
-is exactly the property the previous same-host drill could not establish. What
-it does not demonstrate: operation on physically disconnected hardware.
-
-One consequence of the shared namespace worth recording, because it will bite
-anyone repeating this: the Windows-side development stack already holds
-`127.0.0.1:8000` and `:8080`, so a release test on the distribution must set
-`AOW_BIND_ADDR` to a different loopback address. `install-offline.sh` fails
-with `failed to bind host port 127.0.0.1:8000/tcp: address already in use`
-otherwise.
+One consequence of the shared namespace that will bite anyone repeating this:
+the Windows-side development stack already holds `127.0.0.1:8000` and `:8080`,
+so a release test on the distribution must set `AOW_BIND_ADDR` to another
+loopback address. Otherwise `install-offline.sh` fails with
+`failed to bind host port 127.0.0.1:8000/tcp: address already in use`. This run
+used `127.0.0.3`.
 
 ---
 
 ## 3. The drill
 
-Three releases, each packaged by `scripts/package-offline.sh` from its own
-commit, so the upgrade moves image tags and code rather than a version string.
-Bundle: 1.9 GB, 151 files, transported at 76–110 MiB/s (24.5 s).
+Two releases, each packaged from its own green `main` CI build, plus one
+fault-injection release derived locally — CI would never publish a migration
+written to fail, so that one is explicitly not a CI artefact.
+
+| | release A | release B |
+|---|---|---|
+| commit | `f19224130aa859257f71f276f9bac53d30c7bb2e` | `bf4a2dfd49bc20c1a09f1a2abf646b6891395a7c` |
+| CI run | `36037543463` (`push`; guard, unit, lint, build-and-scan, publish-images and ui-gate all green) | `36041468062` |
+| `SHA256SUMS` digest | `sha256:6dd3652ea70b2af1d358ea2cad52a09bf86d4d230f188dba951fababd9fd3ab9` | `sha256:52e5b1c75064d76f5e46cb604f5c481cfb1fbdb78099b66829c94dc44d068d2f` |
+| bundle | 2.4 GB, 194 files, `images.tar` 1,231,824,896 bytes, 10 images | same shape |
+
+Both artifacts' `services` and `ui` digests were checked against the registry
+before packaging: both `application/vnd.docker.distribution.manifest.list.v2+json`,
+both equal to what the release tag resolves to.
+
+### What ran
 
 | # | Exercise | Result |
 |---|---|---|
-| 1 | First install, empty volumes, `--pull never` | `PASS` in 16 s. **0 pull attempts** in the installer log. weather 80, places 620, events 26, facts 81 — matching `data/snapshot/MANIFEST.json` exactly |
-| 2 | Live data through the queue | a free-text recommendation, a saved itinerary and a `PATCH` — all three `message_id`s reached `stored=true`; recommendations 1360 → 1361, itineraries 0 → 1, patch history 1 row |
-| 3 | Upgrade with live data | `PASS` in 14 s, 0 pulls. Pre-upgrade dump (732 KB) written **before** the new images touched the schema. Every traced ID still `stored`, patch marker and history intact, itinerary intact, requested activity scored `good` |
-| 4 | Deliberately failed migration | install aborted; `migrate` exit 3; dump taken first; `weather_daily` 80 → **0**, every other table untouched |
-| 5 | Image rollback to the previous release | images and migration files reverted; `weather_daily` still 0; release smoke **failed, correctly**, rather than reporting a healthy rollback |
-| 6 | Data restore from the failed install's dump | `PASS` in 18 s. weather 80, places 620, events 26, facts 81; all three traced IDs `stored`; patch marker, patch history, itinerary and requested activity all back |
-| 7 | Packaged offline proof runner | `scripts/prove-offline.sh offline` — exit 0, all five sections |
-| 8 | The two reviewer questions | both answered from stored data with source and as-of (below) |
-| 9 | Out-of-coverage question | refused in code, `llm_called: False` |
-| 10 | Egress from inside the running stack | `api`, `agent`, `consumer` all `no route out (OSError)` to `1.1.1.1:443` |
-| 11 | Poison path | four malformed patches reached `aow.dlq`; `aow.ingest` drained to 0 |
+| 1 | Transport, 2.4 GB | 11 s, 218 MiB/s |
+| 2 | `verify-bundle.sh`, with the `SHA256SUMS` digest carried out of band as `AOW_SHA256SUMS` | exit 0 in 2 s; 194 files + the model verified; out-of-band digest matched; 10 images by verified manifest digest; **archive complete for `linux/amd64`** |
+| 3 | First install, empty volumes, `--pull never` | `PASS` in **40 s**, **0 pull attempts**, 10 images loaded |
+| 4 | Stored data | weather 80, recommendations 1360, events 39, places 620, facts 81 — matching `data/snapshot/MANIFEST.json`; `aow_backend` `Internal=true` |
+| 5 | Egress from a container on a routable network | HTTPS, HTTP and DNS all blocked (§2) |
+| 6 | Packaged proof runner, `prove-offline.sh offline` | exit 0, all five sections |
+| 7 | Both reviewer questions | answered from stored data with source and as-of (below) |
+| 8 | Out-of-coverage question | refused in code, `local model called: False` |
+| 9 | Monitoring overlay from the bundle | 0 pull attempts; Grafana 12.2.0 `database: ok`; 11 alert rules in 4 groups; `aow-api`, `aow-agent`, `aow-consumer`, `aow-enricher`, `aow-ingestor`, `rabbitmq` and `rabbitmq-queues` all `up`; **0 error or warn lines** in Grafana's log |
+| 10 | Grafana's seven air-gap variables | all set as intended, read off the running container; `grafana.com` and `1.1.1.1` both unreachable from it |
+| 11 | Published ports | only `edge` (`127.0.0.3:8000`, `127.0.0.3:8080`) and `edge-observability` (`127.0.0.3:3000`); Prometheus and Grafana stay on the internal network |
+| 12 | Live data through the queue | a free-text recommendation, a saved itinerary and a `PATCH`, all three `message_id`s traced to `stored`; recommendations 1360 → 1361, itineraries 0 → 1 |
+| 13 | **Upgrade A → B with that data in place** | `PASS` in **38 s**, 0 pulls; pre-upgrade dump (699,129 bytes) written **before** the new images touched the schema; every traced ID still `stored`, patch marker and history intact, itinerary intact, requested activity still scored `good`; every application container now on a release-B alias |
+| 14 | **Deliberately failed migration** | install aborted, `migrate` exit 3, its own dump (711,508 bytes) taken first; `weather_daily` 80 → **0**, every other table untouched (recommendations 1361, places 620, facts 81, events 39, itineraries 1, `ingest_log` 1087, `record_history` 1) |
+| 15 | **Image rollback to B** | images and migration files reverted; `weather_daily` still 0; release smoke **failed, correctly**, rather than reporting a healthy rollback |
+| 16 | **Restore from the failed install's dump** | `PASS` in **18 s**; weather 80, places 620, events 39, facts 81; all three traced IDs `stored`; patch marker, patch history, itinerary and requested activity all back |
 
-Steps 4–6 are the sequence that matters most, because it is the one an image
-rollback cannot handle on its own. A migration that deletes and then fails
-leaves the data gone after the images are back; the smoke check refuses to call
-that healthy, and `scripts/restore-offline.sh` with the dump the *failed*
-install took on its way in is what actually recovers it.
+Steps 14–16 are the sequence that matters most, because it is the one an image
+rollback cannot handle alone. A migration that deletes and then fails leaves
+the data gone after the images are back; the smoke check refuses to call that
+healthy, and `scripts/restore-offline.sh` with the dump the **failed** install
+took on its way in is what actually recovers it.
+
+The fault-injection release's `migrate` ran
+`001_init`, `002_activities`, `003_demo_events`, `006_event_validity`,
+`007_city_coast` and then `900_failed_upgrade` — so the bundle carried the
+final migrations, not a stale set.
 
 ### The two reviewer questions, through the installed release
 
 **"What is the weather tomorrow in Rome?"**
 
-> Tomorrow in Rome, the weather is expected to be warm with a high of 28°C and
-> a low of 20°C. There is a 11.2-hour sun period, and the chance of rain is
-> 18%. The wind speed is 17 km/h.
+> The weather tomorrow in Rome is expected to be high 28°C and low 20°C with a
+> 11.2-hour sun. There is a 0.1mm rainfall chance, and the wind speed is
+> 17 km/h. The suitability verdict for the weather is good.
 >
 > as of: weather as of 2026-09-23 18:16 UTC · forecast covers 2026-09-23 to
 > 2026-10-08 · sources: open-meteo
 
-**"What activities can I do with my wife this week in London? We like
-concerts, shopping and fine dining."** — answered from rows: seven dated
-forecast lines, the best-rated activity per day, venues grouped by category
-with the standing caveat that the system holds a name and a category rather
-than a programme, and the one scheduled event on record (`2026-09-25 Free
-Friday Lunchtime Concert at LSO St Luke's`). Sources: open-meteo, Wikidata
-(CC0), London Symphony Orchestra official listing.
+**"What activities can I do with my wife this week in London? We like concerts,
+shopping and fine dining."** — delivered from rows: seven dated forecast lines,
+the best-rated activity per day, venues grouped by category with the standing
+caveat that the system holds a name and a category rather than a programme, and
+the one scheduled event on record (`2026-09-25 Free Friday Lunchtime Concert at
+LSO St Luke's`). Sources: open-meteo, Wikidata (CC0), London Symphony Orchestra
+official listing.
 
 **Out of coverage:**
 
@@ -258,20 +301,22 @@ Friday Lunchtime Concert at LSO St Luke's`). Sources: open-meteo, Wikidata
 >
 > local model called: False
 
-### Timings worth knowing
+### Timings
 
 | | |
 |---|---|
-| Bundle transport, 1.9 GB | 24.5 s (76 MiB/s) |
-| `sha256sum -c SHA256SUMS`, 151 files | 4.5 s |
-| `verify-bundle-images.sh` including the completeness gate | 6.5 s |
-| First install to `PASS` | 16 s |
-| Upgrade to `PASS` | 14 s |
+| Transport, 2.4 GB over drvfs | 11 s (218 MiB/s) |
+| `verify-bundle.sh` (checksums, model, lock anchoring, digests, completeness) | 2 s |
+| First install to `PASS` | 40 s |
+| Upgrade to `PASS` | 38 s |
+| Failed upgrade to abort | 27 s |
 | Restore to `PASS` | 18 s |
-| Rollback to a *correct* failure | 508 s — the release smoke check waits out its full 480 s deadline before reporting the still-empty forecast |
+| Monitoring overlay to healthy | ~25 s |
+| Rollback to a *correct* failure | **508 s** — the release smoke check waits out its full 480 s deadline before reporting the still-empty forecast |
 
-That last row is honest rather than flattering. A rollback whose outcome is
-already known still costs eight minutes of waiting.
+That last row is honest rather than flattering: a rollback whose outcome is
+already determined still costs eight minutes of waiting. It is a knob worth
+adding if this is ever run often.
 
 ---
 
