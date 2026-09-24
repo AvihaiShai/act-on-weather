@@ -104,9 +104,30 @@ jobs:
           echo "clean"
 
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.24.3"
+
+      - name: Secret scanner positive control
+        run: |
+          # The action adds the binary it used to PATH. A clean scan alone
+          # cannot distinguish a working scanner from one that scans nothing.
+          # Generate a fake GitHub token only on the runner; never commit it or
+          # print it. Exit 42 means the pinned scanner detected the canary.
+          canary_dir="$(mktemp -d)"
+          trap 'rm -rf "$canary_dir"' EXIT
+          suffix="$(python3 -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(36)))')"
+          printf 'token = "ghp_%s"\n' "$suffix" > "$canary_dir/canary.txt"
+          set +e
+          gitleaks detect --no-git --source "$canary_dir" --exit-code=42 --redact > /dev/null 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 42 ]; then
+            echo "::error::gitleaks did not detect the generated canary (exit $status)"
+            exit 1
+          fi
+          echo "gitleaks detected the generated canary"
 
       - name: Images are pinned by digest
         run: |
@@ -305,7 +326,7 @@ jobs:
         run: docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" -f services/ui/Dockerfile -t aow/ui:ci .
 
       - name: Trivy -- services
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: aow/services:ci
           severity: HIGH,CRITICAL
@@ -314,7 +335,7 @@ jobs:
           format: table
 
       - name: Trivy -- ui
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: aow/ui:ci
           severity: HIGH,CRITICAL
@@ -323,7 +344,7 @@ jobs:
           format: table
 
       - name: Trivy -- the repository itself (config and dependencies)
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
