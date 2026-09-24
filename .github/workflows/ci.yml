@@ -496,12 +496,20 @@ jobs:
           version="sha-${GITHUB_SHA}"
           for component in services ui; do
             ref="$image_root/$component:$version"
-            docker buildx imagetools inspect --raw "$ref" | python3 - "$ref" <<'PY'
+            # The manifest goes to a FILE, not down a pipe. `python3 - <<PY`
+            # already uses stdin for the script itself, so piping the JSON in
+            # as well silently discards it and json.load(sys.stdin) reads an
+            # empty string -- which is exactly how this step failed on its
+            # first real run, with JSONDecodeError at char 0, on images that
+            # were in fact published correctly.
+            docker buildx imagetools inspect --raw "$ref" > /tmp/manifest.json
+            python3 - "$ref" /tmp/manifest.json <<'PY'
           import json
           import sys
 
           ref = sys.argv[1]
-          manifest = json.load(sys.stdin)
+          with open(sys.argv[2], encoding="utf-8") as handle:
+              manifest = json.load(handle)
           media_type = manifest.get("mediaType", "")
           is_index = media_type in (
               "application/vnd.oci.image.index.v1+json",
