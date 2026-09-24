@@ -115,6 +115,19 @@ LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "180"))
 # ----------------------------------------------------------------- outbox --
 OUTBOX_PATH = Path(os.environ.get("AOW_OUTBOX_PATH", "/outbox/outbox.sqlite3"))
 
+# --------------------------------------------------- operator refresh state --
+# Where scripts/refresh.sh files the report of its last run. One small JSON
+# file on a named volume: written inside the ingestor, which is the container
+# the refresh already runs commands in, and mounted read-only into the api so
+# the UI can show what the last run actually did.
+#
+# Not the database and not the queue, and the reason is the case that matters:
+# a refresh whose provider refused every city accepts nothing, so there is no
+# message for the queue to carry and no row for the consumer to write. The one
+# outcome an operator most needs to see is exactly the one the normal path
+# cannot report. See services/common/refresh_state.py.
+REFRESH_STATE_PATH = Path(os.environ.get("AOW_REFRESH_STATE_PATH", "/refresh/last-run.json"))
+
 # ------------------------------------------------------------- enrichment --
 ENRICH_POLL_SECONDS = float(os.environ.get("ENRICH_POLL_SECONDS", "60"))
 ENRICH_BATCH = int(os.environ.get("ENRICH_BATCH", "8"))

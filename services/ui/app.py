@@ -23,7 +23,6 @@ from __future__ import annotations
 import os
 from datetime import UTC, date, datetime, timedelta
 from html import escape
-from zoneinfo import ZoneInfo
 
 import forecast
 import pandas as pd
@@ -1043,13 +1042,26 @@ def render_refresh(cov) -> None:
     that describes an operator action instead of performing one.
 
     There is deliberately no button here. Pressing it would have to reach
-    something that can attach the ingestor to the egress network, which means
-    either the Docker socket inside this container or an unauthenticated write
+    something that can attach the ingestor to a network with a route out, which
+    means either the Docker socket inside this container or an unauthenticated write
     endpoint that runs host commands. Both are a worse problem than the one they
     solve, in a container whose entire job is rendering read-only views.
 
-    So this tab shows the two things it can show honestly: how fresh the stored
-    forecast actually is, city by city, and the exact command an operator runs.
+    So this tab shows three things, and keeps them apart, because conflating the
+    first two is the mistake this page used to make:
+
+      1. how fresh the STORED forecast is, city by city, read from the database;
+      2. what the LAST RUN of the command did, read from the report it files at
+         `GET /refresh/last` -- which cities the provider answered for, the
+         as-of before and after, the ids it accepted, how many were stored, and
+         whether the egress window closed;
+      3. the command itself.
+
+    (1) and (2) answer different questions and can disagree in the way that
+    matters most: stored data can look fresh because an *earlier* run worked
+    while the most recent one failed outright. A single freshness stamp cannot
+    show that, and the previous version of this tab showed only the stamp.
+
     Nothing on this page fetches anything -- and it says so, because a page that
     prints a command next to a freshness stamp reads as if it had just run it.
     """
@@ -1058,12 +1070,17 @@ def render_refresh(cov) -> None:
         "connectivity — this is the one path that cannot work air-gapped, by design."
     )
     st.warning(
-        "This page does not fetch. It shows what is stored right now, and the "
-        "command that changes it. Nothing here reaches the provider.",
+        "This page does not fetch. It shows what is **stored**, what the **last "
+        "run of the command did**, and the command itself. Nothing here reaches "
+        "the provider.",
         icon="ℹ",
     )
 
-    st.markdown("#### What is stored right now")
+    st.markdown("#### 1. What is stored right now")
+    st.caption(
+        "From the database, through the API. This is the state of the data, not "
+        "the outcome of any particular refresh."
+    )
     columns = st.columns(4)
     columns[0].metric("Newest weather as-of", fmt_ts(cov.get("weather_as_of")).replace(" UTC", ""))
     columns[1].metric("Age", age_of(cov.get("weather_as_of")))
@@ -1074,24 +1091,26 @@ def render_refresh(cov) -> None:
     st.caption(
         "Per city, because a refresh that only half worked looks exactly like "
         "this: four cities stamped minutes ago and one still carrying last "
-        "week's as-of. The command below reports the same split at the time it "
-        "runs, and exits non-zero when any city fails."
+        "week's as-of."
     )
     if st.button("Re-read stored data", key="refresh_reread"):
         st.cache_data.clear()
         st.rerun()
     st.caption(
-        "Re-reads the database through the API. It does not contact the weather "
-        "provider — only the command below does that."
+        "Re-reads the database and the last-run report through the API. It does "
+        "not contact the weather provider — only the command below does that."
     )
 
-    st.markdown("#### The operator command")
+    render_last_run()
+
+    st.markdown("#### 3. The operator command")
     st.code("docker compose -f compose.tools.yml run --rm refresh", language="bash")
     st.caption(
-        "It attaches **only the ingestor** to the egress network, fetches the "
-        "forecast into the same outbox every other record uses, then closes that "
-        "window again from a trap — on success, on a failed fetch and on Ctrl-C "
-        "alike — and asserts it closed before reporting. It prints per-city "
+        "It attaches **only the ingestor** to a network it creates for the "
+        "occasion, fetches the forecast into the same outbox every other record "
+        "uses, then detaches the ingestor and deletes that network again from a "
+        "trap — on success, on a failed fetch and on Ctrl-C alike — and asserts "
+        "both before reporting. It prints per-city "
         "success or failure, the as-of before and after, the accepted message "
         "ids, and how many of them are stored versus still in flight. "
         "`--check` opens and closes the window without fetching, and needs no "
@@ -1124,6 +1143,139 @@ def render_refresh(cov) -> None:
     )
 
 
+OUTCOMES = {
+    "ok": ("Succeeded", "success"),
+    "ok-with-rows-in-flight": ("Succeeded, rows still in flight", "info"),
+    "cities-failed": ("The provider refused at least one city", "error"),
+    "accepted-not-stored": ("Accepted, but nothing reached the database", "error"),
+    "no-fetch-report": ("The fetch produced no report", "error"),
+    "window-not-closed": ("THE EGRESS WINDOW DID NOT CLOSE", "error"),
+}
+
+
+def render_last_run() -> None:
+    """Section 2: what the last run of the command actually did (M12, F4).
+
+    Read from `GET /refresh/last`, which serves one JSON file that
+    `scripts/refresh.sh` files on its way out. This is the part a reviewer cannot
+    get from the freshness table: a refresh that failed leaves the stored data
+    exactly as fresh as it was, so the only place the failure shows is here.
+
+    Nothing on this page can create that report. There is no write route for it;
+    the only way to record a run is to run the command on the host.
+    """
+    st.markdown("#### 2. What the last run of that command did")
+    payload = cached_get("/refresh/last") or {}
+    if not payload.get("recorded"):
+        st.info(
+            "**No refresh run has been recorded on this stack.** That is the "
+            "normal state of a fresh install: the bundled snapshot was loaded at "
+            "startup, which is not a refresh. It also means nobody has run the "
+            "command below since this stack's volumes were created — not that a "
+            "refresh failed.",
+            icon="ℹ",
+        )
+        return
+
+    run = payload["report"]
+    window = run.get("egress_window") or {}
+    label, kind = OUTCOMES.get(run.get("outcome"), (run.get("outcome") or "Unknown", "warning"))
+    # st.success / st.error / st.info / st.warning -- the banner colour is the
+    # first thing read, so the outcome picks it rather than a fixed style.
+    getattr(st, kind)(
+        f"**{label}** · exit code `{run.get('exit_code')}` · recorded "
+        f"{fmt_ts(run.get('recorded_at'))}{ago(run.get('recorded_at'))}"
+    )
+
+    columns = st.columns(4)
+    columns[0].metric("Accepted", run.get("accepted", 0))
+    columns[1].metric("Published", run.get("published", "-"))
+    columns[2].metric("Stored", run.get("stored", 0))
+    # The claim the whole command exists to make, so it gets a card of its own
+    # rather than a line in a caption.
+    columns[3].metric(
+        "Egress window",
+        "closed" if window.get("closed_and_verified") else "NOT CLOSED",
+        help=(
+            "Whether the one container given a route out was put back on the "
+            "internal network, and the temporary network deleted, and both "
+            "checked afterwards."
+        ),
+    )
+
+    st.dataframe(last_run_table(run), hide_index=True, width="stretch")
+
+    caption = (
+        f"Run against project `{run.get('project') or '?'}` via "
+        f"`{window.get('network') or 'no window'}`"
+    )
+    if window.get("held_seconds") is not None:
+        caption += f", open for {window['held_seconds']}s"
+    if window.get("deadline_seconds"):
+        caption += (
+            f" of a {window['deadline_seconds']}s hard limit that a separate guard "
+            "enforced, so the window could not have outlived the command even if "
+            "it had been killed outright"
+        )
+    else:
+        caption += (
+            " with **no deadline guard on this run** — the window was closed only by "
+            "the command's own trap, which a `kill -9` would have beaten"
+        )
+    if window.get("inherited_open_window"):
+        caption += ". It also found a window left open by an earlier run and closed that"
+    st.caption(caption + ".")
+    if run.get("stored", 0) < run.get("accepted", 0):
+        st.caption(
+            "Accepted but not yet stored is owed, not lost: those rows are "
+            "fsynced in the ingestor's outbox and replay on their own."
+        )
+
+    with st.expander("The accepted message ids, and the raw report"):
+        st.caption(
+            "Each id can be followed at `GET /outbox/{message_id}`, which says "
+            "whether it is stored."
+        )
+        st.json(run)
+
+
+def last_run_table(run) -> pd.DataFrame:
+    """One row per city the run asked for, with its as-of on both sides.
+
+    `ok` is tri-state on purpose: `None` means the run never got as far as this
+    city — an interrupt, or a stack that was not answering — which is a different
+    thing from the provider refusing it.
+    """
+    rows = []
+    for city in run.get("cities", []):
+        ok = city.get("ok")
+        rows.append(
+            {
+                "City": city.get("name") or city.get("city"),
+                "Result": {True: "fetched", False: "FAILED", None: "not attempted"}[ok],
+                "Days": city.get("accepted", 0),
+                "As of before": fmt_ts(city.get("as_of_before")),
+                "As of after": fmt_ts(city.get("as_of_after")),
+                "Covers to": city.get("covers_to_after") or "-",
+                "Why not": " ".join((city.get("error") or "").split())[:80] or "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def ago(stamp) -> str:
+    """`", 3 h ago"`, or nothing when the word already says when.
+
+    `age_of` answers "how old" in a metric card, where "just now" is the whole
+    value. In a sentence that reads "recorded ... just now ago", so the phrase is
+    built here instead of concatenated at the call site.
+    """
+    age = age_of(stamp)
+    if age in {"just now", "never", "unknown"}:
+        return f" ({age})" if age == "just now" else ""
+    return f", {age} ago"
+
+
 def age_of(as_of) -> str:
     """How old a stamp is, in words. An as-of is only meaningful next to how
     long ago it was."""
@@ -1149,18 +1301,20 @@ def freshness_table(cov) -> pd.DataFrame:
     """One row per city: its own as-of, its own coverage end, and whether that
     still reaches today in that city.
 
-    Built from the stored rows, not from a refresh log -- there is no such log,
-    and inventing one would let this page claim a refresh that never landed.
-    "Days ahead" is counted against the city's local date, the same date
-    `forecast.next_row` uses for the forecast card, so the two cannot disagree.
+    Built from the stored rows, and from nothing else. What the last *run* of the
+    refresh did is a separate question with a separate source: `render_last_run`
+    reads it from `GET /refresh/last`. Mixing the two here would let a stale-but-
+    fresh-looking table stand in for a refresh that actually failed.
+
+    "Days ahead" is counted against the city's local date, through the same
+    `forecast.local_today` the forecast cards use, so the two cannot disagree.
     """
-    now = forecast.utc_now()
     rows = []
     for city in cov["cities"]:
         stored = cached_get(f"/weather/{city['id']}") or []
         as_of = max((str(row["as_of"]) for row in stored), default="")
         last = max((str(row["forecast_date"]) for row in stored), default="")
-        today = now.astimezone(ZoneInfo(city["timezone"])).date()
+        today = forecast.local_today(city["timezone"])
         ahead = (date.fromisoformat(last) - today).days if last else None
         if not stored:
             state = "no stored forecast"

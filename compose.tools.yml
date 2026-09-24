@@ -8,16 +8,28 @@
 # them by accident, and `docker compose ps` never shows them.
 #
 # Its own project name, so these containers never appear in, or interfere
-# with, the `aow` project. The `demos` service reaches the stack over the
-# already-existing aow_backend network and drives it through the Docker socket.
-name: aow-tools
+# with, the stack's project. The `demos` and `refresh` services reach the stack
+# over its already-existing backend network and drive it through the Docker
+# socket.
+#
+# AOW_PROJECT names the stack these tools act on. It defaults to `aow`, which
+# is what `docker compose up -d` creates and what every command in the README
+# means, so an operator never sets it. It exists because "which stack?" was
+# hardcoded in three places here, and a proof that has to edit this file to run
+# against a second, isolated stack is not a proof of the shipped command. Set
+# it -- in the environment or in `.env` -- and the tools follow:
+#
+#   AOW_PROJECT=aow-drill docker compose -f compose.tools.yml run --rm refresh
+#
+# It must match the `-p` of the stack you mean, and that stack must be up.
+name: ${AOW_PROJECT:-aow}-tools
 
 networks:
   # Declared external: this file never creates or modifies the stack's
   # networks, it only attaches to the one `docker compose up -d` made.
   backend:
     external: true
-    name: ${AOW_STACK_PROJECT:-aow}_backend
+    name: ${AOW_PROJECT:-aow}_backend
 
 services:
   # ------------------------------------------------------------- staging --
@@ -69,12 +81,14 @@ services:
       # The stack is reached over the internal network, through the same edge
       # proxy the browser uses -- not through a published port, which would
       # mean localhost, which inside a container is this container.
-      API: http://edge:8000
+      API: ${AOW_API:-http://edge:8000}
       # Belt and braces. The nested `docker compose` calls in demos/lib.sh read
       # /work/compose.yml, whose `name: aow` already selects the right project,
       # but COMPOSE_PROJECT_NAME outranks that key -- so it is set explicitly
-      # rather than left to whatever the environment happens to hold.
-      COMPOSE_PROJECT_NAME: ${AOW_STACK_PROJECT:-aow}
+      # rather than left to whatever the environment happens to hold. It has to
+      # agree with the network above, or these tools would drive one stack over
+      # another stack's network.
+      COMPOSE_PROJECT_NAME: ${AOW_PROJECT:-aow}
     volumes:
       # The working tree, so the scripts, compose files and .env come from the
       # checkout rather than from a stale image layer.
@@ -101,13 +115,21 @@ services:
     working_dir: /work
     entrypoint: ["bash", "/work/scripts/refresh.sh"]
     environment:
-      API: http://edge:8000
-      COMPOSE_PROJECT_NAME: ${AOW_STACK_PROJECT:-aow}
+      # Through the edge proxy, the same hop the browser takes, so a reverse
+      # proxy that has stopped serving the API shows up here rather than in a
+      # reviewer's tab.
+      API: ${AOW_API:-http://edge:8000}
+      COMPOSE_PROJECT_NAME: ${AOW_PROJECT:-aow}
       # Seconds to wait for the refreshed days to reach Postgres before the
       # command reports what is still in flight.
       REFRESH_WAIT_S: ${REFRESH_WAIT_S:-180}
       # Set to refresh from an internal mirror instead of the public API.
       OPEN_METEO_URL: ${OPEN_METEO_URL:-}
+      # Hard lifetime of the egress window, enforced by a detached guard so that
+      # a SIGKILL of this container cannot leave the window open indefinitely.
+      # The guard runs in this same image, which is why it is named here.
+      REFRESH_WINDOW_MAX_S: ${REFRESH_WINDOW_MAX_S:-600}
+      REFRESH_GUARD_IMAGE: ${REFRESH_GUARD_IMAGE:-aow/demos:dev}
     volumes:
       - .:/work
       - /var/run/docker.sock:/var/run/docker.sock

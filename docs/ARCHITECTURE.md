@@ -97,6 +97,7 @@ snapshot; generated event samples are loaded only with the demo overlay.
 | Saved trip plan | User request after the agent builds a plan | `itineraries` |
 | Delivery IDs and edit history | Consumer transaction and revision triggers | `ingest_log`, `record_history` |
 | Map backdrop | Bundled compressed GeoJSON in [`data/map/`](../data/map/) | Read by the UI from disk; no database or tile server |
+| Report of the last operator refresh | [`scripts/refresh.sh`](../scripts/refresh.sh) on its way out | One JSON file on the `refresh_state` volume — writable in the ingestor, read-only in the api, served at `GET /refresh/last`. Deliberately not a row: a refresh the provider refused accepts no messages, so the queue has nothing to carry. See [`refresh_state.py`](../services/common/refresh_state.py) |
 
 ## Follow one record: the data flow
 
