@@ -634,7 +634,16 @@ jobs:
       - name: Backup and restore drill (accepted IDs must survive)
         env:
           AOW_COMPOSE_OVERLAY: compose.ci.yml
+          # Both, and they are not redundant. AOW_CI_SERVICES_IMAGE is what
+          # compose.ci.yml substitutes for the stack's own services;
+          # AOW_SERVICES_IMAGE is what the drill passes to the `docker run`
+          # helper containers it starts outside Compose, and it defaults to
+          # aow/services:dev. Setting only the first got
+          # "pull access denied for aow/services" on the first real run --
+          # the stack came up correctly and the helpers went looking for a
+          # tag that exists on nobody's registry.
           AOW_CI_SERVICES_IMAGE: aow/services:ci
+          AOW_SERVICES_IMAGE: aow/services:ci
         run: |
           started=$(date +%s)
           bash demos/06_backup_restore.sh
