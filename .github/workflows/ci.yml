@@ -548,6 +548,56 @@ jobs:
           PY
           done
 
+          # And release/images.lock has to name that same index. A child digest
+          # here does not merely mismatch the archive -- it reintroduces the
+          # original defect, because scripts/package-offline.sh pulls the
+          # reference straight out of this lock. Pulling by a child digest
+          # returns exactly the platform-less single manifest whose
+          # `docker save` writes a manifest and no layers, so a bad lock
+          # rebuilds the empty-bundle bug and the failure surfaces three steps
+          # downstream, looking like a packaging fault rather than a bad lock.
+          #
+          # Both halves are checked, per component: the digest the lock names
+          # must equal what the tag resolves to, and the manifest AT that
+          # digest must be an index. The regression that prompted this
+          # produced different answers for `services` and `ui` in the same
+          # run -- `grep -m1` over RepoDigests, which after a push and a
+          # pull can hold both the child and the index and returns whichever
+          # the daemon listed first -- so a single-image check would have
+          # passed it.
+          for component in services ui; do
+            ref="$image_root/$component:$version"
+            locked_file="$(mktemp)"
+            tag_digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$ref")"
+            lock_digest="$(awk -v c="$component" '$1 == c {print $2}' release/images.lock | sed 's/.*@//')"
+            if [ "$tag_digest" != "$lock_digest" ]; then
+              echo "::error::release/images.lock records $component@$lock_digest but $ref resolves to $tag_digest"
+              exit 1
+            fi
+            docker buildx imagetools inspect --raw "$image_root/$component@$lock_digest" > "$locked_file"
+            python3 - "$component" "$lock_digest" "$locked_file" <<'PY'
+          import json
+          import sys
+
+          component, digest, path = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path, encoding="utf-8") as handle:
+              manifest = json.load(handle)
+          media_type = manifest.get("mediaType", "")
+          if media_type not in (
+              "application/vnd.oci.image.index.v1+json",
+              "application/vnd.docker.distribution.manifest.list.v2+json",
+          ):
+              print(
+                  f"::error::release/images.lock records {component}@{digest}, "
+                  f"whose manifest is {media_type!r} rather than an index. "
+                  "package-offline.sh pulls this reference, and pulling a child "
+                  "manifest recreates the empty-archive defect"
+              )
+              sys.exit(1)
+          print(f"{component}: the lock names the index {digest} -- OK")
+          PY
+          done
+
       - name: Keep the release digest manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
