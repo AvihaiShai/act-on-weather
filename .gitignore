@@ -38,3 +38,9 @@ review-*.png
 # Operational backups (scripts/backup-state.sh, demos/06_backup_restore.sh).
 # Real database and outbox contents, written beside the stack. Never committed.
 backups/
+
+# Event re-check evidence ledgers (scripts/event-recheck.sh). An append-only
+# record of what each venue page said when it was last opened, written beside
+# the stack by the operator who ran the probe. It is local operational
+# evidence, not part of the submission.
+.recheck/
