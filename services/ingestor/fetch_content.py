@@ -894,20 +894,41 @@ def load_events(seed: Path) -> list[dict[str, Any]]:
 
     There is no free, licensable, offline-stageable feed of concerts and
     fixtures for five cities, and the brief's rule against inventing events is
-    absolute. So this reads a file and copies its rows through unchanged: real
-    listings, each row checked against its own source URL by hand,
-    `is_sample: false`. There are 26, across all five cities.
+    absolute. So this reads a file of real listings, each row read off its own
+    source URL by hand, `is_sample: false`. There are 39, across all five
+    cities.
+
+    The one thing it adds to a row is `valid_until`, derived from the row's own
+    `checked_at` by `config.event_valid_until`. It is derived here rather than
+    written into the file because the expiry is a property of the policy, not
+    of the listing: change AOW_EVENT_RECHECK_DAYS and every row's expiry moves
+    together, and no committed row can quietly disagree with the configured
+    window.
 
     These are the only events a default run stores.
     """
     real = read_jsonl(seed)
     if not real:
         log.error("no event seed at %s", seed)
+    rows: list[dict[str, Any]] = []
     for row in real:
         if row.get("is_sample"):
             log.error("%s is in the verified seed but marked is_sample", row["id"])
-    log.info("events: %d hand-verified rows", len(real))
-    return real
+        checked = row.get("checked_at")
+        if not checked:
+            # Not a warning. A row nobody has undertaken to check is exactly the
+            # kind of claim this feed exists to keep out, so it is dropped here
+            # rather than shipped with an invented expiry.
+            log.error("dropping %s: no checked_at, so it is asserted and not verified", row["id"])
+            continue
+        valid_until = config.event_valid_until(datetime.fromisoformat(checked))
+        rows.append({**row, "valid_until": valid_until.isoformat()})
+    log.info(
+        "events: %d hand-verified rows, each valid for %d days after it was checked",
+        len(rows),
+        config.EVENT_RECHECK_DAYS,
+    )
+    return rows
 
 
 def load_sample_events(samples: Path) -> list[dict[str, Any]]:
@@ -923,14 +944,32 @@ def load_sample_events(samples: Path) -> list[dict[str, Any]]:
     A row in the sample file that does not admit to being a sample is dropped
     here rather than trusted: the labelling is a property of the data, so it is
     checked at the boundary and not merely assumed.
+
+    The expiry is re-derived here for the same reason it is on a verified row:
+    it belongs to the freshness policy, not to the file. A generated row has no
+    listing page, so its `checked_at` is the moment it was generated -- which
+    is exactly how long it deserves to be trusted for, since it describes a
+    window of dates that is itself fixed. Without this the committed
+    `valid_until` would be frozen at whenever `make samples` last ran, and
+    changing AOW_EVENT_RECHECK_DAYS would move the verified feed while leaving
+    demo mode on the old window.
     """
     sampled = []
     for row in read_jsonl(samples):
         if not row.get("is_sample"):
             log.error("dropping %s: it is in the sample file but not marked is_sample", row["id"])
             continue
-        sampled.append(row)
-    log.info("events: %d labelled sample rows", len(sampled))
+        checked = row.get("checked_at")
+        if not checked:
+            log.error("dropping sample %s: no checked_at to derive an expiry from", row["id"])
+            continue
+        valid_until = config.event_valid_until(datetime.fromisoformat(checked))
+        sampled.append({**row, "valid_until": valid_until.isoformat()})
+    log.info(
+        "events: %d labelled sample rows, each valid for %d days after it was generated",
+        len(sampled),
+        config.EVENT_RECHECK_DAYS,
+    )
     return sampled
 
 

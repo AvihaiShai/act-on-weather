@@ -23,6 +23,7 @@ import sys
 import time
 import uuid
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,16 @@ def envelopes_from(
     """
     for payload in payloads:
         parts = [*natural_key(routing_key, payload), payload["as_of"]]
+        # An event's `valid_until` is derived from the running recheck window
+        # rather than collected (see `apply_freshness_policy`), so two accepts
+        # of the same listing can legitimately differ while its `as_of` does
+        # not. Without it in the id, lowering AOW_EVENT_RECHECK_DAYS would mint
+        # the same message_id, the outbox would deduplicate it as a replay, and
+        # the new window would never reach the database. Still deterministic:
+        # the same snapshot under the same window gives the same id, which is
+        # the property the delivery guarantee rests on.
+        if routing_key == config.RK_EVENT and payload.get("valid_until"):
+            parts.append(payload["valid_until"])
         if salt:
             parts.append(salt)
         yield Envelope.create(
@@ -112,6 +123,33 @@ def envelopes_from(
 
 
 # ------------------------------------------------------------- accepting ----
+
+
+def apply_freshness_policy(routing_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Re-derive an event's expiry from the window this stack is running with.
+
+    A snapshot is committed once and replayed on every boot, possibly months
+    later and possibly on a machine configured differently from the one that
+    built it. `checked_at` is a fact and travels unchanged; `valid_until` is
+    not -- it is `checked_at` plus whatever recheck window the operator has
+    chosen, so the value baked into the file is only the default the snapshot
+    was built with.
+
+    Deriving it here means the running configuration always wins. Set
+    AOW_EVENT_RECHECK_DAYS=7 and restart, and every stored row's expiry moves
+    on the next accept, because the payload genuinely differs and the
+    consumer's upsert lets a changed `valid_until` through (see
+    `consumer.upsert_event`). Without this the variable would only take effect
+    at `make snapshot` time, which is not where an operator would look for it.
+
+    Replaying the same snapshot under the same window changes nothing: the
+    derived value is identical, so the message id is identical and the outbox
+    deduplicates it exactly as before.
+    """
+    if routing_key != config.RK_EVENT or not payload.get("checked_at"):
+        return payload
+    checked = datetime.fromisoformat(payload["checked_at"])
+    return {**payload, "valid_until": config.event_valid_until(checked).isoformat()}
 
 
 def accept_snapshot(box: Outbox, snapshot_dir: Path) -> int:
@@ -130,7 +168,7 @@ def accept_snapshot(box: Outbox, snapshot_dir: Path) -> int:
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line:
-                payloads.append(json.loads(line))
+                payloads.append(apply_freshness_policy(routing_key, json.loads(line)))
         ids = box.accept_many(list(envelopes_from(routing_key, payloads, "snapshot", salt)))
         total += len(ids)
         log.info("accepted %d %s records from %s", len(ids), routing_key, path.name)

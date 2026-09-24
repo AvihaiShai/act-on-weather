@@ -9,26 +9,37 @@ event, a concert or a fixture. Nothing here is presented as a real listing.
 What exists, and why this file does too:
 
   * data/events.seed.jsonl -- real, hand-verified listings, each row checked
-    against its own source URL. There are seven of them and they are all in
-    London, because that is how far hand-verification got. Those rows carry
-    `is_sample: false` and are the only events in the system that claim to be
-    real.
+    against its own source URL. There are 39, across all five cities but
+    unevenly (london 10, rome 10, tel-aviv 9, reykjavik 6, lisbon 4), because
+    that is how far hand-verification got. Those rows carry `is_sample: false`
+    and are the only events in the system that claim to be real.
 
   * data/events.samples.jsonl -- this file's output. Every row carries
     `is_sample: true`, a title that begins with "Sample:", and a `source` that
     says in words that it is not a real listing. The UI marks them, the agent's
     prompt marks them, and the coverage panel counts them separately.
 
-Why generate them at all: with events in one city out of five, the trip
-planner and the agent could not be exercised anywhere else, and a reviewer
-could not see how a sourced event and a sample are distinguished -- which is
-the interesting part. So the samples are scaffolding for the demo, and they
+Why generate them at all: hand-verification reaches a few venues per city over
+a few weeks, so most dates and most categories have no real listing, and
+neither the trip planner nor the agent could be exercised on them. A reviewer
+also could not see how a sourced event and a sample are distinguished -- which
+is the interesting part. So the samples are scaffolding for the demo, and they
 are built to be impossible to mistake for the real thing.
 
 The venue in each row is real: it comes from data/snapshot/places.jsonl, and
 the row's source_url points at that venue's own record, not at a listing that
-does not exist. Generation is deterministic -- same snapshot in, same file out
--- so the committed sample file is reproducible.
+does not exist.
+
+What is reproducible, and what is not. Which venue lands on which day is
+deterministic -- `pick` hashes the city, the date and the category, so the same
+places snapshot always yields the same rows in the same order, and a diff of a
+regenerated file shows a real change rather than a reshuffle. The timestamps
+are not: `as_of` is the moment of generation, and `checked_at` and
+`valid_until` follow from it, so a regenerated file differs from the committed
+one in three fields per row. That is deliberate rather than sloppy -- a
+generated row's honest age is when it was generated -- but it does mean the
+file's sha256 in data/snapshot/MANIFEST.json changes on every `make samples`,
+and the manifest has to be rebuilt with it.
 """
 
 from __future__ import annotations
@@ -121,6 +132,17 @@ def build(
                     "source_url": venue.get("source_url"),
                     "is_sample": True,
                     "as_of": as_of,
+                    # Samples carry the same two freshness columns as a checked
+                    # row, and for the same reason: they go through the same
+                    # schema, the same queue and the same table, so a demo run
+                    # must not be the one path where an event has no expiry. A
+                    # generated row has no listing page, so "checked" here means
+                    # the moment it was generated -- which is exactly how long
+                    # it deserves to be trusted for.
+                    "checked_at": as_of,
+                    "valid_until": config.event_valid_until(
+                        datetime.fromisoformat(as_of)
+                    ).isoformat(),
                 }
             )
             made += 1
@@ -131,7 +153,14 @@ def build(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate labelled sample events.")
     parser.add_argument("--days", type=int, default=16, help="window to spread samples over")
-    parser.add_argument("--per-city", type=int, default=8)
+    # 9, because that is what the committed data/events.samples.jsonl actually
+    # holds: 45 rows, nine per city. The default said 8, so `make samples`
+    # rewrote the file with 40 rows and every count in the README went stale.
+    # The timestamps move on every run either way (see the note above), but the
+    # rows should not: a diff a reviewer opens ought to show what changed about
+    # the data, not five rows disappearing because a default disagreed with the
+    # file by one.
+    parser.add_argument("--per-city", type=int, default=9)
     parser.add_argument(
         "--start",
         default=None,

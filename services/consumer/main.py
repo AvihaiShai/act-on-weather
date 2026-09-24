@@ -23,11 +23,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 
 import psycopg
 import yaml
 
-from ..common import config, rules, schemas
+from ..common import coast, config, rules, schemas
 from ..common.db import Pool
 from ..common.envelope import Envelope
 from ..common.rabbit import Poison, consume
@@ -51,7 +52,13 @@ COASTAL: dict[str, bool] = {}
 PATCHABLE = {
     "places": {"name", "category", "address", "lat", "lon"},
     "facts": {"title", "summary", "topic"},
-    "events": {"title", "category", "venue", "starts_at", "ends_at"},
+    # `checked_at` is patchable on purpose: re-opening a listing page and
+    # confirming that it is still on is a correction like any other, and it is
+    # the only way an operator can extend a row's life without editing the seed
+    # and re-ingesting. `valid_until` is deliberately NOT patchable -- it is
+    # derived from `checked_at` by the policy in config.EVENT_RECHECK_DAYS, and
+    # a hand-set expiry would let a row outlive the check that justifies it.
+    "events": {"title", "category", "venue", "starts_at", "ends_at", "checked_at"},
     "itineraries": {"title", "days"},
     "weather_daily": {
         "temp_max_c",
@@ -68,34 +75,86 @@ PATCHABLE = {
 # ---------------------------------------------------------------- cities ----
 
 
+def coast_columns(city: dict) -> dict[str, object]:
+    """The four `cities.coast_*` values for one entry of data/cities.yml.
+
+    The distance is derived, never read: data/cities.yml holds the two
+    coordinates and nothing else, so there is no committed number that can
+    survive somebody correcting one of them. A city with no `coast` block --
+    every inland one -- gets four nulls, which is how the reading code tells
+    "no coast on record" from "a coast 25 km away".
+
+    Nothing here asserts anything about the water. The distance says where the
+    forecast that scores surfing was actually taken, which for Rome is about
+    25 km from the sea; what the sea is doing is not measured anywhere in this
+    system, and data/activities.yml caps the affected scores because of it.
+    """
+    block = city.get("coast") or {}
+    if not block:
+        return {
+            "coast_name": None,
+            "coast_lat": None,
+            "coast_lon": None,
+            "coast_distance_km": None,
+        }
+    return {
+        "coast_name": block["name"],
+        "coast_lat": float(block["lat"]),
+        "coast_lon": float(block["lon"]),
+        "coast_distance_km": round(
+            coast.haversine_km(
+                float(city["lat"]), float(city["lon"]), float(block["lat"]), float(block["lon"])
+            ),
+            3,
+        ),
+    }
+
+
 def seed_cities(conn: psycopg.Connection) -> None:
     """The city list is configuration, not collected data, so it does not go
     through the queue. It is seeded here because the consumer is the only role
     that may write, and because every collected record has a foreign key to it.
     This is the one documented exception to M4.
+
+    A coastal city also carries a `coast` block naming a real point on its
+    coast. Its distance from the city's forecast point is computed here rather
+    than read from the file, so the stored number cannot fall out of step with
+    the two coordinates it comes from -- see `coast_columns`.
     """
     with open(config.DATA_DIR / "cities.yml", encoding="utf-8") as fh:
         cities = yaml.safe_load(fh)["cities"]
     with conn.cursor() as cur:
         for city in cities:
             cur.execute(
-                "INSERT INTO cities (id, name, country, lat, lon, timezone, aliases, coastal)"
+                "INSERT INTO cities (id, name, country, lat, lon, timezone, aliases, coastal,"
+                "                    coast_name, coast_lat, coast_lon, coast_distance_km)"
                 " VALUES (%(slug)s, %(name)s, %(country)s, %(lat)s, %(lon)s,"
-                "         %(timezone)s, %(aliases)s, %(coastal)s)"
+                "         %(timezone)s, %(aliases)s, %(coastal)s,"
+                "         %(coast_name)s, %(coast_lat)s, %(coast_lon)s, %(coast_distance_km)s)"
                 " ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name,"
                 "   country = EXCLUDED.country, lat = EXCLUDED.lat, lon = EXCLUDED.lon,"
                 "   timezone = EXCLUDED.timezone, aliases = EXCLUDED.aliases,"
-                "   coastal = EXCLUDED.coastal",
+                "   coastal = EXCLUDED.coastal, coast_name = EXCLUDED.coast_name,"
+                "   coast_lat = EXCLUDED.coast_lat, coast_lon = EXCLUDED.coast_lon,"
+                "   coast_distance_km = EXCLUDED.coast_distance_km",
                 {
                     **city,
                     "aliases": city.get("aliases", []),
                     "coastal": bool(city.get("coastal", False)),
+                    **coast_columns(city),
                 },
             )
     conn.commit()
     COASTAL.clear()
     COASTAL.update({c["slug"]: bool(c.get("coastal", False)) for c in cities})
-    log.info("seeded %d cities (%d coastal)", len(cities), sum(COASTAL.values()))
+    # The third number is the one worth reading: a city marked coastal with no
+    # coast reference point is a claim nothing can check.
+    log.info(
+        "seeded %d cities (%d coastal, %d with a coast reference point)",
+        len(cities),
+        sum(COASTAL.values()),
+        sum(1 for c in cities if c.get("coast")),
+    )
 
 
 def enforce_event_mode(conn: psycopg.Connection) -> int:
@@ -215,13 +274,37 @@ def score_defaults(cur: psycopg.Cursor, p: schemas.WeatherDaily) -> None:
         )
 
 
-def upsert_by_id(cur: psycopg.Cursor, table: str, columns: list[str], payload: dict) -> None:
+def upsert_by_id(
+    cur: psycopg.Cursor,
+    table: str,
+    columns: list[str],
+    payload: dict,
+    *,
+    also_when: str = "",
+) -> None:
+    """Idempotent upsert, keyed on the record id.
+
+    The `WHERE EXCLUDED.as_of > <table>.as_of` guard is what makes a replay
+    free: the same snapshot delivered twice writes nothing the second time, so
+    a redelivered message cannot bump a revision or file a spurious history row.
+
+    `also_when` widens that guard for a column whose value is *derived* rather
+    than collected, and which can therefore legitimately change while the
+    record itself has not. An event's `valid_until` is the case this exists
+    for: it comes from the configured recheck window, so lowering
+    AOW_EVENT_RECHECK_DAYS and re-ingesting has to move every stored expiry.
+    Under the as-of guard alone it moved none of them, and the configured
+    window and the stored window would disagree with nothing to say so.
+    """
     placeholders = ", ".join(f"%({c})s" for c in columns)
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c != "id")
+    guard = f"EXCLUDED.as_of > {table}.as_of"
+    if also_when:
+        guard = f"({guard} OR {also_when})"
     cur.execute(
         f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
         f" ON CONFLICT (id) DO UPDATE SET {updates}, ingested_at = now()"
-        f" WHERE EXCLUDED.as_of > {table}.as_of",
+        f" WHERE {guard}",
         payload,
     )
 
@@ -262,6 +345,12 @@ EVENT_COLS = [
     "source_url",
     "is_sample",
     "as_of",
+    # See migration 006. `checked_at` is when the listing was last read off its
+    # own page, and `valid_until` is when that reading stops being offered as a
+    # current schedule. Both travel on the message so the freshness policy is
+    # decided once, by the producer, rather than re-derived by every reader.
+    "checked_at",
+    "valid_until",
 ]
 
 
@@ -405,8 +494,30 @@ def apply_patch(cur: psycopg.Cursor, p: schemas.RecordPatch) -> None:
     if not p.fields:
         raise Poison("patch carries no fields")
 
-    assignments = ", ".join(f"{k} = %({k})s" for k in p.fields)
-    params = dict(p.fields)
+    fields = dict(p.fields)
+    if p.entity == "events" and "checked_at" in fields:
+        # Re-checking a listing is the point of patching `checked_at`, and a
+        # re-check that did not move the expiry would be a no-op: the row would
+        # carry a fresh check date and still be filtered out as stale. So the
+        # derived column moves with it, by the same policy the ingestor uses,
+        # which is also why `valid_until` is not patchable on its own.
+        checked = fields["checked_at"]
+        if isinstance(checked, str):
+            try:
+                checked = datetime.fromisoformat(checked)
+            except ValueError as exc:
+                # Poison, not a retry. `fields` is the one request body left
+                # open, so this is the first place a caller-supplied string is
+                # parsed rather than handed to the database, and a value that
+                # is not a timestamp will never become one: requeuing it would
+                # spin forever instead of dead-lettering with a reason.
+                raise Poison(f"checked_at is not a timestamp: {checked!r}") from exc
+        if not isinstance(checked, datetime):
+            raise Poison(f"checked_at is not a timestamp: {checked!r}")
+        fields["valid_until"] = config.event_valid_until(checked)
+
+    assignments = ", ".join(f"{k} = %({k})s" for k in fields)
+    params = dict(fields)
     if p.entity == "weather_daily":
         city_id, _, forecast_date = p.entity_id.partition("/")
         params.update({"city_id": city_id, "forecast_date": forecast_date})
@@ -433,7 +544,18 @@ def upsert_event(cur: psycopg.Cursor, p) -> None:
     if getattr(p, "is_sample", False) and not config.DEMO_EVENTS:
         log.warning("dropping generated sample event %s: demo mode is off", p.id)
         return
-    upsert_by_id(cur, "events", EVENT_COLS, p.model_dump())
+    # `valid_until` is derived from the configured recheck window rather than
+    # collected, so a re-ingest that carries a different expiry for an
+    # otherwise unchanged row has to be allowed through. Replaying the same
+    # snapshot under the same window still writes nothing, because then neither
+    # half of the guard is true.
+    upsert_by_id(
+        cur,
+        "events",
+        EVENT_COLS,
+        p.model_dump(),
+        also_when="EXCLUDED.valid_until IS DISTINCT FROM events.valid_until",
+    )
 
 
 HANDLERS = {

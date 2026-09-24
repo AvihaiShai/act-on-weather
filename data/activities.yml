@@ -38,12 +38,41 @@
 #   requires_coast   only scored for cities with `coastal: true` in cities.yml.
 #                    A city with no coast gets no row at all, rather than a
 #                    surfing score invented from an inland forecast.
+#   sea_state_unmeasured
+#                    the quality of this activity depends on the water, and
+#                    this system holds no evidence about the water. It ingests
+#                    a land forecast -- temperature, rain, wind, sun, UV -- and
+#                    no wave height, no swell period and no sea temperature
+#                    from any source. Surfing, swimming, fishing and a boat
+#                    ride carry it. A beach day deliberately does not: a day
+#                    on the sand is a judgement about shore weather, which is
+#                    exactly what is measured. Every answer that shows a score
+#                    for a flagged activity must carry the caveat in
+#                    services/common/coast.sea_state_caveat, which also names
+#                    how far the city's forecast point is from its coast.
+#   score_ceiling    the highest score this activity may reach, applied in
+#                    rules.score_activity after the penalties and before the
+#                    band. The four flagged above are capped at 69, which is
+#                    one point below the `good` floor in rules.BANDS: an
+#                    activity whose sea conditions are unknown can be reported
+#                    as at best `fair`, and can never be the thing the planner
+#                    recommends most confidently. The cap is the deliberate
+#                    price of not holding marine data -- adding a wave feed
+#                    would be the other way to close this, and it would mean a
+#                    second provider staged into the offline bundle. When the
+#                    cap actually binds, the scorer says so in the reasons, so
+#                    the number is never lowered silently.
 #   ideal_temp_c     [lo, hi]
 #   min_wind_kmh     wind the activity NEEDS (surfing); too calm is penalised
 #   max_wind_kmh / max_precip_mm / max_precip_prob / max_uv / min_sunshine_hours
 #   indoor_floor / indoor_weight   see rules.outdoor_comfort; they are what
 #                    stops every indoor activity scoring identically on a day
-rule_version: 2
+# 3: the four sea-dependent activities gained `sea_state_unmeasured` and a
+# score ceiling, which re-scores and re-words every stored recommendation on
+# the next ingest. That is the intended effect -- a surfing recommendation
+# written under version 2 could say "good", and nothing in this system ever
+# measured the water it was talking about.
+rule_version: 3
 
 activities:
 
@@ -149,6 +178,13 @@ activities:
   # Scored only where there is a coast. See `requires_coast` above: the
   # alternative -- scoring surfing in London from an inland forecast -- is a
   # number the system cannot stand behind.
+  #
+  # Having a coast is not the same as knowing what the water is doing. Four of
+  # the five below carry `sea_state_unmeasured` and a `score_ceiling`, because
+  # their quality is a property of the sea and every input this system holds is
+  # a property of the air above the land. `beach_day` is the exception and
+  # keeps its full range: a day on the sand is a judgement about sun, heat,
+  # rain and wind, and those are measured.
 
   beach_day:
     label: A day at the beach
@@ -172,6 +208,8 @@ activities:
     icon: "\U0001F3CA"
     indoor: false
     requires_coast: true
+    sea_state_unmeasured: true
+    score_ceiling: 69
     where_noun: supervised swimming spot
     interests: [sports, outdoors]
     ideal_temp_c: [24, 36]
@@ -186,6 +224,8 @@ activities:
     icon: "\U0001F3C4"
     indoor: false
     requires_coast: true
+    sea_state_unmeasured: true
+    score_ceiling: 69
     where_noun: surf spot
     interests: [sports, outdoors]
     ideal_temp_c: [16, 32]
@@ -202,6 +242,8 @@ activities:
     icon: "\U0001F3A3"
     indoor: false
     requires_coast: true
+    sea_state_unmeasured: true
+    score_ceiling: 69
     where_noun: fishing spot
     interests: [outdoors]
     ideal_temp_c: [8, 30]
@@ -215,6 +257,8 @@ activities:
     icon: "⛵"
     indoor: false
     requires_coast: true
+    sea_state_unmeasured: true
+    score_ceiling: 69
     where_noun: boat hire
     interests: [outdoors]
     ideal_temp_c: [16, 32]

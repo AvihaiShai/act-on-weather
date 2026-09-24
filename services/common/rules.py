@@ -9,6 +9,11 @@ wording of a recommendation rather than its content.
 Scoring: start at 100 and subtract a penalty per rule that the day violates.
 Every penalty carries a short human reason, and those reasons are what the
 model is given. Thresholds live in data/activities.yml, not here.
+
+One rule is not a penalty but a ceiling. An activity whose quality depends on
+something this system never measures -- the sea, for surfing, swimming,
+fishing and a boat ride -- carries `score_ceiling` and can never reach the
+`good` band, however perfect the land forecast is. See `_apply_ceiling`.
 """
 
 from __future__ import annotations
@@ -58,6 +63,41 @@ def band_for(score: int) -> str:
 
 def _clamp(value: int) -> int:
     return max(0, min(100, value))
+
+
+def _apply_ceiling(value: int, cfg: dict[str, Any], reasons: list[str]) -> int:
+    """Clamp a score to the activity's `score_ceiling`, and say so when it bites.
+
+    Some activities depend on something this system does not measure at all.
+    Surfing, swimming, fishing and a boat ride are decided by the water, and
+    every input here is a land forecast: temperature, rain, wind, sun, UV. The
+    rules can still say a day is too cold, too wet or too still, so the score
+    is worth computing -- but it cannot be allowed to climb into the `good`
+    band, because a reader would take that as a verdict on conditions nobody
+    checked. The ceiling is 69, one point under the `good` floor in `BANDS`.
+
+    The reason is appended only when the ceiling actually binds. A capped score
+    that says nothing about the cap is a number quietly lowered behind the
+    reader's back, and the reasons are what the model is handed to write from.
+    An activity with no ceiling is untouched, down to the reason list.
+    """
+    ceiling = cfg.get("score_ceiling")
+    if ceiling is None:
+        return value
+    ceiling = int(ceiling)
+    if value <= ceiling:
+        return value
+    if cfg.get("sea_state_unmeasured"):
+        reasons.append(
+            f"capped at {ceiling}: nothing in the stored data measures waves, "
+            "swell or water temperature"
+        )
+    else:
+        reasons.append(
+            f"capped at {ceiling}: the stored data does not measure everything "
+            "this activity depends on"
+        )
+    return ceiling
 
 
 def _num(weather: dict[str, Any], key: str) -> float | None:
@@ -110,14 +150,17 @@ def score_activity(activity: str, cfg: dict[str, Any], weather: dict[str, Any]) 
         floor = float(cfg.get("indoor_floor", 25))
         weight = float(cfg.get("indoor_weight", 0.75))
         value = _clamp(int(round(floor + weight * (100 - comfort))))
-        band = band_for(value)
         # The reasons have to agree with the band, or the model is handed a
         # contradiction and will faithfully write one.
         if not comfort_reasons:
             reasons = ["the weather outside is fine, so this is a choice rather than a refuge"]
         else:
             reasons = [f"a good day to be indoors: {r}" for r in comfort_reasons]
-        return Score(value, band, reasons)
+        # No indoor activity carries a ceiling today, but the clamp belongs on
+        # both paths: an activity that gains one later must not depend on which
+        # branch of this function happens to score it.
+        value = _apply_ceiling(value, cfg, reasons)
+        return Score(value, band_for(value), reasons)
 
     penalty = 0
     reasons: list[str] = []
@@ -171,6 +214,9 @@ def score_activity(activity: str, cfg: dict[str, Any], weather: dict[str, Any]) 
     value = _clamp(100 - penalty)
     if not reasons:
         reasons.append("no rule was violated")
+    # Last, so that the cap is applied to a finished score and reads as what it
+    # is: a limit on what may be claimed, not another weather penalty.
+    value = _apply_ceiling(value, cfg, reasons)
     return Score(value, band_for(value), reasons)
 
 
