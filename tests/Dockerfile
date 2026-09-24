@@ -14,7 +14,9 @@ COPY services/ui/requirements.txt /tmp/req/ui.txt
 RUN pip install --no-cache-dir -r /tmp/req/requirements.txt -r /tmp/req/ui.txt \
       pytest==8.3.3 ruff==0.8.4 httpx==0.27.2
 
-COPY pytest.ini ruff.toml ./
+COPY pytest.ini ruff.toml Makefile ./
+# Bootstrap reads the pinned helper image from Makefile; its offline tests run
+# the real script, so the test image needs that file too.
 # Three tests read the deployment files themselves rather than the code.
 # test_demo_events.py asserts that AOW_DEMO_EVENTS appears only in the demo
 # overlay -- if demo mode ever leaked into the default compose file it would
