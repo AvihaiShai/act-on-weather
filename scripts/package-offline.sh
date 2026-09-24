@@ -36,20 +36,37 @@ docker tag "$ui_ref" "aow-bundle/ui:$commit"
 # .env.example supplies only placeholders for Compose interpolation here.
 docker compose --env-file .env.example pull postgres rabbitmq llm edge
 images="$(docker compose --env-file .env.example config --images)"
+
+# What each bundle alias is supposed to be: the alias, and the registry
+# reference it was tagged from. The installer re-checks this against the tar on
+# the offline host. SHA256SUMS proves images.tar arrived intact; this proves
+# that the intact tar holds the images CI built, scanned and published.
+{ printf 'services %s\n' "$services_ref"; printf 'ui %s\n' "$ui_ref"; } > "$out/images.bundle.lock"
 for pair in 'postgres:postgres:' 'rabbitmq:rabbitmq:' 'llm:ghcr.io/ggml-org/llama.cpp:' 'edge:nginx:'; do
   name="${pair%%:*}"
   prefix="${pair#*:}"
   ref="$(printf '%s\n' "$images" | awk -v p="$prefix" 'index($0, p) == 1 {print; exit}')"
   test -n "$ref" || { echo "no image for $name in compose.yml" >&2; exit 1; }
+  [[ "$ref" == *@sha256:* ]] || { echo "$name is not pinned by digest in compose.yml: $ref" >&2; exit 1; }
   docker tag "$ref" "aow-bundle/$name:$commit"
+  printf '%s %s\n' "$name" "$ref" >> "$out/images.bundle.lock"
 done
 
 docker save -o "$out/images.tar" \
   "aow-bundle/services:$commit" "aow-bundle/ui:$commit" \
   "aow-bundle/postgres:$commit" "aow-bundle/rabbitmq:$commit" \
   "aow-bundle/llm:$commit" "aow-bundle/edge:$commit"
+
+# Fail here, on the connected machine, rather than ship a bundle whose contents
+# do not match what it claims to contain.
+bash scripts/verify-bundle-images.sh "$out"
+
 (
   cd "$out"
-  sha256sum images.tar models/Qwen3-1.7B-Q4_K_M.gguf > SHA256SUMS
+  # Everything, not only the two large binaries. The code, the Compose files
+  # and the migrations travel by plain file copy like anything else, so they
+  # get the same one-command check on the far side.
+  find . -type f ! -name SHA256SUMS ! -name .env -print0 \
+    | sort -z | xargs -0 sha256sum > SHA256SUMS
 )
 echo "Offline release ready: $out"
