@@ -7,4 +7,4 @@ services:
   grafana:
     image: aow-bundle/grafana:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
   edge-observability:
-    image: aow-bundle/edge-observability:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+    image: aow-bundle/edge:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}

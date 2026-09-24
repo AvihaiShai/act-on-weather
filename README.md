@@ -1084,9 +1084,10 @@ make monitor     # docker compose -f compose.yml -f compose.observability.yml up
                  # Grafana http://127.0.0.1:3000  (admin / GRAFANA_ADMIN_PASSWORD)
 ```
 
-All three monitoring images are pinned by digest in `IMAGES.lock` and travel in the offline
-bundle, so turning monitoring on for the first time on an air-gapped host
-downloads nothing.
+Prometheus and Grafana are pinned by digest in `IMAGES.lock` and travel in the
+offline bundle. The observability edge uses the nginx image already bundled for
+the main edge, so turning monitoring on for the first time on an air-gapped
+host downloads nothing.
 
 From an installed offline release folder, use both monitoring overlays so the
 three containers use the aliases already loaded from `images.tar`:

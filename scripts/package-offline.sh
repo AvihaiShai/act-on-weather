@@ -41,6 +41,11 @@ docker compose -f compose.yml -f compose.observability.yml --env-file .env.examp
   pull prometheus grafana edge-observability
 images="$(docker compose -f compose.yml -f compose.observability.yml \
   --env-file .env.example config --images)"
+# Both edges use nginx. They share one bundle alias only while their pinned
+# references agree; fail packaging if a later edit gives them different bytes.
+nginx_refs="$(printf '%s\n' "$images" | awk '/^nginx:/ {print}' | LC_ALL=C sort -u)"
+[ "$(printf '%s\n' "$nginx_refs" | grep -c .)" -eq 1 ] \
+  || { echo "edge and edge-observability use different nginx images" >&2; exit 1; }
 docker compose -f compose.tools.yml --env-file .env.example pull stage
 docker compose -f compose.tools.yml --env-file .env.example build demos
 stage_ref="$(docker compose -f compose.tools.yml --env-file .env.example config --images | awk '/^python:.*@sha256:/ {print; exit}')"
@@ -54,8 +59,7 @@ docker tag aow/demos:dev "aow-bundle/demos:$commit"
 # that the intact tar holds the images CI built, scanned and published.
 { printf 'services %s\n' "$services_ref"; printf 'ui %s\n' "$ui_ref"; } > "$out/images.bundle.lock"
 for pair in 'postgres:postgres:' 'rabbitmq:rabbitmq:' 'llm:ghcr.io/ggml-org/llama.cpp:' \
-            'edge:nginx:' 'prometheus:prom/prometheus:' 'grafana:grafana/grafana:' \
-            'edge-observability:nginx:'; do
+            'edge:nginx:' 'prometheus:prom/prometheus:' 'grafana:grafana/grafana:'; do
   name="${pair%%:*}"
   prefix="${pair#*:}"
   ref="$(printf '%s\n' "$images" | awk -v p="$prefix" 'index($0, p) == 1 {print; exit}')"
@@ -71,7 +75,6 @@ docker save -o "$out/images.tar" \
   "aow-bundle/postgres:$commit" "aow-bundle/rabbitmq:$commit" \
   "aow-bundle/llm:$commit" "aow-bundle/edge:$commit" \
   "aow-bundle/prometheus:$commit" "aow-bundle/grafana:$commit" \
-  "aow-bundle/edge-observability:$commit" \
   "aow-bundle/stage:$commit" "aow-bundle/demos:$commit"
 
 # The proof runner is built from this release's pinned Dockerfile on the
