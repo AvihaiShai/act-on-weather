@@ -98,6 +98,7 @@ everywhere:
 | `make up` / `make down` | `docker compose up -d` / `docker compose down` |
 | `make up-demo` | `docker compose -f compose.yml -f compose.demo.yml up -d` |
 | `make test` | `docker build -q -f tests/Dockerfile -t aow/tests:dev .` then `docker run --rm aow/tests:dev` |
+| `make grounding` | the pre-release model gate — see [The grounding gate](#the-grounding-gate-before-a-release) |
 | `make offline` | `docker compose -f compose.tools.yml run --rm demos offline` |
 | `make questions` | `… run --rm demos questions` |
 | `make no-data-loss` | `… run --rm demos no-data-loss` |
@@ -846,6 +847,36 @@ workflow's token; and if any count in the README or the Makefile disagrees with
 `data/snapshot/MANIFEST.json`, which `scripts/snapshot_manifest.py` derives
 from the snapshot files. That last one is not hypothetical: a README quoting
 289 of them shipped against a snapshot holding 620.
+
+### The grounding gate, before a release
+
+Two gates need something CI does not have — the local model, and a real
+Postgres with real tzdata — so they are run by hand before a release rather
+than on every push.
+
+```sh
+make grounding                                    # the model gate
+docker compose exec -T api python - < tests/integration/event_local_days.py
+```
+
+`make grounding` starts a second `llm` in its own Compose project (`aow-f3`),
+never touching a running stack, and replays the questions that produced
+ungrounded answers in review: the assignment's London example, concerts only
+with and without a concert on record, a sports row that must not answer a
+concert question, the exact "are there any sports events tomorrow in London?",
+surfing in a city with no surf score, and the history of Lisbon. Each case
+passes only if what the traveller would receive is supported by the retrieved
+rows — either because the model stayed inside them, or because its wording was
+rejected and the rows were rendered instead. Each also carries a correct
+hand-written answer that must **not** be rejected, so a validator that simply
+refused everything would fail here rather than look perfect. The command exits
+non-zero on any failure and tears its project down either way.
+
+The second command asserts that an event falls on the day it falls on **in the
+city**: a listing that opens at local midnight, one that runs across several
+days, and one in another timezone, plus five boundary cases evaluated against
+Postgres itself. It is also part of the CI integration job, because the stack
+it needs is already up there.
 
 On a push to `main`, **only after those gates pass**, CI publishes the same
 tested images to GHCR with a `sha-<commit>` tag. Its `aow-images-<commit>` run

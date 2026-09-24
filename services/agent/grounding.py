@@ -100,6 +100,34 @@ VERDICT_WORDS = (
     "suitability",
     "well suited",
     "recommended for",
+    "favourable",
+    "favorable",
+)
+
+# Anything that reads as the forecast. An activity with no stored score gets
+# one sentence -- that there is no record -- and a clause that names it beside
+# any of these is reasoning its way to the verdict it was told not to give.
+WEATHER_WORDS = (
+    "weather",
+    "forecast",
+    "temperature",
+    "temperatures",
+    "rain",
+    "rainy",
+    "wind",
+    "windy",
+    "sun",
+    "sunny",
+    "sunshine",
+    "warm",
+    "cold",
+    "mild",
+    "wet",
+    "dry",
+    "conditions",
+    "degrees",
+    "c",
+    "°c",
 )
 
 # Capitalised words that are not a claim about anything: calendar vocabulary,
@@ -140,10 +168,72 @@ DESCRIPTION_WORDS = (
 
 _NEGATION = re.compile(r"(?<!\w)(no|not|none|never|without|nor|nothing|lacks?)(?!\w)|n't")
 
+# Predicates that say something is, or is not, actually happening. The system
+# cannot make the negative of any of these: it holds a hand-checked feed of a
+# few venues per city over a few weeks, so its silence about a concert is a gap
+# in the feed and not an empty concert hall. "No concert is scheduled in London
+# this week" is a claim about London; "no concert is on record for that week"
+# is a claim about the feed, and only the second one is ours to make.
+WORLD_SCHEDULE_WORDS = (
+    "taking place",
+    "take place",
+    "takes place",
+    "took place",
+    "happening",
+    "scheduled",
+    "planned",
+    "going on",
+    "is on",
+    "are on",
+    "available",
+)
+
+# Wording that scopes a sentence to the stored feed. These are predicates, not
+# mentions of the store: "the stored data shows no concert is taking place"
+# names the store and still asserts something about London, which is exactly
+# the sentence the model wrote and exactly the one this must not let through.
+RECORD_PHRASES = (
+    "on record",
+    "no record",
+    "not on record",
+    "recorded",
+    "on file",
+    "in the feed",
+    "stored event feed",
+    "event feed",
+    "i hold",
+    "i have no",
+    "i do not have",
+    "i don't have",
+    "in my records",
+)
+
+# What makes a sentence a sentence about scheduled things at all. Without this
+# gate the check would reach ordinary prose; with it, it only reads clauses
+# that are already talking about events.
+_GENERIC_EVENT_WORDS = ("event", "events", "listing", "listings")
+
 
 def _says(text: str, phrase: str) -> bool:
     """Whole-word match; `phrase` may contain spaces."""
     return re.search(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text) is not None
+
+
+def _about_events(sentence: str, asked: bool = False) -> bool:
+    """True when the clause is talking about scheduled things at all.
+
+    `asked` is set when the question itself was about events. It is what lets
+    "nothing is on in London during those dates" be read as the event answer it
+    is: the clause names no event word, and a bare pronoun is how the model
+    most often writes the claim this check exists to catch.
+    """
+    if any(_says(sentence, word) for word in _GENERIC_EVENT_WORDS):
+        return True
+    if any(
+        _says(sentence, word) for cfg in event_types().values() for word in (cfg.get("words") or ())
+    ):
+        return True
+    return asked and any(_says(sentence, word) for word in ("nothing", "anything", "none"))
 
 
 def _sentences(answer: str) -> list[str]:
@@ -222,6 +312,28 @@ def _dates_in(sentence: str) -> set[str]:
 
 def _tokens(sentence: str) -> list[str]:
     return re.findall(r"[A-Za-z][A-Za-z'’-]*", sentence)
+
+
+_NUMBER = re.compile(r"\d[\d,. ]*")
+
+
+def _numbers_in(text: str) -> set[str]:
+    """Every number a piece of text states, as a bare digit string.
+
+    Thousands separators and trailing punctuation are stripped and leading
+    zeros dropped, so "2,000", "2000" and "02000" are one number, and the month
+    in "2026-09-25" is the same 9 the model writes as "September 9".
+    """
+    found: set[str] = set()
+    for raw in _NUMBER.findall(text):
+        for part in re.split(r"[., ]", raw):
+            digits = part.strip().lstrip("0")
+            if digits:
+                found.add(digits)
+        joined = re.sub(r"[, ]", "", raw).rstrip(".").lstrip("0")
+        if joined and "." not in joined:
+            found.add(joined)
+    return found
 
 
 # ------------------------------------------------------------- typed facts --
@@ -343,31 +455,51 @@ class Brief:
             | set(self.window_days)
         )
 
-    def allowed_names(self) -> frozenset[str]:
-        """Every word the answer is allowed to capitalise.
+    def vocabulary(self) -> str:
+        """Every scrap of retrieved text the answer may draw on, in one string.
 
-        Built from the rows themselves plus the traveller's own question, so
-        echoing what they typed is never an invention. A capitalised word from
-        nowhere else -- "Roman", "Alfama", "European" -- is the model writing
-        from its weights, which is the one thing it is not here to do.
+        The traveller's own question is in it too: echoing back what they typed
+        is never an invention.
         """
-        vocabulary = " ".join(
+        return " ".join(
             [
                 self.city,
                 self.country,
                 self.question,
                 self.supporting_text(),
+                *(d.day for d in self.days),
+                *(d.text for d in self.days),
                 *(p.name for p in self.places),
                 *(p.category.replace("_", " ") for p in self.places),
                 *(e.title for e in self.events),
                 *(e.venue or "" for e in self.events),
                 *(e.category for e in self.events),
+                *(day for e in self.events for day in e.days()),
+                *(v.day for v in self.verdicts),
                 *(v.label for v in self.verdicts),
                 *(v.band for v in self.verdicts),
+                *(str(v.score) for v in self.verdicts if v.score is not None),
                 *(v.text or "" for v in self.verdicts),
+                *self.window_days,
             ]
         )
-        return frozenset(t.lower() for t in _tokens(vocabulary)) | NAME_STOPWORDS
+
+    def allowed_names(self) -> frozenset[str]:
+        """Every word the answer is allowed to capitalise.
+
+        A capitalised word from nowhere else -- "Roman", "Alfama", "European"
+        -- is the model writing from its weights, which is the one thing it is
+        not here to do.
+        """
+        return frozenset(t.lower() for t in _tokens(self.vocabulary())) | NAME_STOPWORDS
+
+    def allowed_numbers(self) -> frozenset[str]:
+        """Every quantity the rows carry, normalised.
+
+        Scores are out of 100, so that is always allowed even when no verdict
+        happens to sit at it.
+        """
+        return frozenset(_numbers_in(self.vocabulary())) | {"100"}
 
 
 # ------------------------------------------------------------------ build --
@@ -564,7 +696,9 @@ def prompt_block(brief: Brief) -> str:
     if reported:
         lines.append(
             "\nCOVERAGE GAPS -- these sentences are appended to your answer automatically. "
-            "Do not repeat them, do not soften them, and do not contradict them:"
+            "Do not repeat them, do not soften them, and do not contradict them. In "
+            "particular do not restate one as a fact about the city: what is missing is "
+            "missing from the record, which is not the same as not being on:"
         )
         lines.extend(f"  {gap.text}" for gap in reported)
 
@@ -658,7 +792,7 @@ def render(brief: Brief) -> str:
 def violations(answer: str, brief: Brief) -> list[str]:
     """Sentences in `answer` that assert something no fact in `brief` carries.
 
-    Six checks, each written for a failure that was actually observed. All of
+    Nine checks, each written for a failure that was actually observed. All of
     them work on the model's prose only -- the gap block and the as-of footer
     are appended afterwards and are code's own words.
 
@@ -666,6 +800,9 @@ def violations(answer: str, brief: Brief) -> list[str]:
     its wording; it never costs the traveller a correct answer, because
     `render` says the same thing from the same rows.
     """
+    # The model writes both apostrophes; `_says` matches one. Normalise once
+    # rather than doubling every phrase list.
+    answer = answer.replace("’", "'")
     found: list[str] = []
     present = brief.event_categories_present()
     venues = brief.venues()
@@ -673,8 +810,12 @@ def violations(answer: str, brief: Brief) -> list[str]:
     claims = claim_words()
     allowed_dates = brief.allowed_dates()
     allowed_names = brief.allowed_names()
+    allowed_numbers = brief.allowed_numbers()
     place_names = {p.name.lower(): p for p in brief.places if len(p.name) >= 5}
     event_titles = {e.title.lower(): e for e in brief.events if len(e.title) >= 5}
+    # Whether the question was about scheduled things, which is what lets check
+    # 6b read a clause that says "nothing is on" without naming an event.
+    asked_about_events = bool(brief.event_categories or brief.events)
 
     for raw in _sentences(answer):
         # Checks 1-6 run per clause, so a negation in the tail of a sentence
@@ -720,11 +861,20 @@ def violations(answer: str, brief: Brief) -> list[str]:
 
             # 5. A verdict on an activity this city has no row for. The
             #    observed shape is agreement followed by an invented
-            #    weather-based reason.
-            if verdict and not negated:
-                for key in brief.unscored:
-                    if _says(sentence, key.replace("_", " ")):
-                        found.append(f"gives a verdict on {key}, which has no stored score")
+            #    weather-based reason, and it survived a check that looked only
+            #    for verdict words: "which is not favorable for surfing" is the
+            #    same answer in wording the list did not hold. So the weather
+            #    itself is the trigger now. An activity with no score gets one
+            #    sentence -- that there is no record -- and a clause naming it
+            #    beside the forecast is reasoning towards the verdict either
+            #    way, whether or not it lands on a word.
+            for key in brief.unscored:
+                if not _says(sentence, key.replace("_", " ")):
+                    continue
+                if verdict and not negated:
+                    found.append(f"gives a verdict on {key}, which has no stored score")
+                if any(_says(sentence, word) for word in WEATHER_WORDS):
+                    found.append(f"reasons from the weather about {key}, which has no stored score")
 
             # 6. A description of a place we hold only a name and a category
             #    for.
@@ -734,6 +884,22 @@ def violations(answer: str, brief: Brief) -> list[str]:
                         found.append(
                             f"describes the place {place.name!r} beyond its stored category"
                         )
+
+            # 6b. An absence claimed about the world rather than about the
+            #     record. "There are no concerts scheduled in London this week"
+            #     and "the stored data indicates that no events are taking
+            #     place in Rome" are both claims the feed cannot support: it
+            #     covers a few venues for a few weeks, and its silence is a gap
+            #     in coverage, not an empty city. The honest form is the one
+            #     the gap sentences use -- "no concert is on record" -- and a
+            #     clause that scopes itself that way passes.
+            if (
+                negated
+                and _about_events(sentence, asked_about_events)
+                and any(_says(sentence, word) for word in WORLD_SCHEDULE_WORDS)
+                and not any(_says(sentence, phrase) for phrase in RECORD_PHRASES)
+            ):
+                found.append("claims nothing is scheduled, rather than nothing being on record")
 
         # 7. A calendar day no row carries. An event moved by a day is a worse
         #    answer than no answer, because it reads as confirmed.
@@ -749,6 +915,16 @@ def violations(answer: str, brief: Brief) -> list[str]:
                 continue
             if token.lower() not in allowed_names:
                 found.append(f"names {token!r}, which appears in no retrieved row")
+
+        # 9. A quantity from the same place. Asked about the history of Lisbon
+        #    the model wrote "a history dating back over 2,000 years" from a
+        #    summary that gives a population and a river and no age at all.
+        #    Smaller invented quantities are facts too: "a 40-year tradition"
+        #    needs support just as much as "2,000 years" does. The question,
+        #    requested dates and rendered measurements are in the vocabulary.
+        for number in sorted(_numbers_in(raw)):
+            if number not in allowed_numbers:
+                found.append(f"states the figure {number}, which no retrieved row carries")
 
     # Stable and deduplicated: this string ends up in a log line and a note.
     return sorted(set(found))

@@ -254,26 +254,57 @@ def recommendations(
 # --------------------------------------------------------------- places ----
 
 
+PLACE_COLUMNS = (
+    "id, city_id, name, category, lat, lon, address, source, source_url, "
+    "is_sample, as_of, revision"
+)
+
+
 def places(
     conn: psycopg.Connection,
     city_id: str | None = None,
     *,
     categories: list[str] | None = None,
     limit: int = 50,
+    per_category: int | None = None,
 ) -> list[dict[str, Any]]:
-    sql = [
-        "SELECT id, city_id, name, category, lat, lon, address, source, source_url,",
-        "       is_sample, as_of, revision",
-        "  FROM places WHERE true",
-    ]
+    """Stored places, optionally narrowed to a set of categories.
+
+    `per_category` caps how many rows any one category may take. Without it a
+    flat `LIMIT` over `ORDER BY category, name` is decided by the alphabet: a
+    traveller who asked about concerts, shopping and fine dining in London got
+    eighteen concert halls and no restaurant, because `concert_hall` sorts
+    first and London now holds more than eighteen of them. The ordering is the
+    same either way, so the caller sees no difference except that every
+    category it asked about is represented.
+    """
     params: dict[str, Any] = {"limit": limit}
+    where = ["true"]
     if city_id:
-        sql.append("AND city_id = %(city)s")
+        where.append("AND city_id = %(city)s")
         params["city"] = city_id
     if categories:
-        sql.append("AND category = ANY(%(categories)s)")
+        where.append("AND category = ANY(%(categories)s)")
         params["categories"] = categories
-    sql.append("ORDER BY category, name LIMIT %(limit)s")
+
+    if per_category:
+        params["per_category"] = per_category
+        sql = [
+            f"WITH ranked AS (SELECT {PLACE_COLUMNS},",
+            "       ROW_NUMBER() OVER (PARTITION BY category ORDER BY name) AS rank",
+            "  FROM places WHERE",
+            "\n".join(where),
+            ")",
+            f"SELECT {PLACE_COLUMNS} FROM ranked WHERE rank <= %(per_category)s",
+            "ORDER BY category, name LIMIT %(limit)s",
+        ]
+    else:
+        sql = [
+            f"SELECT {PLACE_COLUMNS}",
+            "  FROM places WHERE",
+            "\n".join(where),
+            "ORDER BY category, name LIMIT %(limit)s",
+        ]
     return conn.execute("\n".join(sql), params).fetchall()
 
 

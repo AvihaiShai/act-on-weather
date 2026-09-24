@@ -494,8 +494,15 @@ class Router:
                 city_id, resolution.activities
             )
         elif "places" in resolution.intents or resolution.categories:
+            # Spread the budget across the categories the question named. E2
+            # asks about concerts, shopping and fine dining, and a flat limit
+            # returned eighteen concert halls and nothing else.
             result.places = queries.places(
-                self.conn, city_id, categories=resolution.categories or None, limit=18
+                self.conn,
+                city_id,
+                categories=resolution.categories or None,
+                limit=18,
+                per_category=6 if len(resolution.categories) > 1 else None,
             )
 
         if "events" in resolution.intents or (
@@ -604,13 +611,6 @@ def footer(result: Retrieval) -> str:
     reworded, rounded or dropped."""
     coverage = result.coverage
     parts = []
-    # `dates.parse` promises the assumed range is stated rather than left for
-    # the reader to guess, and it was not: str(window) drops the label. Asked
-    # "are there any sports events in London in October?", the parser falls
-    # back to the coming week and the answer used to talk about October.
-    window = result.resolution.window
-    if window is not None and "assumed" in window.label:
-        parts.append(f"no dates in the question, so this covers {window}")
     # Stamp the weather only when the answer used it. A pure location answer
     # does not, and footing it with a forecast window implies the answer
     # depended on a snapshot it never read -- which is the same mistake in
@@ -618,6 +618,18 @@ def footer(result: Retrieval) -> str:
     # keeps the stamp: "I have no weather for that date" is a statement about
     # the coverage window, so the window is exactly what it rests on.
     used_weather = bool(result.forecast or result.recommendations or result.refusal)
+    # `dates.parse` promises the assumed range is stated rather than left for
+    # the reader to guess, and it was not: str(window) drops the label. Asked
+    # "are there any sports events in London in October?", the parser falls
+    # back to the coming week and the answer used to talk about October.
+    #
+    # Gated on the answer actually being about a date range. "Where can I surf
+    # in Tel Aviv?" names no date and needs none, and telling its reader which
+    # week the answer assumed would invent a scope the answer never had.
+    window = result.resolution.window
+    dated = used_weather or result.events or "events" in result.resolution.intents
+    if dated and window is not None and "assumed" in window.label:
+        parts.append(f"no dates in the question, so this covers {window}")
     as_of = coverage.get("weather_as_of")
     if used_weather and as_of:
         parts.append(
