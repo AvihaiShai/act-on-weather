@@ -81,12 +81,12 @@ All timings from real GitHub-hosted runners, not estimates.
 | `guard` | no hosted-LLM SDK; no committed secret; gitleaks; every compose image, Dockerfile base and workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR | ~9s |
 | `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
 | `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | 1m30s–1m35s; last run 153 same-origin, 0 external |
-| `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | **153s**, `PASS: 8 adversarial cases stayed grounded` |
-| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | **110s**; measured RPO 24–26s, RTO 31–35s |
-| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `8bcb21c` |
+| `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | run `36055211121`: **82s**, 8/8 grounded; upgraded cache action ran on a cache miss |
+| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | run `36055211121`: **104s**, measured RPO 19s, RTO 20–21s |
+| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `862a08f` (run `36055198116`) |
 
 **Why `model-grounding` and `restore-drill` are release-candidate rather than per-PR:**
-not cost — 153s and 110s are cheap next to `build-and-scan`. Blast radius. The restore
+not cost — 82s and 104s in the latest run are cheap next to `build-and-scan`. Blast radius. The restore
 drill destroys volumes, and a stateful full-stack drill is the wrong default for every
 dependabot bump. One "expensive or stateful" tier, not two conventions. They run on
 `workflow_dispatch`, a `release-candidate` label, or a `release/*` branch.
@@ -141,7 +141,15 @@ PR #40 raised the **one-shot** model-staging container's memory cap from
 256 MiB to 2 GiB after the unexplained exit 137. The identical rerun and a
 local full download at 256 MiB both passed, so the cap change is headroom,
 not a proven root-cause repair. Staging exits before the runtime services
-start; the final release run must exercise this changed configuration.
+start. The final hosted release, [`36055978771`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36055978771),
+exercised this configuration on merged commit `862a08f`: staging, bundle
+build and verification, no-pull install, and the data smoke all passed;
+the runner had **78 GB free after install**. Its downloaded promotion artifact
+has 12 distinct recorded gates. The model path and SHA match `models.lock`
+and the bundle checksum, `SHA256SUMS` seals the record, and the recorded CI
+run is the exact commit's successful push run `36055198116`. The live branch
+protection read remains explicitly unverified (HTTP 403), as in the earlier
+record.
 
 ### The two install claims are not the same claim
 
@@ -353,9 +361,11 @@ cancelled run there would leave a commit's image manifest unpublished).
 That exclusion alone did not protect a *pending* run: GitHub replaced the
 pending push-to-main run `36053918189` when a manual RC run entered the same
 concurrency group. PR #41 gives each `main` run a unique group while retaining
-superseded-run cancellation for PR branches. The affected push CI was rerun;
-this matters because release gating requires a successful push-to-main run
-and the `aow-images-<sha>` artifact for that exact commit.
+superseded-run cancellation for PR branches. The affected push CI was rerun
+successfully. On merged commit `862a08f`, push run `36055198116` and manual
+RC run `36055211121` both progressed without replacing each other; the push
+run published its image artifact. This matters because release gating requires
+a successful push-to-main run and `aow-images-<sha>` for that exact commit.
 
 **Issue #4 (Node 20 annotations) is closed**, and both halves of the reasoning that first
 kept it open are kept here, because one of them was wrong. The wrong half was its premise
