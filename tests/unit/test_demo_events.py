@@ -1,9 +1,10 @@
 """Demo mode: generated sample events are opt-in, and cannot be left behind.
 
-Only seven events in this system are real listings, and all seven are in
-London. `data/events.samples.jsonl` holds 45 generated rows so the planner and
-the agent can be exercised in the other four cities. The rule the README states
-is stronger than "they are labelled":
+`data/events.seed.jsonl` holds the real listings, each hand-checked against the
+venue's or organiser's own page; `data/events.samples.jsonl` holds 45 generated
+rows, which exist only so the planner and the agent can be exercised where no
+verified listing was found. The rule the README states is stronger than "they
+are labelled":
 
   * a default run never accepts them (the ingestor does not replay the file),
   * a default run never stores them (the consumer drops them at the write
@@ -226,8 +227,13 @@ def test_a_default_compose_run_has_no_demo_flag():
 
 
 def test_the_committed_snapshot_keeps_them_apart():
-    """The shipped files, not a fixture: seven verified rows in one file and
-    every generated row in the other."""
+    """The shipped files, not a fixture: every verified row in one file and
+    every generated row in the other.
+
+    The count is asserted against `data/events.seed.jsonl` rather than written
+    here, because the verified set grows whenever another listing is checked;
+    what must not drift is that the snapshot is that file and nothing else.
+    `tests/unit/test_verified_events.py` is where each row is validated."""
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
@@ -243,9 +249,14 @@ def test_the_committed_snapshot_keeps_them_apart():
         .splitlines()
         if line.strip()
     ]
-    assert len(verified) == 7
+    seed = [
+        json.loads(line)
+        for line in (root / "data/events.seed.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["id"] for row in verified] == [row["id"] for row in seed]
     assert all(not row["is_sample"] for row in verified)
-    assert all(row["city_id"] == "london" for row in verified)
+    assert not any(row["title"].startswith("Sample: ") for row in verified)
     assert generated and all(row["is_sample"] for row in generated)
     assert all(row["title"].startswith("Sample: ") for row in generated)
 

@@ -8,8 +8,8 @@
 --
 -- Generated sample events are the one thing in this system that is not
 -- collected data. They are 45 rows written by services/ingestor/make_samples.py
--- so the trip planner and the agent can be exercised outside London, where the
--- only seven verified events are. They are opt-in (compose.demo.yml,
+-- so the trip planner and the agent can be exercised on dates the hand-checked
+-- verified seed does not reach. They are opt-in (compose.demo.yml,
 -- `make up-demo`) and labelled everywhere, and the README makes a stronger
 -- claim than labelling: a default run's database does not contain a fabricated
 -- row at all. Leaving demo mode therefore has to remove them, which needs a
