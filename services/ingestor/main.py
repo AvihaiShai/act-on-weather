@@ -291,6 +291,19 @@ def main() -> int:
     log.info("starting in %s mode, outbox=%s", mode, config.OUTBOX_PATH)
 
     metrics.start_metrics_server()
+    # Export the active source before the first run. Without this zero sample,
+    # a failed first ingest leaves the stale-ingestion alert with no series to
+    # evaluate, and a run completed before the first scrape is invisible to
+    # a rate query. The dashboard reads the process counter directly.
+    if mode == "live":
+        from .providers import get_provider
+
+        source = get_provider(os.environ.get("WEATHER_PROVIDER", "open-meteo")).name
+    else:
+        source = "snapshot"
+    metrics.INGESTION_LAST_SUCCESS.labels(source=source).set(0)
+    for result in ("ok", "failed"):
+        metrics.INGESTION_RUNS.labels(source=source, result=result).inc(0)
     # Exported through a separate read-only handle: the loop below owns the
     # writable one and takes no lock, because it is the only thread that touches
     # it, and handing that handle to a scrape thread would be introducing a race

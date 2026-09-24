@@ -1785,6 +1785,13 @@ def page_coverage(cov) -> None:
 # ---------------------------------------------------------- 7. monitoring ----
 
 
+MONITORING_DASHBOARDS = (
+    ("Service health", "http://127.0.0.1:3000/d/aow-service-health"),
+    ("Pipeline", "http://127.0.0.1:3000/d/aow-pipeline"),
+    ("LLM observability", "http://127.0.0.1:3000/d/aow-llm-observability"),
+)
+
+
 def page_monitoring(cov) -> None:
     st.caption(
         "System and LLM metrics are shown in Grafana. Weather and activity "
@@ -1794,12 +1801,11 @@ def page_monitoring(cov) -> None:
         "Monitoring runs as an optional local service. Start it with "
         "`docker compose -f compose.yml -f compose.observability.yml up -d` "
         "after setting `GRAFANA_ADMIN_PASSWORD` in `.env`. "
-        "Sign in with `admin` (or `GRAFANA_ADMIN_USER` from `.env`) and that password."
+        "Without an admin session, dashboards open as a read-only local viewer; "
+        "the admin login is for settings."
     )
     st.markdown(
-        "- [Open service health dashboard ↗](http://127.0.0.1:3000/d/aow-service-health)\n"
-        "- [Open pipeline dashboard ↗](http://127.0.0.1:3000/d/aow-pipeline)\n"
-        "- [Open LLM observability dashboard ↗](http://127.0.0.1:3000/d/aow-llm-observability)"
+        "\n".join(f"- [Open {label} dashboard ↗]({url})" for label, url in MONITORING_DASHBOARDS)
     )
     st.caption("The monitoring service is available only on this machine by default.")
 
@@ -1815,6 +1821,7 @@ PAGES = {
     "ask-the-agent": ("✦  Ask the agent", page_chat),
     "update-data": ("↻  Update data", page_update),
     "data-coverage": ("▥  Data coverage", page_coverage),
+    # Keep Monitoring last: the hover menu in theme.py follows the final nav label.
     "monitoring": ("◉  Monitoring", page_monitoring),
 }
 
@@ -1841,6 +1848,15 @@ with st.container(key="main_nav"):
         label_visibility="collapsed",
         key="page",
         on_change=remember_page,
+    )
+    st.markdown(
+        '<div class="aow-monitor-dropdown" role="menu" aria-label="Monitoring dashboards">'
+        + "".join(
+            f'<a role="menuitem" href="{escape(url, quote=True)}">{escape(label)} ↗</a>'
+            for label, url in MONITORING_DASHBOARDS
+        )
+        + "</div>",
+        unsafe_allow_html=True,
     )
 
 cov = coverage()

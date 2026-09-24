@@ -153,6 +153,13 @@ def test_monitoring_page_links_to_all_dashboards(app):
     assert "http://127.0.0.1:3000/d/aow-llm-observability" in content
 
 
+def test_monitoring_hover_menu_has_three_credential_free_shortcuts(app):
+    content = "\n".join(element.value for element in app.markdown)
+    assert 'class="aow-monitor-dropdown"' in content
+    assert content.count('role="menuitem"') == 3
+    assert "admin:" not in content
+
+
 def test_the_places_map_renders_a_figure(app):
     app = _open_page(app, "places-map")
     assert app.get("plotly_chart"), "the places map rendered no figure"

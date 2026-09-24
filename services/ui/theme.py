@@ -111,6 +111,45 @@ h1, h2, h3 { color: var(--ink); letter-spacing: -0.025em; }
 }
 .st-key-main_nav [role="radiogroup"] label > div > div:first-child { display: none; }
 .st-key-main_nav [role="radiogroup"] label p::first-letter { font-size: 1.15rem; }
+.st-key-main_nav > .stElementContainer:has(.aow-monitor-dropdown) {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% - 1px);
+  z-index: 51;
+  background: #FFFFFF;
+  border: 1px solid var(--glass-border);
+  border-radius: 0 0 12px 12px;
+  box-shadow: var(--glass-shadow);
+  padding: 0.55rem;
+}
+.st-key-main_nav:has([role="radiogroup"] > div:last-child label:hover)
+  > .stElementContainer:has(.aow-monitor-dropdown),
+.st-key-main_nav:has([role="radiogroup"] > div:last-child label:focus-within)
+  > .stElementContainer:has(.aow-monitor-dropdown),
+.st-key-main_nav > .stElementContainer:has(.aow-monitor-dropdown):hover,
+.st-key-main_nav > .stElementContainer:has(.aow-monitor-dropdown):focus-within {
+  display: block;
+}
+.aow-monitor-dropdown { display: flex; gap: 0.5rem; }
+.aow-monitor-dropdown a {
+  flex: 1;
+  padding: 0.7rem 0.85rem;
+  border-radius: 8px;
+  background: #F3F8F7;
+  color: var(--ink);
+  font-weight: 650;
+  text-decoration: none;
+}
+.aow-monitor-dropdown a:hover,
+.aow-monitor-dropdown a:focus-visible {
+  background: #E5F0EE;
+  color: var(--accent);
+}
+@media (max-width: 700px) {
+  .aow-monitor-dropdown { flex-direction: column; }
+}
 .stTabs [data-baseweb="tab-list"] { gap: 0.75rem; border-bottom: 1px solid var(--glass-border); }
 .stTabs [data-baseweb="tab-list"] button { font-size: 0.95rem; font-weight: 600; color: var(--ink-soft); }
 .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] { color: var(--accent); }
