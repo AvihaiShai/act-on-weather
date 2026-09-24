@@ -7,17 +7,19 @@ CONNECTED      := -f compose.yml -f compose.connected.yml
 DEMO           := -f compose.yml -f compose.demo.yml
 TOOLS          := -f compose.tools.yml
 PROBE          := -p aow-f3 -f compose.yml -f compose.model-probe.yml
+# Pinned in IMAGES.lock like every other image, and checked against it in CI.
+PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
 .PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
-        offline no-data-loss update reenrich questions refresh refresh-check \
-        snapshot samples redrive dlq clean
+        grounding offline no-data-loss update reenrich questions refresh \
+        refresh-check snapshot samples manifest redrive dlq clean
 
 help:
 	@echo "Staging (needs the internet, once):"
 	@echo "  make stage          pull the pinned images, stage the model, build the services"
 	@echo ""
 	@echo "Running (no internet needed):"
-	@echo "  make up             start everything (7 verified events, no generated rows)"
+	@echo "  make up             start everything (26 verified events, no generated rows)"
 	@echo "  make up-demo        same, plus 45 labelled sample events in all five cities"
 	@echo "  make ps / logs      status / follow the logs"
 	@echo "  make down           stop"
@@ -37,6 +39,7 @@ help:
 	@echo "  make refresh-check  prove that window opens and closes (no internet needed)"
 	@echo "  make snapshot       rebuild data/snapshot/ from source"
 	@echo "  make samples        regenerate the labelled sample events (no network)"
+	@echo "  make manifest       re-derive the snapshot counts the docs quote"
 	@echo ""
 	@echo "Operations:"
 	@echo "  make dlq            list what is quarantined"
@@ -74,7 +77,7 @@ up:
 
 # Demo mode. Adds data/snapshot/events.samples.jsonl -- 45 generated rows,
 # every one is_sample and titled "Sample: ..." -- so the planner and the agent
-# can be shown outside London, where the only seven verified events are.
+# can be shown on days the 26 verified events do not cover.
 # Going back to "make up" restarts the consumer, which deletes them.
 up-demo:
 	$(COMPOSE) $(DEMO) up -d
@@ -158,6 +161,14 @@ samples:
 	$(COMPOSE) run --rm --no-deps ingestor \
 	  python -m services.ingestor.make_samples
 	@echo "data/events.samples.jsonl rebuilt -- run 'make snapshot' to fold it in."
+
+# The numbers the README and this file quote about the snapshot, re-derived
+# from the snapshot itself. Run it after `make snapshot`; CI fails the build if
+# the committed manifest, or any count in the documentation, has drifted from
+# the data. In the pinned Python image, so this stays a Docker-only repository.
+manifest:
+	docker run --rm -v "$(CURDIR):/work" -w /work $(PYIMAGE) \
+	  python scripts/snapshot_manifest.py
 
 # -------------------------------------------------------------- operations --
 dlq:

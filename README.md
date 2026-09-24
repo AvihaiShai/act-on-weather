@@ -107,6 +107,7 @@ everywhere:
 | `make refresh` | `docker compose -f compose.tools.yml run --rm refresh` |
 | `make refresh-check` | `docker compose -f compose.tools.yml run --rm refresh --check` |
 | `make snapshot` | `docker compose -f compose.yml -f compose.connected.yml run --rm --no-deps ingestor python -m services.ingestor.fetch_content` |
+| `make manifest` | `docker run --rm -v "$PWD:/work" -w /work python:3.12-slim@sha256:… python scripts/snapshot_manifest.py` |
 
 Both forms run the same scripts from this same working tree — `demos/*.sh` is
 one implementation, and the container is only a shell to run it in. The stack
@@ -525,8 +526,8 @@ saying which rows are real.
 The loader drops any row in the sample file that does not admit to being a
 sample, so the labelling is checked at the boundary rather than assumed. In demo
 mode the samples are marked in the UI, in the agent's prompt, in its footer, and
-counted separately in the coverage tab — which reports **"7 verified + 45
-samples"**, never a single total of 52.
+counted separately in the coverage tab — which reports **"26 verified + 45
+samples"**, never a single total of 71.
 
 A city with no events on record produces "none on record", never a
 plausible-sounding invention.
@@ -738,6 +739,16 @@ separate Compose project and removes its temporary volumes afterward. CI has
 the internet; the runtime does not. The guard job enforces the offline model
 boundary.
 
+The rest of the guard job is there because this repository makes claims that
+rot quietly. It fails the build if a pulled image or a Dockerfile base is not
+pinned by digest; if a pinned digest disagrees with `IMAGES.lock`, so the lock
+cannot become documentation of a release nobody runs; if any workflow action is
+on a movable tag rather than a commit SHA, since those actions run with this
+workflow's token; and if any count in the README or the Makefile disagrees with
+`data/snapshot/MANIFEST.json`, which `scripts/snapshot_manifest.py` derives
+from the snapshot files. That last one is not hypothetical: a README quoting
+289 of them shipped against a snapshot holding 620.
+
 On a push to `main`, **only after those gates pass**, CI publishes the same
 tested images to GHCR with a `sha-<commit>` tag. Its `aow-images-<commit>` run
 artifact contains `images.lock` with the registry digests. Pull requests never
@@ -762,8 +773,11 @@ bash scripts/package-offline.sh release/images.lock
 
 `dist/aow-<commit>/` contains the exact CI images (plus the digest-pinned
 upstream images) in `images.tar`, the verified model, the Compose files, code,
-migrations, snapshot, checksums and an installer. Copy the folder to the
-on-prem **Linux/amd64 Docker host**. There, fill in a new `.env` and run:
+migrations, snapshot, an installer, and two files that say what the rest is
+supposed to be: `SHA256SUMS` over **every** file in the folder, and
+`images.bundle.lock`, which records the registry digest each bundled image was
+tagged from. Copy the folder to the on-prem **Linux/amd64 Docker host**. There,
+fill in a new `.env` and run:
 
 ```sh
 cd aow-<commit>
@@ -771,14 +785,45 @@ cp .env.example .env           # set distinct passwords
 bash scripts/install-offline.sh
 ```
 
-The installer verifies checksums, loads the images locally, starts Compose with
-`--no-build --pull never`, then checks API health, stored weather and scores,
-the agent, local model, UI and edge. It preserves the named Postgres, RabbitMQ
-and outbox volumes across upgrades. Before upgrading an existing installation,
-back up those volumes and Postgres; keep the previous release folder. If the
-new release fails, run the previous folder's installer to restore its images.
-A database schema change may require restoring the matching backup too; an
-image rollback alone cannot undo a migration.
+The installer checks the bundle before it changes anything on the host:
+`SHA256SUMS` for every file, `models.lock` for the model, and
+`scripts/verify-bundle-images.sh`, which reads the manifest digests out of
+`images.tar` and compares them with `images.bundle.lock`. The two checks answer
+different questions. `SHA256SUMS` answers *did these bytes arrive intact*; it
+cannot answer *are these the bytes CI built*, because anyone replacing the
+archive would replace the checksum file with it. The digest check answers the
+second question, against digests that came out of the CI run artifact.
+
+Then it loads the images, starts Compose with `--no-build --pull never`, and
+runs `scripts/release-smoke.py`: API health, stored weather and scores, the
+agent, the local model, the UI and the edge.
+
+**Upgrades and rollback.** `compose.yml` fixes the project name, so every
+release folder installs over the same Postgres, RabbitMQ and outbox volumes —
+that is what makes an upgrade an upgrade rather than a second empty system.
+Because of that, an install onto a running system is a change to live data, so
+the installer takes a `pg_dump` into `backup/` **before** it loads the new
+images, and refuses to continue if that dump comes back empty. Keep the
+previous release folder; it is the rollback unit.
+
+If a release fails, roll it back in two steps, because they undo two different
+things:
+
+```sh
+cd ../aow-<previous-commit>
+bash scripts/install-offline.sh                       # 1. code and images back
+bash scripts/restore-offline.sh \
+  ../aow-<failed-commit>/backup/<project>-<stamp>.sql # 2. data back, if needed
+```
+
+Step 1 reverts the images and the migration files. It does not revert what the
+failed migration already did to the database — a migration that dropped or
+deleted something stays dropped or deleted, and the release smoke check will
+fail on the way out rather than report a healthy rollback. Step 2 is for that
+case, and the dump it wants is the one the **failed** install took on its way
+in, which is why it lives in the failed release's folder. The outbox volumes
+are deliberately left alone: they hold records that were accepted but not yet
+published, and replaying them after the restore is the point.
 
 **Two different offline claims, kept apart.** A machine that has completed
 [staging](#2-stage-it--once-with-internet) runs the whole system *and* every
@@ -791,11 +836,35 @@ this whole section exists to avoid. Putting those two images in the release
 would fix it; that is a change to `scripts/package-offline.sh` which has not
 been made or verified here.
 
-The release path was run end to end from a green CI digest manifest on a
-Windows Docker Desktop host with a Linux/amd64 engine: package, checksum
-verification, image load, fresh isolated Compose volumes, `--pull never`, and
-the installer smoke check all passed. The folder has not been transferred to a
-separate offline host.
+**What was actually run, and where.** The release path was exercised end to end
+from the digest manifest of a green `main` run, on a Windows Docker Desktop
+host with a Linux/amd64 engine. Packaging took 3m15s and produced a 1.8 GB
+folder (539 MB `images.tar`, 1.2 GB model, 129 checksummed files). The install
+ran in its own Compose project against fresh volumes
+(`COMPOSE_PROJECT_NAME=aow-rel`, `AOW_BIND_ADDR=127.0.0.2` in that folder's
+`.env`, which is also how you stand a release test beside a running stack), and
+these are the results:
+
+| Exercise | Result |
+|---|---|
+| First install, empty volumes | 61 s to `PASS`, all 11 services up |
+| Upgrade over the running install | 49 s; pre-upgrade dump written first, 4012 lines, all nine tables |
+| `SHA256SUMS`, all 129 files | verified; appending one line to a migration failed the check |
+| `images.bundle.lock` vs `images.tar` | 6/6 digests matched; a wrong digest and a missing entry both failed |
+| `--pull never` with an image deleted | Compose refused — "No such image" — and reached no registry |
+| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel_backend` reports `Internal=true` |
+| E1 through the installed release | answered from stored data, with source and as-of |
+| Failed upgrade (a migration that deletes and then errors) | install aborted; forecast rows 80 → 0 |
+| Rollback: previous folder's installer | images and migrations reverted; smoke **failed**, correctly, on the still-empty forecast |
+| `scripts/restore-offline.sh` with the failed release's dump | 11 s; every row back (80 forecast, 620 place and 81 fact rows, as that bundle's own snapshot holds); smoke passed |
+
+Two limits on that. The isolation is a **second Compose project on the same
+machine**, not a physically disconnected host: the Docker network is
+`internal: true` and the containers cannot route out, but the host NIC stayed
+up and the folder was never transferred anywhere. And the bundle was built from
+the last published `main` commit, so the release tooling in it is this branch's
+copy laid over that bundle rather than a bundle that commit produced — the next
+bundle cut from `main` produces `images.bundle.lock` itself.
 
 ---
 
@@ -818,7 +887,7 @@ you can run.
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
 | M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `docker compose -f compose.tools.yml run --rm demos no-data-loss` |
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh (`scripts/refresh.sh`), re-enrichment | `docker compose -f compose.tools.yml run --rm demos update`; `… run --rm refresh --check` for the egress window |
-| S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`, `scripts/package-offline.sh`, `scripts/install-offline.sh` | `gh run list`; offline release installer |
+| S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
 | B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |
 | B2 | LLM observability metrics | **not attempted** — `llm` exposes llama.cpp's own `--metrics`, unscraped | — |
@@ -864,9 +933,28 @@ docker run --rm aow/tests:dev pytest tests/unit/test_compose_ports.py -v
 docker compose config | grep -A 4 'ports:'   # host_ip: 127.0.0.1, twice
 ```
 
-`make offline`, `make demo`, `make test` and the rest are shorthands for these;
-see [Shorthand](#shorthand). The proof runner mounts the Docker socket, for the
-reason given there.
+The release bundle can be checked on the offline host without starting
+anything, which is also what `scripts/install-offline.sh` does before it
+touches the daemon:
+
+```sh
+cd aow-<commit>
+sha256sum -c SHA256SUMS                  # every file in the folder, code included
+sha256sum -c models.lock                 # the model
+bash scripts/verify-bundle-images.sh .   # images.tar against images.bundle.lock
+```
+
+The numbers this file quotes about the snapshot come from the snapshot:
+
+```sh
+docker run --rm -v "$PWD:/work" -w /work \
+  python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 \
+  python scripts/snapshot_manifest.py --check
+```
+
+`make offline`, `make demo`, `make test`, `make manifest` and the rest are
+shorthands for these; see [Shorthand](#shorthand). The proof runner mounts the
+Docker socket, for the reason given there.
 
 ---
 
@@ -925,7 +1013,22 @@ Stated, not implied:
   start and the proofs have no such restriction. This applies only to building
   and installing the transport folder, and the
   [production path](#production-path-kubernetes--openshift) below is the answer
-  for a real on-prem install.
+  for a real on-prem install. `scripts/restore-offline.sh` additionally needs
+  the release folder's `.env` to be the one the dump was taken under.
+* **The release has been installed in isolation, not on a disconnected host.**
+  Package, whole-folder checksums, image-digest verification, `--pull never`,
+  first install, upgrade, a failed upgrade and a restore-backed rollback all
+  ran — but in a second Compose project on the staging machine, with the host
+  NIC up. The containers had no route out (`internal: true`, `errno 101` from
+  every service), which is a strong simulation and not a separate-host
+  air-gap certification. [Offline release and
+  installation](#offline-release-and-installation) lists exactly what ran.
+* **Rollback is two commands, not one, and the second needs a dump.** An image
+  rollback cannot undo a migration, so a release that migrates destructively is
+  recoverable only from the `pg_dump` the failed install took on its way in.
+  That dump is automatic, but its retention is not: nothing prunes `backup/`,
+  and a host that runs out of disk there will fail the next upgrade at the dump
+  step rather than half-way through it.
 * **The proof runner holds the Docker socket** while a drill runs. It is a
   deliberate, explicit invocation and nothing in the running stack has the
   socket, but it is real host access and is named here rather than buried.
