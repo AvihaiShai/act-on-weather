@@ -5,10 +5,10 @@ name: release
 # host. What this workflow automates is everything before that hop --
 # binding to a commit CI already tested and scanned, independently
 # re-verifying the images that commit published, building the exact offline
-# bundle `scripts/package-offline.sh` produces, verifying it, and recording
-# the promotion decision as evidence. The transfer and the install are
-# operator steps, documented in docs/RELEASE.md, not automated here. See that
-# file for why, and for the command-exact operator procedure.
+# bundle `scripts/package-offline.sh` produces, verifying it, exercising a
+# no-pull install and smoke on its connected runner, and recording the
+# promotion decision as evidence. Transfer and production install on the
+# offline host are operator steps documented in docs/RELEASE.md.
 
 on:
   workflow_dispatch:
@@ -293,10 +293,9 @@ jobs:
 
       # Proves the bundle installs from its own bytes, with no pulls, on
       # every release -- not just that it was built and verified. This does
-      # NOT duplicate F10's air-gap rig: that is a physically separate
-      # docker-ce host with nftables dropping DNS, raw-IP and ICMP, a real
-      # network-isolation certification a hosted GitHub runner cannot
-      # reproduce. This is the repeatable, cheaper check that runs on every
+      # NOT duplicate F10's air-gap rig: that uses a separate Docker engine
+      # and Linux userspace with nftables blocking egress, but shares the
+      # same WSL2 utility VM. This is the repeatable check that runs on every
       # release: the tar this exact job just built actually boots the stack
       # and the stack actually holds data, using scripts/install-offline.sh
       # unmodified. See docs/RELEASE.md, "What the install exercise proves
