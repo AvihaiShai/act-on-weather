@@ -45,14 +45,14 @@ S1 is a low bar and the repository clears it. Nothing here is open.
 
 ## 2. B1 — partial, and honest about which parts
 
-"Full tests for all components." 1146 unit tests run under `--network none` on every PR.
+"Full tests for all components." 1170 unit tests run under `--network none` on every PR.
 Per component:
 
 | Component | Automated coverage today | Level |
 |---|---|---|
 | ingestor | unit + real broker/DB outage drills 4–5 driving its own outbox | **integration** |
-| consumer | real integration (smoke, reconnect, 5 drills); unit coverage of `handle()` routing is shallow | **partial** |
-| enricher | 1 unit test; container never started in CI | **partial** |
+| consumer | real integration (smoke, reconnect, 5 drills); direct `handle()` tests route every declared key and distinguish stored, duplicate, rejected and retry outcomes | **integration + unit** |
+| enricher | outbox recovery unit test; real container starts in `build-and-scan` and its backlog metric matches a separate reader query (480 pending rows in run `36049766709`) | **partial**: model wording is exercised in the RC gate, not this per-PR probe |
 | agent | 193 unit tests with a fake LLM, **plus** 8 adversarial cases against the real model | **integration (RC)** |
 | api | unit + real integration; every drill accepts through it | **integration** |
 | ui | unit render tests **plus** a real headless-browser gate | **integration** |
@@ -64,8 +64,9 @@ Per component:
 | backup / restore | full-stack drill destroying all volumes, asserting accepted IDs survive | **integration (RC)** |
 | packaging / installer | bundle built, verified, installed and smoked in `release.yml` | **integration (release)** |
 
-**Still open:** the enricher container is never started in CI, and `handle()`'s routing
-table has no direct unit test. Both are recorded rather than papered over.
+The two previously missing direct checks were added in PR #37. The enricher probe
+proves startup, reader access and backlog reporting; it does not claim a model
+reply, since the per-PR integration stack does not start llama.cpp.
 
 ---
 
@@ -76,9 +77,9 @@ All timings from real GitHub-hosted runners, not estimates.
 | Gate | What it asserts | When | Proof |
 |---|---|---|---|
 | `lint` | ruff check + format | every PR | ~10s, green on every run |
-| `unit` | 1146 tests, `--network none` | every PR | ~1m11s |
+| `unit` | 1170 tests, `--network none` | every PR | 1m11s on PR #37 |
 | `guard` | no hosted-LLM SDK; no committed secret; gitleaks; every compose image, Dockerfile base and workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR | ~9s |
-| `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | ~3m30s–4m11s |
+| `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
 | `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | 1m30s–1m35s; last run 153 same-origin, 0 external |
 | `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | **153s**, `PASS: 8 adversarial cases stayed grounded` |
 | `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | **110s**; measured RPO 24–26s, RTO 31–35s |
@@ -115,6 +116,26 @@ machine and not published by CI. A reader must not infer uniform provenance from
 that does not have it. Branch protection is read **live** at release time and recorded as
 `verified: false` with a reason if the read fails, rather than carrying a constant that
 would keep asserting a setting nobody checked.
+
+The first complete hosted release run, [`36048802334`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36048802334),
+completed on `b6b38f9`: bundle build, archive verification, no-pull install,
+data smoke, promotion record and artifact upload all passed. Disk free space was
+**86 GB before packaging, 78 GB after packaging, and 78 GB after install**;
+the bundle occupied **2.4 GB**. This replaces the earlier disk estimate with a
+measurement from the runner actually used. The uploaded record revealed a
+separate defect: it wrote `model.sha256` as `"#"` and used the comment in
+`models.lock` as the model filename. PR #37 made the parser require one valid
+sha256sum entry and match the bundle's independently generated model checksum.
+The first run's record remains historical evidence of that failure. Release
+[`36052133435`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36052133435)
+then targeted merged commit `804b5df` with the updated artifact actions. Its
+first attempt stopped during model staging at exit 137 after about 705 MiB;
+the unchanged retry completed the full bundle, verification, no-pull install,
+smoke and upload. The downloaded artifact records the correct model path and
+SHA `d2387ca2…d9bc7b5`, matching `models.lock` and the bundle's checksum;
+`SHA256SUMS` also covers the promotion record itself. All 12 recorded release
+gates are present. The record still says branch protection `verified: false`
+because the workflow token's live read received HTTP 403.
 
 ### The two install claims are not the same claim
 
@@ -376,6 +397,10 @@ security updates. Dependabot's first security PR failed `unit` in 21s: `requests
 pinned in both `services/common` and `services/ui`, `tests/Dockerfile` installs them into
 one interpreter, and a single-directory bump is `ResolutionImpossible`. The update was
 correct in isolation and unbuildable in place — a defect in the tree, not the bot.
+Grouped PR #21 raised `requests` consistently in all three requirements files,
+passed the new security scanners and every per-PR gate, and was merged; the
+open Dependabot alert count fell from six to zero. The older single-directory
+PR #10 was closed as superseded.
 
 ---
 
@@ -384,9 +409,6 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
 | Item | Why it is not a gate |
 |---|---|
 | Air-gap install certification | A hosted runner has internet throughout. Requires a separate engine with egress dropped; manual by construction. **Executed** — see §4 |
-| Action major upgrades | Taken in #38/#39 and verified in §8. Future majors stay a human decision: Dependabot keeps the two scanners ungrouped so a new finding is attributable to one bump |
-| Enricher container coverage | Not started in CI; recorded, not closed |
-| `consumer.handle()` routing unit tests | Covered only where integration happens to exercise a key |
 
 ## 10. Known limits of this matrix
 
@@ -407,7 +429,8 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
 - Timings are from single runs, not averages.
 - `release-smoke.py` asserts **data** for weather and scores but only **liveness** for
   agent, llm, ui and edge. It is a partial gate and `docs/RELEASE.md` says so.
-- `release.yml` has been validated step-by-step against real registry and API responses,
-  but a full end-to-end release run on a hosted runner had not completed at the time of
-  writing; the bundle build's disk arithmetic (~5.4–5.9 GB against ~14 GB free) is
-  calculated, not measured.
+- The first full hosted release run completed on `b6b38f9` but its promotion
+  record's model field was malformed. PR #37 repaired the writer; the corrected
+  artifact was inspected from the successful retry of run `36052133435` (§4).
+  Its first attempt exited 137 while staging the model. A local reproduction
+  at the same 256 MiB container limit passed, so the cause remains unproven.
