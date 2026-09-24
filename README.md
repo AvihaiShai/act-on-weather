@@ -372,11 +372,13 @@ deliberately not the assertion: a loss and a duplicate cancel out in a count.
 
 **The same guarantee is a CI gate.** `scripts/ci-integration.sh` runs against a
 real broker and database in a throwaway Compose project, and no image is
-published unless it passes. It accepts one record per failure mode — consumer
-stopped, broker stopped, database stopped — each with its own `message_id`,
-then restarts every service in the path and asks a **separate reader
-connection** for all of them at once. Any single missing ID fails the job, and
-so does any duplicate.
+published unless it passes. It accepts one record per failure mode, each with
+its own `message_id`: through the API with the consumer stopped, the broker
+stopped and the database stopped, and through the **ingestor** with the broker
+stopped and the database stopped. Both producer outboxes are therefore driven
+through an outage, not just audited. It then restarts every service in the path
+and asks a **separate reader connection** for all of them at once. Any single
+missing ID fails the job, and so does any duplicate.
 
 The database drill waits for the consumer to log a failed delivery before
 restoring Postgres. That wait is the drill: if the database comes back before
@@ -385,6 +387,12 @@ reconnect path, and the drill passes against a broken build. Verified by
 rebuilding the service image with the reconnect fix removed — the gate then
 fails naming the lost ID, while the consumer-down and broker-down drills still
 pass, because neither touches that path.
+
+The ingestor drills are checked the same way, against the producer-side bug
+they exist for: an `ingestor.main.drain` that marks an outbox row published
+before the broker has confirmed it. Every other check in this script passes
+against that build — the API drills included — and the ingestor broker-outage
+drill fails naming the lost ID.
 
 **Reconcile older accepted records.** After an upgrade from a version with the
 database reconnect bug, audit both producer outboxes while the stack is up:
@@ -984,13 +992,18 @@ Stated, not implied:
   against `ingest_log` and can replay a missing one, so an accepted record can
   always be accounted for. There is still no equivalent reconciler proving
   every *enrichment* was delivered.
-* **The outage gate drives the API outbox, not the ingestor's.** The three
-  drills accept through the API, so it is the API's outbox that is proven
-  across a broker and a database outage. The ingestor's outbox is audited on
-  every CI run -- every confirmed envelope reconciled against `ingest_log` --
-  but this gate never stops a dependency underneath the ingestor and replays
-  through it. Same code path on both sides, so the risk is small; it is still
-  audited rather than exercised, and the claim stops there.
+* **The ingestor drills accept through a test fixture, not through a real
+  fetch.** Both producer outboxes are now driven through a broker outage and a
+  database outage, and the ingestor's real outbox volume, its real `drain()`
+  loop and its real confirm path all take part. What is synthetic is only the
+  trigger: the ingestor has no request surface, so the fixture calls the
+  ingestor's own `envelopes_from` and `accept_many` inside its container rather
+  than adding an endpoint that exists for tests. The connected `live` fetch
+  path is not exercised at all, because CI has no egress.
+* **The consumer-stopped drill is run against the API outbox only.** The two
+  producers share one publish path, so the broker and database outages are
+  where they could differ; a stopped consumer is downstream of both and is not
+  repeated.
 * **The enricher polls** rather than binding to the weather stream. That is a
   deliberate trade: no second delivery branch means no silent partial fan-out.
 * **A user-entered activity is scored against general outdoor comfort**, not a

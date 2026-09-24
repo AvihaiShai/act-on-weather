@@ -42,8 +42,9 @@ echo "ingestor reconciliation audit: $ingestor_audit"
 # ---------------------------------------------------------------------------
 # M11: one acceptance per failure mode, each with its own message_id.
 #
-# Every drill accepts through the API while the dependency behind it is
-# stopped, so the record is only ever as safe as the fsynced outbox row makes
+# Drills 1-3 accept through the API, drills 4-5 through the ingestor, so both
+# producer outboxes are driven through an outage rather than only audited. In
+# every one the record is only ever as safe as the fsynced outbox row makes
 # it. Each is then checked twice: once on its own, and once at the end with
 # the others after a full restart. The second check is the one that matters --
 # a write that was acknowledged but never committed is visible to nobody and
@@ -62,6 +63,18 @@ accept_one() {
 
 outbox_json() {
   dc exec -T api python -c "import json,urllib.request;print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:8000/outbox/$1'))))" | tr -d '\r'
+}
+
+accept_via_ingestor() {
+  dc exec -T -e AOW_TEST_LABEL="$1" \
+    ingestor python - < tests/integration/accept_via_ingestor.py | tr -d '\r'
+}
+
+# The ingestor has no HTTP surface, so its outbox is read directly, read-only,
+# inside its own container. Read-only matters: a drill must never be able to
+# create or repair the state it is about to assert on.
+ingestor_outbox_published_at() {
+  dc exec -T ingestor python -c "from services.common import config; from services.common.outbox import Outbox; b = Outbox(config.OUTBOX_PATH, readonly=True); r = b.status_of('$1'); assert r is not None, 'not accepted'; print(r['published_at'])" | tr -d '\r'
 }
 
 wait_stored() {
@@ -114,14 +127,53 @@ dc start postgres
 wait_stored "$db_id"
 echo "drill 3 database-down: committed after reconnect -- $db_id"
 
-drill_ids="$consumer_id,$broker_id,$db_id"
+# ---------------------------------------------------------------------------
+# Drills 4 and 5 repeat the broker and database outages against the *ingestor's*
+# outbox. That is a different volume, drained by a different loop
+# (`ingestor.main.drain`) in a different process, so the API drills above say
+# nothing about it. Until these existed the ingestor outbox was audited on
+# every run but never driven through an outage, and the README said so.
+# ---------------------------------------------------------------------------
+
+# Drill 4 -- ingestor accepts while the broker is down. This is the property the
+# ingestor's outbox exists for: acceptance keeps working, publishing stops, and
+# nothing is marked published until the broker has confirmed it. A `drain()`
+# that marked rows published before confirming would pass every other check in
+# this script and fail here.
+dc stop rabbitmq
+ing_broker_id="$(accept_via_ingestor 'ingestor broker outage')"
+published_at="$(ingestor_outbox_published_at "$ing_broker_id")"
+test "$published_at" = "None"
+dc start rabbitmq
+wait_stored "$ing_broker_id"
+echo "drill 4 ingestor broker-down: spooled unpublished, drained and stored -- $ing_broker_id"
+
+# Drill 5 -- ingestor accepts while the database is down. Same reconnect path as
+# drill 3, reached from the other producer, and gated the same way: wait for the
+# consumer to actually fail this delivery before restoring Postgres.
+dc stop postgres
+ing_db_id="$(accept_via_ingestor 'ingestor database outage')"
+deadline=$((SECONDS + 180))
+until dc logs --since 10m consumer 2>&1 | grep -q "redelivering $ing_db_id"; do
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    echo "drill 5 never reached the consumer while the database was down: $ing_db_id" >&2
+    exit 1
+  fi
+  sleep 2
+done
+echo "drill 5 ingestor database-down: consumer failed the delivery against a dead database, as intended"
+dc start postgres
+wait_stored "$ing_db_id"
+echo "drill 5 ingestor database-down: committed after reconnect -- $ing_db_id"
+
+drill_ids="$consumer_id,$broker_id,$db_id,$ing_broker_id,$ing_db_id"
 dc exec -T -e AOW_TEST_MESSAGE_IDS="$drill_ids" api python - < tests/integration/verify_db_recovery.py
 
 # Full restart of every service in the path, not just the one that was stopped.
 # An uncommitted write survives in a session; it does not survive this.
 dc restart postgres rabbitmq ingestor consumer api
 dc exec -T -e AOW_TEST_MESSAGE_IDS="$drill_ids" api python - < tests/integration/verify_db_recovery.py
-echo "PASS: consumer, broker and database outages each committed once and survived a full restart"
+echo "PASS: five outages across both producer outboxes each committed once and survived a full restart"
 
 # ---------------------------------------------------------------------------
 # Reproduce the historical ACKed-but-missing state in this disposable project.
@@ -151,5 +203,5 @@ dc exec -T -e AOW_TEST_MESSAGE_IDS="$all_ids" api python - < tests/integration/v
 dc restart postgres rabbitmq consumer api
 dc exec -T -e AOW_TEST_MESSAGE_IDS="$all_ids" api python - < tests/integration/verify_db_recovery.py
 stored_total="$(dc exec -T postgres psql -U aow -d aow -tAc "SELECT count(*) FROM ingest_log WHERE message_id = ANY(string_to_array('$all_ids', ','))" | tr -d '\r')"
-test "$stored_total" = 4
-echo "PASS: all 4 traced IDs ($all_ids) are stored exactly once after full recovery"
+test "$stored_total" = 6
+echo "PASS: all 6 traced IDs ($all_ids) are stored exactly once after full recovery"
