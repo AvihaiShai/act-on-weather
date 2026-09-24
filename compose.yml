@@ -23,6 +23,12 @@ volumes:
   rabbitdata:
   ingestor_outbox:
   api_outbox:
+  enricher_outbox:
+
+x-queue-env: &queue_env
+  RABBITMQ_USER: ${RABBITMQ_USER:-aow}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 services:
   postgres:
@@ -142,10 +148,10 @@ services:
       rabbitmq:
         condition: service_healthy
     command: ["python", "-m", "services.ingestor.main"]
-    environment: &queue_env
-      RABBITMQ_USER: ${RABBITMQ_USER:-aow}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    environment:
+      <<: *queue_env
+      POSTGRES_READER_PASSWORD: ${POSTGRES_READER_PASSWORD:?set POSTGRES_READER_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-aow}
     volumes:
       # The outbox lives on a named volume: the no-data-loss guarantee begins
       # at an fsynced row here, so it must outlive the container.
@@ -192,6 +198,8 @@ services:
       LLM_MODEL: ${LLM_MODEL:-Qwen3-1.7B-Q4_K_M}
       ENRICH_POLL_SECONDS: ${ENRICH_POLL_SECONDS:-60}
       ENRICH_BATCH: ${ENRICH_BATCH:-8}
+    volumes:
+      - enricher_outbox:/outbox
     networks: [backend]
 
   # The agent (M7-M9). Router-first: code resolves the city, the dates and the

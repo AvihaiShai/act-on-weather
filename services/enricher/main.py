@@ -27,6 +27,7 @@ from ..common import config
 from ..common.db import Pool
 from ..common.envelope import Envelope
 from ..common.llm import LlmClient, LlmInvalidOutput, LlmUnavailable
+from ..common.outbox import Outbox
 from ..common.rabbit import Publisher, PublishError
 
 logging.basicConfig(
@@ -112,7 +113,7 @@ def validate_text(text: Any) -> str:
     return text
 
 
-def publish(publisher: Publisher, payload: dict[str, Any], city: str) -> None:
+def accept_result(box: Outbox, payload: dict[str, Any], city: str) -> None:
     envelope = Envelope.create(
         config.RK_LLM_RECOMMENDATION,
         payload,
@@ -120,10 +121,24 @@ def publish(publisher: Publisher, payload: dict[str, Any], city: str) -> None:
         observed_at=payload.get("weather_as_of") or "",
         city=city,
     )
-    publisher.publish(config.RK_LLM_RECOMMENDATION, envelope.to_bytes(), envelope.message_id)
+    box.accept(envelope)
 
 
-def enrich_one(row: dict[str, Any], client: LlmClient, publisher: Publisher) -> str:
+def drain(box: Outbox, publisher: Publisher) -> bool:
+    """Confirm owed results before polling for more model work."""
+    for row in box.unpublished():
+        try:
+            publisher.publish(row["routing_key"], row["body"], row["message_id"])
+        except PublishError as exc:
+            box.mark_failed(row["seq"], str(exc))
+            log.warning("cannot publish %s: %s", row["message_id"], exc)
+            publisher.close()
+            return False
+        box.mark_published(row["seq"])
+    return True
+
+
+def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
     """Returns 'ready', 'invalid', or raises LlmUnavailable to pause the batch."""
     base = {
         "city_id": row["city_id"],
@@ -142,11 +157,11 @@ def enrich_one(row: dict[str, Any], client: LlmClient, publisher: Publisher) -> 
             row["activity"],
             exc,
         )
-        publish(publisher, {**base, "status": "invalid", "error": str(exc)[:400]}, row["city_id"])
+        accept_result(box, {**base, "status": "invalid", "error": str(exc)[:400]}, row["city_id"])
         return "invalid"
 
-    publish(
-        publisher,
+    accept_result(
+        box,
         {**base, "status": "ready", "text": text, "model": config.LLM_MODEL},
         row["city_id"],
     )
@@ -156,6 +171,7 @@ def enrich_one(row: dict[str, Any], client: LlmClient, publisher: Publisher) -> 
 def main() -> None:
     pool = Pool(config.reader_dsn(), autocommit=True)
     client = LlmClient()
+    box = Outbox(config.OUTBOX_PATH)
     publisher = Publisher(name="aow-enricher")
     log.info(
         "polling pending recommendations every %.0fs (batch %d)",
@@ -165,6 +181,9 @@ def main() -> None:
 
     outage_backoff = 5.0
     while True:
+        if not drain(box, publisher):
+            time.sleep(5)
+            continue
         try:
             rows = pool.conn.execute(PENDING_SQL, (config.ENRICH_BATCH,)).fetchall()
         except Exception as exc:  # noqa: BLE001 - the database will come back
@@ -180,7 +199,10 @@ def main() -> None:
         ready = invalid = 0
         for row in rows:
             try:
-                outcome = enrich_one(row, client, publisher)
+                outcome = enrich_one(row, client, box)
+                if not drain(box, publisher):
+                    time.sleep(5)
+                    break
             except LlmUnavailable as exc:
                 # Temporary by definition. Stop the batch, wait, and come back
                 # to the SAME rows: no attempt is consumed, so however long the
@@ -188,11 +210,6 @@ def main() -> None:
                 log.warning("llm unavailable (%s); retrying in %.0fs", exc, outage_backoff)
                 time.sleep(outage_backoff)
                 outage_backoff = min(outage_backoff * 2, config.ENRICH_POLL_SECONDS)
-                break
-            except PublishError as exc:
-                log.warning("cannot publish (%s); the row stays pending", exc)
-                publisher.close()
-                time.sleep(5)
                 break
             outage_backoff = 5.0
             ready += outcome == "ready"

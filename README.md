@@ -148,7 +148,7 @@ images and the model, a normal run needs no internet. A fresh clone alone is
 
 | | |
 |---|---|
-| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 282 places, 81 background articles, and **7 verified events** (+ 45 labelled samples in demo mode) |
+| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 289 places, 81 background articles, and **7 verified events** (+ 45 labelled samples in demo mode) |
 | **Decides** | a deterministic suitability score per (city, day, activity) across **18 activities**, from rules in `data/activities.yml` |
 | **Words** | a local Qwen3-1.7B writes one or two sentences about each score |
 | **Answers** | an agent resolves the question in code and answers from stored rows only |
@@ -165,7 +165,9 @@ header, which carries the as-of stamp and the forecast window.
   a box to ask about *any* activity you type, not just the ones with rules.
 * **Trip planner** — a day-by-day plan with three suggestions per day, weighted
   by the interests and activities you pick. See
-  [Choosing a day's activity](#choosing-a-days-activity).
+  [Choosing a day's activity](#choosing-a-days-activity). A saved plan is stored
+  as a row like any other, so the list underneath reopens one with its days as
+  they were saved — and says so when the forecast has moved on since.
 * **Places map** — filter stored places by city, category or name; inspect their
   coordinates and source links, and highlight stops from the current itinerary.
   Streets, water and parks are staged with the coastline and bundled locally,
@@ -221,6 +223,32 @@ misleading overall verdict from the small model: in a live seven-day running
 question, it called a week with seven `fair` scores a “good week.” Open-ended
 questions still use the local model to phrase the retrieved data.
 
+### “Where can I surf?” is a different question from “is it good for surfing?”
+
+A question naming a place word — `where`, `nearest`, `which beach` — is routed
+to locations, not to the forecast. It is answered from the same `place_categories`
+rule the trip planner uses: an activity is located only where the source's own
+class **is** the venue, so “where can I go to the beach in Tel Aviv?” names the
+five stored beaches, and “where can I surf in Tel Aviv?” answers
+
+> I do not have a verified surf spot for Tel Aviv: no source I hold records
+> where to do it.
+
+Wikidata `Q40080` and OSM `natural=beach` assert that a beach is there. They do
+not assert that the surf is rideable, the water lifeguarded, the angling
+permitted or a boat for hire — so surfing, swimming, fishing and boat rides name
+no venue, and no beach is offered in place of one.
+
+A bare `where` question fetches **no weather at all**, so it cannot be answered
+with a week of scores, and it still answers after the stored forecast window has
+run out. Add a date or ask about conditions (“where **and when** can I surf?”)
+and the scores appear below the location, under a line saying what they are:
+they rate the stored forecast, and nothing in the data measures the waves.
+
+*Known limitation:* no source in the snapshot records surf breaks, dive sites or
+boat hire. Adding one — a sourced surf-spot layer with the same `source` and
+`as_of` as every other row — is what would turn that refusal into a location.
+
 ### What gets worded, and what does not
 
 Scoring 18 activities for 5 cities over 16 days is ~1,300 rows and costs
@@ -242,43 +270,10 @@ the model were down.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph egress["egress (only when refreshing)"]
-        OM[Open-Meteo]
-    end
-
-    subgraph backend["backend — internal: true, no route out"]
-        ING[ingestor]
-        OBX[(outbox<br/>SQLite, fsync)]
-        MQ{{RabbitMQ<br/>aow.events → aow.ingest<br/>quorum + DLX}}
-        CON[consumer<br/>the only writer]
-        PG[(Postgres)]
-        ENR[enricher]
-        LLM[llama.cpp<br/>Qwen3-1.7B]
-        API[api]
-        AGT[agent]
-        UI[Streamlit]
-    end
-
-    subgraph frontend["frontend (bridge)"]
-        EDGE[nginx]
-    end
-
-    OM -.->|connected refresh only| ING
-    ING --> OBX --> MQ --> CON --> PG
-    API -->|202 Accepted| OBX2[(api outbox)] --> MQ
-    ENR -->|polls status='pending'| PG
-    ENR --> LLM
-    ENR -->|llm.recommendation| MQ
-    AGT --> PG
-    AGT --> LLM
-    API --> PG
-    UI --> API
-    AGT --> API
-    EDGE --> UI
-    EDGE --> API
-```
+**Start with the [architecture guide](docs/ARCHITECTURE.md).** It has the
+GitHub-rendered system diagram, message lifecycle, user and infrastructure
+flows, technology choices, and the limits to explain to a reviewer. Its
+Mermaid diagrams live in Git as editable text.
 
 Eleven containers. `postgres`, `rabbitmq`, `migrate` (one-shot), `llm`,
 `ingestor`, `consumer`, `enricher`, `api`, `agent`, `ui`, `edge`.
@@ -296,13 +291,13 @@ Eleven containers. `postgres`, `rabbitmq`, `migrate` (one-shot), `llm`,
    `message_id` into `ingest_log` in **one transaction**, and acks only after
    that commits.
 4. Storing weather also computes and stores the **rule-based score** for each
-   activity, immediately, with `status='pending'` for the wording only.
+   supported activity immediately. The top `ENRICH_TOP_N` per city-day are
+   `pending` for model wording; the rest are scored and `deferred`.
 5. The **enricher** polls pending rows, makes **one** grammar-constrained call
-   to the local model, and publishes the result back into the exchange — so
-   the recommendation reaches the database through the queue like everything
-   else.
-6. The **api** and the **agent** read as `aow_reader`, which holds `SELECT` and
-   nothing else.
+   to the local model, fsyncs the result into its own outbox, and publishes it
+   back into the exchange. Its original `message_id` survives broker failure.
+6. The **api**, **agent**, and **enricher** read as `aow_reader`, which holds
+   `SELECT` and nothing else.
 
 ### Networks
 
@@ -346,7 +341,7 @@ effectively-once storage. The idempotency key is `message_id`, inserted into
 | consumer crashes **before** commit | nothing was written; the broker redelivers |
 | consumer crashes **after** commit, **before** ack | the broker redelivers; `ingest_log`'s primary key rejects it; acked without a second write |
 | database unreachable | the handler raises, the message is requeued, the consumer waits and reconnects |
-| broker unreachable | publishing stops, **accepting does not**; records accumulate on the volume and replay |
+| broker unreachable | publishing stops, **accepting does not**; records accumulate on the producer's volume and replay |
 | poison message | fails validation before any write, dead-letters to `aow.dlq`, does not block the queue |
 | model down or slow | irrelevant to weather: the score is already stored, only the wording waits |
 
@@ -364,6 +359,63 @@ docker compose -f compose.tools.yml run --rm demos no-data-loss
 Four drills — consumer down, database down, broker down and poison message. Each follows a
 **single accepted `message_id`** to its terminal state. Row counts are
 deliberately not the assertion: a loss and a duplicate cancel out in a count.
+
+### Reconcile accepted records after an incident
+
+Keep the Postgres, RabbitMQ, and all three outbox volumes. After the services
+recover, run this read-only audit in **each** producer container:
+
+```sh
+docker compose exec -T api python -m services.common.reconcile
+docker compose exec -T ingestor python -m services.common.reconcile
+docker compose exec -T enricher python -m services.common.reconcile
+```
+
+Each JSON report lists confirmed outbox IDs absent from committed `ingest_log`.
+An ID may still be in `aow.ingest` or `aow.dlq`; inspect those queues and the
+consumer logs before replaying it. A queued ID is safe to replay because the
+consumer's `ingest_log` primary key permits only one business write. Investigate
+a poison ID in the DLQ before any redrive; if its DLQ copy is gone but its
+outbox envelope remains, replaying that original ID will quarantine it again.
+Normal unpublished rows are handled by the producer loop and are outside this
+audit.
+
+Replay a selected missing ID from the producer that accepted it:
+
+```sh
+docker compose exec -T api python -m services.common.reconcile --replay --id MESSAGE_ID
+```
+
+Use `ingestor` or `enricher` in place of `api` for their IDs. The command
+queries Postgres through a separate reader connection, skips an ID already in
+`ingest_log`, and republishes the **original envelope and ID** under a RabbitMQ
+publisher confirm. A replay confirmation means the broker accepted it; wait for
+the consumer, then rerun the audit or query `ingest_log` to verify exactly one
+row. If publishing fails, rerun the command after RabbitMQ recovers. A database
+commit racing the query is also harmless because the consumer's write is
+idempotent. The command requires `--id` for replay to make each recovery choice
+explicit. Do not delete an outbox volume until every accepted ID has a verified
+terminal state or has been recorded as unrecoverable.
+
+For an existing `aow` stack still running an older image, the same command can
+run from a separate helper container without recreating any service. Build the
+helper from this checkout, then mount the relevant producer volume read-only:
+
+```sh
+docker build -f services/Dockerfile -t aow/services:reconcile .
+docker run --rm --network aow_backend --env-file .env -v aow_api_outbox:/outbox:ro aow/services:reconcile python -m services.common.reconcile --id MESSAGE_ID
+```
+
+Add `--replay` before `--id` after checking the audit result. Substitute
+`aow_ingestor_outbox` or `aow_enricher_outbox` for their IDs; for a custom
+Compose project, substitute its network and volume prefix. This helper uses
+the existing broker and database while leaving the running services alone.
+
+Older enricher results created before its outbox was added have no durable
+producer envelope to reconcile. If the source recommendation is still pending,
+the enricher can generate a new result, with a new ID; its old ID cannot be
+reconstructed. Likewise, an accepted ID whose outbox volume was destroyed and
+which is absent from both Postgres and RabbitMQ cannot be replayed by this tool.
 
 ---
 
@@ -437,6 +489,38 @@ Wikidata holds *notable* venues, so you get the Royal Academy of Music Museum
 and Harrods, not every café on the street. Each row records which source it
 came from, and the agent's footer names it, so nothing here is guesswork about
 provenance.
+
+**Beaches, and what a beach row does not prove.** The first vocabulary had no
+coastal category at all, which produced the one gap a reviewer noticed
+unaided: Tel Aviv scored *a day at the beach* at 100 on every day of the
+forecast and could not name a single beach to spend it on, because the planner
+fell back to whatever matched the traveller's interests — parks. Wikidata
+`Q40080` (beach) and `Q721207` (marina), and OSM `natural=beach`,
+`leisure=beach_resort` and `leisure=marina`, now collect them. What that yields
+at the staged 4 km radius, verified against both live endpoints:
+
+| city | beaches | marinas | note |
+|---|---|---|---|
+| Tel Aviv | 5 | 1 | Bugrashov, Frishman, Hilton, Jerusalem, Metzitzim |
+| Reykjavík | 1 | 0 | Kirkjusandur |
+| Rome | 0 | 0 | Lido di Ostia is ~25 km out, well outside the radius |
+| Lisbon | 0 | 0 | Carcavelos and Caparica are likewise out of range |
+| London | 0 | 0 | inland, and gated as such |
+
+Rome and Lisbon are the honest case: both are `coastal: true`, both still score
+the coastal activities, and neither can name a venue for them. The planner says
+so rather than offering a park.
+
+**A beach is evidence of a beach and nothing else.** Only *a day at the beach*
+claims `place_categories: [beach]`. Surfing, swimming, fishing and a boat ride
+deliberately claim no venue, because `Q40080` and `natural=beach` assert that a
+beach is there — not that the surf is rideable, the swimming supervised, the
+angling permitted or a boat available to hire. Naming Gordon Beach as a surf
+spot would be exactly the kind of invention the rest of this system is built to
+avoid. If evidence-bearing rows arrive later (`supervised=yes`, a surf-break
+class, a marina with hire), `data/activities.yml` is where that decision gets
+revisited, and `tests/unit/test_planner_venues.py` is the test that has to be
+changed on purpose.
 
 **Why the background data is tied to the places.** The first attempt used
 Wikipedia's geosearch, which is geographically correct and editorially useless:
@@ -545,8 +629,9 @@ There is exactly one write path into this database.
 * The model is verified against `models.lock` before it is used.
 * Containers run as **uid 10001** wherever the base image allows.
 * **Three database roles**: the owner runs migrations; `aow_writer` (consumer
-  only) may `INSERT`/`UPDATE` and *not* `DELETE`; `aow_reader` (api, agent,
-  enricher) may only `SELECT`. Enforced by grants, not convention.
+  only) may `INSERT`/`UPDATE`, plus `DELETE` on `events` only so it can remove
+  generated demo rows when demo mode ends; `aow_reader` (api, agent, enricher)
+  may only `SELECT`. Enforced by grants, not convention.
 * Secrets live only in a gitignored `.env`; `.env.example` is committed.
 * Only 8080 and 8000 are published, **and only on `127.0.0.1`** — see below.
 * **No container in the running stack can reach the Docker socket.** The one
@@ -648,8 +733,10 @@ Compose integration test against those images. That test checks snapshot →
 RabbitMQ → Postgres → API, stored suitability scores, and a correction through
 the outbox and queue into the audit history. It also accepts a record while
 Postgres is stopped, verifies its commit through a separate reader after
-recovery, and checks it survives a consumer restart exactly once. It uses a
-separate Compose project and removes its temporary volumes afterward. CI has
+recovery, and checks it survives consumer/database restart exactly once. It
+also recreates a confirmed outbox ID absent from both Postgres and the queue,
+then proves replay stores it once while an already-stored ID is skipped. It
+uses a separate Compose project and removes its temporary volumes afterward. CI has
 the internet; the runtime does not. The guard job enforces the offline model
 boundary.
 
@@ -729,7 +816,7 @@ you can run.
 | M6 | Runs on-prem without full internet | `backend` is `internal: true`; committed snapshot | `docker compose -f compose.tools.yml run --rm demos offline`, ideally with the host NIC down |
 | M7 | Agent answering varied questions from stored data | `services/agent/` | `docker compose -f compose.tools.yml run --rm demos questions` |
 | M8 | Tourism: history, places, sports events | `facts`, `places`, `events` tables | `docker compose -f compose.tools.yml run --rm demos questions` (Lisbon history, London sports) |
-| M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build and save a plan in the UI |
+| M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build, save and reopen a plan in the UI |
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
 | M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `docker compose -f compose.tools.yml run --rm demos no-data-loss` |
 | M12 | Update stored information | `PATCH /records/...`, a connected refresh, re-enrichment | `docker compose -f compose.tools.yml run --rm demos update` |
@@ -800,6 +887,11 @@ Stated, not implied:
   temperature and precipitation — never from wave height, swell or sea state.
   The score says whether the day is pleasant to be on the water, not whether
   the surf is any good, and no wave source was staged to say otherwise.
+* **No surf spots, dive sites or boat hire on record.** The places snapshot
+  names beaches and marinas, which is not the same claim, so “where can I surf
+  in Tel Aviv?” is answered with an explicit “I do not have a verified surf
+  spot,” never with a beach. A sourced surf-spot layer, carrying the same
+  `source` and `as_of` as every other row, is what would close this.
 * **The verified event set is seven rows, all in London.** That is a real
   coverage gap, not a display problem: a default run answers "none on record"
   for Rome, Lisbon, Tel Aviv and Reykjavík, and the trip planner has no events

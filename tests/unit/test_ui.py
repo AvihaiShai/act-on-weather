@@ -63,17 +63,19 @@ class FakeResponse:
 
 
 def _payload_for(url: str):
-    """Fixtures are keyed by the first path segment.
+    """Fixtures are keyed by the whole path, then by its first segment.
 
-    That is enough to serve `/weather/{city}` and `/records/{entity}/{id}` from
-    one entry each, and it keeps the fixture a record of shapes rather than of
-    a particular city's data.
+    The first segment alone serves `/weather/{city}` and `/records/{entity}/{id}`
+    from one entry each, and keeps the fixture a record of shapes rather than of
+    a particular city's data. The full path is tried first because
+    `/itineraries` and `/itineraries/{id}` return genuinely different shapes --
+    a list of titles and dates, and one plan with its days.
     """
-    path = urlparse(url).path
-    key = path.strip("/").split("/")[0]
-    if key not in FIXTURES:
-        raise AssertionError(f"the UI called {path}, which the fixture does not cover")
-    return FIXTURES[key]
+    path = urlparse(url).path.strip("/")
+    for key in (path, path.split("/")[0]):
+        if key in FIXTURES:
+            return FIXTURES[key]
+    raise AssertionError(f"the UI called /{path}, which the fixture does not cover")
 
 
 def _run(monkeypatch, *, offline=False) -> AppTest:
@@ -124,17 +126,29 @@ def test_the_places_map_renders_a_figure(app):
     assert map_tab.get("plotly_chart"), "the places map rendered no figure"
 
 
-def test_forecast_card_shows_next_city_local_date(app):
-    card = next(metric for metric in app.metric if metric.label.startswith("Next high"))
-    assert card.label == "Next high · 2026-09-24"
-    assert card.value == "33°C"
+def test_each_forecast_card_names_the_day_it_came_from(app):
+    """The four cards answer four different questions, so they land on four
+    different days. Asserting them together is what catches a regression to
+    reading all four off one row, which looked right only because the first
+    card happened to be the day the other three were silently using."""
+    cards = [
+        metric
+        for metric in app.metric
+        if metric.label.split(" · ")[0] in {"Warmest", "Coldest", "Next rain", "Windiest"}
+    ]
+    assert [(card.label, card.value) for card in cards] == [
+        ("Warmest · today", "33°C"),  # 33.3 on the 24th
+        ("Coldest · tomorrow", "17°C"),  # 17.2 on the 25th
+        ("Next rain", "None"),  # the fixture week is dry
+        ("Windiest · Mon 28 Sep", "20 km/h"),  # 19.6 on the 28th
+    ]
 
 
-def test_expired_forecast_has_no_next_card(monkeypatch):
+def test_expired_forecast_has_no_highlight_cards(monkeypatch):
     app = _run(monkeypatch)
     monkeypatch.setattr(forecast, "utc_now", lambda: datetime(2026, 9, 30, 12, tzinfo=UTC))
     app.run()
-    assert not any(metric.label.startswith("Next high") for metric in app.metric)
+    assert not any(metric.label.startswith("Warmest") for metric in app.metric)
     assert any("No current forecast" in warning.value for warning in app.warning)
 
 
@@ -162,3 +176,38 @@ def test_an_unreachable_api_is_reported_not_crashed(monkeypatch):
     at = _run(monkeypatch, offline=True)
     assert not at.exception, [e.value for e in at.exception]
     assert any("unreachable" in error.value for error in at.error)
+
+
+def test_a_saved_itinerary_can_be_reopened(app):
+    """The planner saved trips and then offered no way back into one: the list
+    rendered underneath a freshly built plan, so a stored itinerary was visible
+    and unopenable. The "Open" button is the way back, and it has to put the
+    stored days on screen, not just the title."""
+    buttons = [button for button in app.button if button.label == "Open"]
+    assert buttons, "the planner offers no way to reopen a saved itinerary"
+
+    reopened = buttons[0].click().run()
+    assert not reopened.exception, [element.value for element in reopened.exception]
+
+    text = " ".join(element.value for element in reopened.markdown)
+    assert "Two days in Lisbon" in text
+    assert "Walking tour" in text, "the stored days did not render"
+
+    captions = " ".join(element.value for element in reopened.caption)
+    assert "Saved itinerary" in captions
+    assert "revision 1" in captions
+
+
+def test_a_reopened_itinerary_is_renamed_rather_than_duplicated(app):
+    """Re-saving a stored plan would post a new row with a new id on every
+    click. The reopened plan offers the M12 patch path instead."""
+    reopened = next(button for button in app.button if button.label == "Open").click().run()
+    labels = [button.label for button in reopened.button]
+    assert "Rename this itinerary" in labels
+    assert "Save this itinerary" not in labels
+
+
+def test_the_saved_list_is_there_before_anything_is_built(app):
+    """It is the whole point of the section: a trip saved in an earlier session
+    has to be findable on arrival, with no plan in session state."""
+    assert any("Saved itineraries" in element.value for element in app.markdown)

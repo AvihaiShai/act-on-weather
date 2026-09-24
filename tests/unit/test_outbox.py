@@ -5,9 +5,14 @@ message twice does not duplicate it, and an accepted-but-unpublished record
 is still there after the process dies.
 """
 
+import sqlite3
+
+import pytest
+
 from services.common import config
 from services.common.envelope import Envelope
 from services.common.outbox import Outbox
+from services.common.reconcile import reconcile
 
 
 def envelope(city="rome"):
@@ -83,3 +88,55 @@ def test_accept_many_is_atomic(tmp_path):
     ids = box.accept_many([envelope("rome"), envelope("london")])
     assert len(ids) == 2
     assert box.counts()["pending"] == 2
+
+
+def test_reconcile_replays_only_published_missing_original_id(tmp_path):
+    box = Outbox(tmp_path / "outbox.sqlite3")
+    missing, stored = envelope("rome"), envelope("london")
+    for item in (missing, stored):
+        box.accept(item)
+    for row in box.unpublished():
+        box.mark_published(row["seq"])
+    sent = []
+
+    def publish(routing_key, body, message_id):
+        sent.append((routing_key, body, message_id))
+
+    report = reconcile(box, lambda ids: {stored.message_id}, publish)
+    assert report["missing_ids"] == [missing.message_id]
+    assert report["stored"] == 1
+    assert report["replayed"] == 1
+    assert sent == [(missing.routing_key, missing.to_bytes(), missing.message_id)]
+    assert box.status_of(missing.message_id)["published_at"] is not None
+
+
+def test_reconcile_does_not_replay_already_stored_id(tmp_path):
+    box = Outbox(tmp_path / "outbox.sqlite3")
+    item = envelope()
+    box.accept(item)
+    box.mark_published(next(box.unpublished())["seq"])
+    sent = []
+    report = reconcile(box, lambda ids: {item.message_id}, lambda *args: sent.append(args))
+    assert report["stored"] == 1
+    assert report["replayed"] == 0
+    assert sent == []
+
+
+def test_readonly_outbox_never_creates_a_missing_volume(tmp_path):
+    path = tmp_path / "missing.sqlite3"
+    with pytest.raises(sqlite3.OperationalError):
+        Outbox(path, readonly=True)
+    assert not path.exists()
+
+
+def test_reconcile_refuses_mismatched_envelope(tmp_path):
+    box = Outbox(tmp_path / "outbox.sqlite3")
+    item = envelope()
+    box.accept(item)
+    seq = next(box.unpublished())["seq"]
+    box.conn.execute("UPDATE outbox SET body = ? WHERE seq = ?", (envelope().to_bytes(), seq))
+    box.mark_published(seq)
+    sent = []
+    with pytest.raises(ValueError, match="mismatch"):
+        reconcile(box, lambda ids: set(), lambda *args: sent.append(args))
+    assert sent == []
