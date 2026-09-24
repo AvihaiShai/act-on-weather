@@ -141,11 +141,10 @@ def test_a_changed_window_is_a_new_delivery_and_an_unchanged_one_is_not():
         [envelope] = ingestor.envelopes_from(config.RK_EVENT, [payload], "snapshot")
         return envelope.message_id
 
-    assert envelope_id(row) == envelope_id(dict(row)), "the same row minted two ids"
-    shortened = {**row, "valid_until": "2026-10-01T18:00:00+00:00"}
-    assert envelope_id(shortened) != envelope_id(row), (
-        "a changed expiry reused the id, so the outbox would drop it as a replay"
-    )
+    as_shipped = envelope_id(row)
+    assert as_shipped == envelope_id(dict(row)), "the same row minted two ids"
+    shortened = envelope_id({**row, "valid_until": "2026-10-01T18:00:00+00:00"})
+    assert shortened != as_shipped, "a changed expiry reused the id; the outbox would drop it"
 
 
 def test_a_non_event_payload_is_passed_through_untouched():
