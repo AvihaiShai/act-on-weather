@@ -151,9 +151,12 @@ throwaway Compose project (`COMPOSE_PROJECT_NAME=aow-release-<run id>`),
 generated passwords and cleanup with `down --volumes --remove-orphans`.
 `install-offline.sh` itself runs `--no-build --pull never` and its own
 `scripts/release-smoke.py`; the workflow does not duplicate either command.
-The source for this gate is in `release.yml`, but no release run has yet
-validated the new second-daemon step. Earlier hosted release runs installed
-on the packaging daemon, so their passes cannot be cited as evidence for it.
+Release run [`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502)
+validated this second-daemon step for merge commit `b21885a`: the runner logged
+different engine IDs, an empty image and volume store before loading, complete
+archive verification for all 10 image aliases, and a passing data smoke.
+Earlier hosted release runs installed on the packaging daemon, so their passes
+do not supply this evidence.
 
 That smoke test asserts more than liveness, but not a deep functional check:
 it confirms `/health` is ok, `/coverage` reports the `weather` entity has
@@ -170,9 +173,9 @@ gate checks a clean image store and `--pull never`, but it does not cut host
 egress or prove a physical transfer. F10's manual rig in
 `docs/RELEASE-PROOF.md` §2 used a separate Docker engine with nftables
 blocking DNS, raw-IP TCP and HTTPS, tested from a container on a routable
-network. That rig was not separate physical hardware either. A successful
-future run of step 9 would add repeatable clean-engine install evidence for
-the exact tar built by that run; it would not replace the manual no-egress
+network. That rig was not separate physical hardware either. Run `36071276502`
+adds clean-engine install evidence for the exact tar built by that run; it does
+not replace the manual no-egress
 test or a drill on physically disconnected hardware.
 
 ## Operator procedure: staging machine

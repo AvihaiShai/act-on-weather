@@ -436,20 +436,19 @@ adding if this is ever run often.
   is re-run; the fault-injection exercise in §3 lists the migrations it actually
   ran, for exactly this reason. In particular, the current tree contains
   `004_itinerary_delete.sql` and `005_user_data_wipe.sql`; neither was in the
-  drilled A/B bundles. The local feature HEAD on 2026-09-25 was `f543f1e`,
-  while `main` was `6ab0711e83937423d7b5dbfe3ae49cb84bfbedb3`.
-  The feature HEAD's CI image-publishing job was skipped, so it has no
-  published image artifact from which to repackage the drill yet.
+  drilled A/B bundles. The newer release run `36071276502` validates a clean
+  single install on `b21885a`, but it does not repeat the A/B upgrade and
+  recovery drill for that commit.
 - **A real transfer medium.** See §2: the file-size, mode-bit and path
   properties are measured, the copy itself is not.
-- **The new per-release clean-engine gate has no CI result yet.** The current
-  `release.yml` source starts a second Docker daemon, requires a distinct
-  engine ID and zero images and volumes, sets
-  `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, and installs with `--pull never`.
-  Earlier hosted release runs used the packaging daemon, whose image content
-  could mask an incomplete archive. The new step remains unproven until these
-  uncommitted workflow edits merge and a release run succeeds. Its daemon is
-  on the connected hosted runner, so it does not close the physical air gap.
+- **The per-release clean-engine gate passed for `b21885a`.** Release run
+  [`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502)
+  started a second Docker daemon, verified a distinct engine ID and zero images
+  and volumes, set `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, installed with
+  `--pull never`, and passed the data smoke. Earlier hosted runs used the
+  packaging daemon, whose image content could mask an incomplete archive.
+  The new daemon is still on a connected hosted runner, so this does not
+  establish a physical air gap.
 
 ### Branch protection checked separately
 
