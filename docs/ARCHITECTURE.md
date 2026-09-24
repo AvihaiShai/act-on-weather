@@ -102,8 +102,18 @@ snapshot; generated event samples are loaded only with the demo overlay.
 ## Follow one record: the data flow
 
 The same delivery path handles forecast rows, places, facts, events, user
-corrections, saved itineraries, and generated wording. The producer differs;
+corrections, saved itineraries, itinerary removals, and generated wording. The producer differs;
 the durable handoff does not.
+
+The **Wipe all user data** control follows that same queue. The consumer reads
+the ingestor's outbox volume without modifying it, verifies that every
+committed source envelope is present, then rebuilds collected rows and rule
+scores in one transaction. This removes user-created rows and reverts manual
+corrections while keeping connected source updates. A missing source envelope
+aborts the wipe before it deletes anything.
+The API clears its prior user-write outbox payloads after commit; the enricher
+discards model output accepted before the wipe and skips results from a model
+call that crossed the wipe boundary.
 
 ```mermaid
 sequenceDiagram

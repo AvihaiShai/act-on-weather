@@ -4,7 +4,7 @@ Reads go straight to Postgres as `aow_reader`, through `common.queries` -- the
 same functions the agent uses, so a number in the UI and a number in an answer
 cannot disagree.
 
-Writes do not touch the database at all. A POST or PATCH is fsynced into this
+Writes do not touch the database at all. A POST, PATCH or DELETE is fsynced into this
 service's own outbox and answered `202 Accepted` with the `message_id`; a
 background thread drains the outbox to RabbitMQ, and the consumer stores it.
 That is M4 taken literally -- user edits travel the same path as collected data
@@ -21,7 +21,8 @@ import time
 import uuid
 from datetime import UTC, date, datetime
 from functools import lru_cache
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -80,9 +81,27 @@ def _publisher_loop() -> None:
                 metrics.MESSAGES_PUBLISHED.labels(
                     service="api", routing_key=metrics.safe_routing_key(row["routing_key"])
                 ).inc()
+            _purge_completed_wipes()
         except Exception as exc:  # noqa: BLE001 - the loop must never die
             log.exception("publisher loop error: %s", exc)
         time.sleep(2)
+
+
+def _purge_completed_wipes() -> None:
+    with _outbox_lock:
+        wipes = outbox.conn.execute(
+            "SELECT seq, message_id FROM outbox"
+            " WHERE routing_key = ? AND published_at IS NOT NULL ORDER BY seq",
+            (config.RK_USER_DATA_WIPE,),
+        ).fetchall()
+    for wipe in wipes:
+        stored = pool.conn.execute(
+            "SELECT 1 FROM ingest_log WHERE message_id = %s AND routing_key = %s",
+            (wipe["message_id"], config.RK_USER_DATA_WIPE),
+        ).fetchone()
+        if stored:
+            with _outbox_lock:
+                outbox.purge_published_through(wipe["seq"])
 
 
 @app.on_event("startup")
@@ -330,6 +349,57 @@ class RequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+@app.get("/user-data")
+def user_data_summary() -> dict[str, int]:
+    row = pool.conn.execute(
+        "SELECT (SELECT COUNT(*) FROM itineraries) AS saved_itineraries,"
+        " (SELECT COUNT(*) FROM recommendations WHERE requested) AS requested_activities,"
+        " (SELECT COUNT(*) FROM ingest_log WHERE routing_key = 'record.patch'"
+        "    AND source = 'api' AND processed_at > COALESCE("
+        "      (SELECT MAX(processed_at) FROM ingest_log"
+        "       WHERE routing_key = 'user_data.wipe'), '-infinity'::timestamptz))"
+        " AS manual_corrections"
+    ).fetchone()
+    return dict(row)
+
+
+class UserDataWipeIn(RequestIn):
+    confirm: Literal["WIPE"]
+
+
+@app.post("/user-data/wipe", status_code=202)
+def request_user_data_wipe(body: UserDataWipeIn) -> dict[str, Any]:
+    """Queue a rebuild from collected records, removing all user changes."""
+    message_id = accept(config.RK_USER_DATA_WIPE, {"requested_by": "api"})
+    return {"accepted": True, "message_id": message_id}
+
+
+@app.get("/user-data/wipe/{message_id}")
+def user_data_wipe_status(message_id: str) -> dict[str, str]:
+    stored = pool.conn.execute(
+        "SELECT processed_at FROM ingest_log WHERE message_id = %s AND routing_key = %s",
+        (message_id, config.RK_USER_DATA_WIPE),
+    ).fetchone()
+    with _outbox_lock:
+        pending = outbox.status_of(message_id)
+    if stored:
+        model_path = Path("/model-outbox/outbox.sqlite3")
+        model_pending = False
+        if model_path.exists():
+            with Outbox(model_path, readonly=True) as model_box:
+                model_pending = (
+                    model_box.conn.execute(
+                        "SELECT 1 FROM outbox WHERE accepted_at <= ? LIMIT 1",
+                        (stored["processed_at"].isoformat(),),
+                    ).fetchone()
+                    is not None
+                )
+        return {"status": "complete" if pending is None and not model_pending else "finishing"}
+    if pending and pending["routing_key"] == config.RK_USER_DATA_WIPE:
+        return {"status": "pending"}
+    raise HTTPException(404, "no such wipe request")
+
+
 class RecommendationRequestIn(RequestIn):
     city: str
     forecast_date: date
@@ -446,6 +516,13 @@ def save_itinerary(body: ItineraryIn) -> dict[str, Any]:
         },
         city=body.city,
     )
+    return {"accepted": True, "message_id": message_id, "id": itinerary_id}
+
+
+@app.delete("/itineraries/{itinerary_id}", status_code=202)
+def delete_itinerary(itinerary_id: str) -> dict[str, Any]:
+    """Queue removal of a saved trip and its revision history."""
+    message_id = accept(config.RK_ITINERARY_DELETE, {"id": itinerary_id})
     return {"accepted": True, "message_id": message_id, "id": itinerary_id}
 
 

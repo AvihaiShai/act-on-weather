@@ -27,6 +27,7 @@ help:
 	@echo "  make up-demo        same, plus 45 labelled sample events in all five cities"
 	@echo "  make ps / logs      status / follow the logs"
 	@echo "  make down           stop"
+	@echo "  make clean          remove this project's database, queue and outbox volumes"
 	@echo ""
 	@echo "Proofs:"
 	@echo "  make test           unit tests, in a container, no network"
@@ -118,7 +119,7 @@ logs:
 
 clean:
 	$(COMPOSE) down -v
-	@echo "Volumes removed. The next 'make up' starts from the committed snapshot."
+	@echo "Local data removed. The next 'make up' starts from the committed snapshot."
 
 # ------------------------------------------------------------------ tests --
 test:

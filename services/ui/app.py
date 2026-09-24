@@ -13,9 +13,8 @@ Writes are accepted, not applied: a save or an edit returns 202 and a
 message_id, and the page says so rather than pretending the row is already
 stored.
 
-Layout note: `st.tabs` executes every tab body on every rerun, not just the
-visible one. That is why the read helpers below are cached -- without it, one
-click would fire every query in the app.
+Only the selected page is rendered. Navigation is stored in the URL so a
+reload or bookmark returns to the same page.
 """
 
 from __future__ import annotations
@@ -57,13 +56,13 @@ theme.apply()
 def api_get(path: str, **params):
     try:
         response = requests.get(f"{API}{path}", params=params, timeout=TIMEOUT)
-    except requests.RequestException as exc:
-        st.error(f"The API is unreachable: {exc}")
+    except requests.RequestException:
+        st.error("The weather service is unreachable. Please try again shortly.")
         st.stop()
     if response.status_code == 404:
         return None
     if not response.ok:
-        st.error(f"{path} returned {response.status_code}: {response.text[:300]}")
+        st.error("The weather service could not load this information. Please try again.")
         st.stop()
     return response.json()
 
@@ -71,18 +70,16 @@ def api_get(path: str, **params):
 def api_send(method: str, path: str, payload):
     try:
         response = requests.request(method, f"{API}{path}", json=payload, timeout=TIMEOUT)
-    except requests.RequestException as exc:
-        st.error(f"The API is unreachable: {exc}")
+    except requests.RequestException:
+        st.error("The weather service is unreachable. Please try again shortly.")
         return None
     if not response.ok:
-        st.error(f"{path} returned {response.status_code}: {response.text[:300]}")
+        st.error("Your change could not be saved. Please try again.")
         return None
     return response.json()
 
 
-# Cached because every tab body runs on every rerun (see the module docstring).
-# The TTLs are short: this is a live view of a pipeline, and a stale number
-# here would undercut the whole point of the as-of stamps.
+# Keep short-lived API reads current during routine interactions.
 cached_get = st.cache_data(ttl=20, show_spinner=False)(api_get)
 
 
@@ -104,7 +101,7 @@ def fmt_ts(value) -> str:
         return str(value)
 
 
-def header(cov, health) -> None:
+def header(cov) -> None:
     """The single most important element in the UI: it is what stops a stale
     snapshot from looking like live data."""
     first, last = cov.get("weather_first_date"), cov.get("weather_last_date")
@@ -142,19 +139,15 @@ def header(cov, health) -> None:
         f"""
         <div class="aow-hero">
           <h1>act-on-weather</h1>
-          <p>Five cities, one stored forecast, and a local model that words
-             recommendations it is not allowed to decide. Everything on this
-             page comes from stored data &mdash; nothing is fetched from the
-             internet at runtime.</p>
+          <p>Explore the forecast, find a good day to go out, and plan around
+             the weather. The dates below show when this information was last updated.</p>
           {theme.chips([
               ("Forecast covers", f"{first} → {last}"),
               ("Weather as of", fmt_ts(cov.get("weather_as_of"))),
               ("Cities", str(len(cov["cities"]))),
               ("Places", rows_of("places")),
-              ("Background facts", rows_of("facts")),
+              ("City facts", rows_of("facts")),
               ("Events", events_chip()),
-              ("API", health["status"]),
-              ("Database", "up" if health["database"] else "down"),
           ])}
         </div>
         """,
@@ -219,8 +212,8 @@ def page_forecast(cov) -> None:
     for column, card in zip(columns, forecast.highlights(window, today), strict=True):
         column.metric(card["label"], card["value"], help=card["help"])
     st.caption(
-        f"Cards cover the {len(window)} stored day(s) from {window[0]['forecast_date']} "
-        f"to {window[-1]['forecast_date']}; each names the day it came from."
+        f"Showing {len(window)} forecast days, {window[0]['forecast_date']} "
+        f"to {window[-1]['forecast_date']}."
     )
 
     figure = go.Figure()
@@ -266,10 +259,7 @@ def page_forecast(cov) -> None:
     )
     st.plotly_chart(theme.transparent(figure, 420), width="stretch")
 
-    st.caption(
-        f"Provider: {rows[0]['provider']} · row as of {fmt_ts(rows[0]['as_of'])} "
-        f"· revision {rows[0]['revision']}"
-    )
+    st.caption(f"Source: {rows[0]['provider']} · Updated {fmt_ts(rows[0]['as_of'])}")
     with st.expander("The stored rows"):
         st.dataframe(
             frame[
@@ -285,7 +275,20 @@ def page_forecast(cov) -> None:
                     "as_of",
                     "revision",
                 ]
-            ],
+            ].rename(
+                columns={
+                    "forecast_date": "Date",
+                    "temp_min_c": "Low (°C)",
+                    "temp_max_c": "High (°C)",
+                    "precip_mm": "Rain (mm)",
+                    "precip_prob": "Rain chance",
+                    "wind_kmh": "Wind (km/h)",
+                    "uv_index": "UV index",
+                    "sunshine_hours": "Sunshine (hours)",
+                    "as_of": "Updated",
+                    "revision": "Version",
+                }
+            ),
             hide_index=True,
             width="stretch",
         )
@@ -378,9 +381,8 @@ def coastal_points_caption(cities: list[dict]) -> str:
 
 def page_heatmap(cov) -> None:
     st.caption(
-        "Every score here is computed by the rule engine in "
-        "`services/common/rules.py` from the stored weather. The local model "
-        "writes the sentence under each score; it never decides the score."
+        "Compare how the forecast suits each activity. Higher scores mean better "
+        "conditions; the notes below explain each recommendation."
     )
     scope = st.radio(
         "Show", ["One city, every activity", "One activity, every city"], horizontal=True
@@ -392,12 +394,7 @@ def page_heatmap(cov) -> None:
         index, columns = "activity_label", "forecast_date"
         city_row = next(c for c in cov["cities"] if c["id"] == city)
         if not city_row["coastal"]:
-            st.caption(
-                "This city is marked inland, so surfing, swimming, the beach, "
-                "fishing and a boat ride are not scored for it at all. A score "
-                "for surf, derived from an inland forecast, would be a number "
-                "the system cannot stand behind."
-            )
+            st.caption("Water activities are unavailable here because this city is inland.")
         elif any(row["activity"] in sea_state_activities() for row in rows or []):
             # Having a coast is not knowing what the sea is doing, and the
             # table below is where a reader would otherwise assume it is.
@@ -437,33 +434,40 @@ def page_heatmap(cov) -> None:
             counts[row["status"]] += 1
     if counts["pending"]:
         st.info(
-            f"{counts['pending']} of {len(rows)} scores are still waiting for the local "
-            "model to word them. The scores themselves are already final."
+            f"Notes are still being prepared for {counts['pending']} of {len(rows)} "
+            "scores. The scores are ready to use."
         )
     if counts["deferred"]:
         st.caption(
-            f"{counts['deferred']} rows are **deferred**: the rule engine scored them and "
-            "they are charted above, but the local model was not asked to word them. "
-            "Each day's top-rated activities are worded first, because on CPU the model "
-            "is the slow part and the score is the product. Ask about one below, or "
-            "re-word a whole day from **Update data**, to pull it into the queue."
+            f"{counts['deferred']} activities have scores without written notes. "
+            "You can request a note for a specific activity below."
         )
     if counts["failed"]:
         st.warning(f"{counts['failed']} rows are marked failed; the reason is in the table.")
 
-    st.markdown("**What the model wrote about these scores**")
+    st.markdown("**Recommendation notes**")
     ready = [r for r in rows if r.get("text")]
     if ready:
         st.dataframe(
             pd.DataFrame(ready)[
                 ["forecast_date", "city_id", "activity_label", "score", "band", "text", "model"]
-            ],
+            ].rename(
+                columns={
+                    "forecast_date": "Date",
+                    "city_id": "City",
+                    "activity_label": "Activity",
+                    "score": "Score",
+                    "band": "Rating",
+                    "text": "Recommendation",
+                    "model": "Written by",
+                }
+            ),
             hide_index=True,
             width="stretch",
             height=260,
         )
     else:
-        st.caption("Nothing worded yet.")
+        st.caption("No recommendation notes yet.")
 
     ask_for_activity(cov)
 
@@ -473,11 +477,8 @@ def ask_for_activity(cov) -> None:
     st.divider()
     st.markdown("**Ask about a different activity**")
     st.caption(
-        "Anything you type is scored against the stored weather and worded by the "
-        "local model. If it is already in the catalogue it is scored by its own "
-        "rule and promoted to the front of the wording queue; if it is not, it is "
-        "scored against general outdoor comfort and says so. Either way it goes "
-        "through the queue like every other record."
+        "Try an activity that is not listed above. We will check it against the "
+        "forecast and add a short explanation."
     )
     first, last = date_bounds(cov)
     left, middle, right = st.columns([2, 2, 3])
@@ -495,8 +496,7 @@ def ask_for_activity(cov) -> None:
             {"city": city, "forecast_date": str(day), "activity": activity},
         )
         if result:
-            st.success(f"Accepted as `{result['message_id']}`. It is in the queue now.")
-            st.caption("Refresh in a few seconds; it appears in the table above.")
+            st.success("Request received. Your result will appear above when it is ready.")
 
 
 # --------------------------------------------------------- 3. the agent ----
@@ -504,10 +504,8 @@ def ask_for_activity(cov) -> None:
 
 def page_chat(cov) -> None:
     st.caption(
-        "The agent resolves the city, the dates and the coverage window in code, "
-        "runs read-only queries, and makes one call to the local model to phrase "
-        "the rows it retrieved. A question about a date outside the stored window "
-        "is refused without calling the model at all."
+        "Ask about weather, activities, or places in the five covered cities. "
+        "Answers use the stored information and show when it was updated."
     )
     examples = (
         "What is the weather tomorrow in Rome?",
@@ -534,16 +532,10 @@ def page_chat(cov) -> None:
         if answer.get("note"):
             st.warning(answer["note"])
         st.caption(answer["as_of"] or "no data behind this answer")
-    with st.expander("What it actually looked at"):
-        st.json(
-            {
-                "city": answer["city"],
-                "dates": answer["dates"],
-                "intents": answer["intents"],
-                "llm_called": answer["llm_called"],
-                "rows_used": answer["rows_used"],
-            }
-        )
+    with st.expander("Answer details"):
+        st.write(f"City: {answer['city'] or 'not specified'}")
+        st.write(f"Dates: {', '.join(map(str, answer['dates'])) or 'not specified'}")
+        st.write(f"Records consulted: {answer['rows_used']}")
 
 
 # ------------------------------------------------------- 4. trip planner ----
@@ -621,7 +613,7 @@ def page_planner(cov) -> None:
         render_plan(plan, cov)
 
     st.divider()
-    render_saved_itineraries(city, cov)
+    render_saved_itineraries(cov)
 
 
 def render_plan(plan: dict, cov) -> None:
@@ -636,8 +628,7 @@ def render_plan(plan: dict, cov) -> None:
     st.markdown(f"### {plan['title']}")
     if saved:
         st.caption(
-            f"Saved itinerary `{saved['id']}` · revision {saved['revision']} · "
-            f"last changed {fmt_ts(saved['updated_at'])} · "
+            f"Saved itinerary · Updated {fmt_ts(saved['updated_at'])} · "
             f"scored from weather as of {fmt_ts(plan.get('as_of'))}"
         )
         render_plan_staleness(plan, cov)
@@ -709,11 +700,7 @@ def render_save(plan: dict) -> None:
             },
         )
         if saved:
-            st.success(f"Accepted as `{saved['message_id']}` — id `{saved['id']}`.")
-            st.caption(
-                "It travels through the queue like every other record, so it "
-                "appears below once the consumer has stored it."
-            )
+            st.success("Save requested. Your itinerary will appear below shortly.")
 
 
 def render_rename(plan: dict, saved: dict) -> None:
@@ -727,14 +714,10 @@ def render_rename(plan: dict, saved: dict) -> None:
     if st.button("Rename this itinerary", disabled=title.strip() == plan["title"]):
         result = api_send("PATCH", f"/records/itineraries/{saved['id']}", {"title": title.strip()})
         if result:
-            st.success(f"Accepted as `{result['message_id']}`.")
-            st.caption(
-                "Same queue as every other write, so the new title and revision "
-                "appear once the consumer has applied it."
-            )
+            st.success("Rename requested. The new title will appear shortly.")
 
 
-def render_saved_itineraries(city: str, cov) -> None:
+def render_saved_itineraries(cov) -> None:
     """The way back into a stored trip.
 
     This list used to render only underneath a freshly built plan, so a saved
@@ -743,19 +726,16 @@ def render_saved_itineraries(city: str, cov) -> None:
     `GET /itineraries/{id}` -- the list endpoint carries titles and dates only.
     """
     st.markdown("**Saved itineraries**")
-    rows = cached_get("/itineraries", city=city) or []
+    rows = cached_get("/itineraries") or []
     if not rows:
-        st.caption(
-            "Nothing stored for this city yet. Build an itinerary above and save it; "
-            "it appears here once the consumer has taken it off the queue."
-        )
+        st.caption("No saved itineraries yet. Build one above to get started.")
         return
 
     by_id = {row["id"]: row for row in rows}
 
     def label(itinerary_id: str) -> str:
         row = by_id[itinerary_id]
-        return f"{row['title']} · {row['start_date']} → {row['end_date']} · rev {row['revision']}"
+        return f"{row['title']} · {row['city_id']} · {row['start_date']} → {row['end_date']}"
 
     left, right = st.columns([5, 1], vertical_alignment="bottom")
     chosen = left.selectbox(
@@ -769,7 +749,20 @@ def render_saved_itineraries(city: str, cov) -> None:
             st.session_state["plan"] = plan_from_saved(row, cov)
             st.rerun()
         else:
-            st.error("That itinerary is no longer in the database.")
+            st.error("That itinerary is no longer available.")
+
+    confirmed = st.checkbox(
+        "Confirm removal of this saved itinerary and its edit history",
+        key=f"remove_confirm_{chosen}",
+    )
+    if st.button("Delete selected saved itinerary", disabled=not confirmed):
+        result = api_send("DELETE", f"/itineraries/{chosen}", None)
+        if result:
+            plan = st.session_state.get("plan") or {}
+            if (plan.get("saved") or {}).get("id") == chosen:
+                st.session_state.pop("plan", None)
+            cached_get.clear()
+            st.success("Removal requested. The saved itinerary will disappear shortly.")
 
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
@@ -1103,12 +1096,10 @@ def page_places_map(cov) -> None:
     st.plotly_chart(figure, width="stretch", config={"scrollZoom": True})
     st.caption(
         f"{len(shown)} of {len(places)} stored places shown. "
-        "Pan or zoom to inspect markers. The backdrop is a staged "
-        "OpenStreetMap extract — © OpenStreetMap contributors, ODbL — covering "
-        "20 km around the city centre: main and secondary streets, rivers, "
-        "coastline, water and parks, simplified to about 12 m. Residential streets, "
-        "buildings and labels are not in it, and it gives no route directions."
-        + ("" if base else " No extract is staged for this city.")
+        "Pan or zoom to inspect markers. The map covers approximately 20 km "
+        "around the city centre and does not provide directions. "
+        "Map data © OpenStreetMap contributors, ODbL."
+        + ("" if base else " A background map is unavailable for this city.")
     )
     st.dataframe(
         pd.DataFrame(
@@ -1132,17 +1123,15 @@ def page_update(cov) -> None:
     no method, so there are three, and this tab is where they live. Two of them
     work with no connectivity at all; the third is the one thing in the system
     that cannot."""
-    st.caption(
-        "Three ways stored data changes. None of them writes to the database "
-        "here: every one is accepted, published to the queue, and applied by the "
-        "consumer — the same path a fetched record takes."
-    )
+    st.caption("Check the latest forecast, correct a record, or refresh a recommendation note.")
+    render_user_data_wipe()
+    st.divider()
 
     refresh_tab, correct_tab, reword_tab = st.tabs(
         [
             "1 · Operator refresh (connected)",
             "2 · Correct a record",
-            "3 · Re-word with the model",
+            "3 · Refresh recommendation notes",
         ]
     )
 
@@ -1253,11 +1242,40 @@ def render_refresh(cov) -> None:
             "terminal, skips it too."
         )
 
-    st.info(
-        "Offline, this is deliberately the one thing that does not work. The system "
-        "keeps answering from what it holds and refuses dates outside the stored "
-        "window rather than guessing at them."
+
+def render_user_data_wipe() -> None:
+    st.markdown("### Wipe all user data")
+    st.caption(
+        "Remove every saved itinerary, visitor requested activity, manual correction "
+        "and edit history. Collected weather, places, facts and events are restored "
+        "from their source records, including connected updates."
     )
+    counts = api_get("/user-data") or {}
+    st.write(
+        f"Currently: {counts.get('saved_itineraries', 0)} saved itineraries, "
+        f"{counts.get('requested_activities', 0)} requested activities, "
+        f"{counts.get('manual_corrections', 0)} manual corrections."
+    )
+    confirmation = st.text_input("Type WIPE to confirm", key="wipe_user_data_confirm")
+    if st.button("Wipe all user data", disabled=confirmation != "WIPE"):
+        result = api_send("POST", "/user-data/wipe", {"confirm": "WIPE"})
+        if result:
+            st.session_state["wipe_message_id"] = result["message_id"]
+            st.info("Wipe accepted. It will finish after earlier queued writes are applied.")
+
+    message_id = st.session_state.get("wipe_message_id")
+    if message_id:
+        status = api_get(f"/user-data/wipe/{message_id}") or {}
+        if status.get("status") == "complete":
+            for key in ("plan", "question", "answer", "last_patch"):
+                st.session_state.pop(key, None)
+            cached_get.clear()
+            st.session_state.pop("wipe_message_id", None)
+            st.success("User data wiped. Collected records remain available.")
+        else:
+            st.info(f"Wipe status: {status.get('status', 'pending')}.")
+            if st.button("Check wipe status"):
+                st.rerun()
 
 
 OUTCOMES = {
@@ -1456,7 +1474,7 @@ def freshness_table(cov) -> pd.DataFrame:
 
 
 def render_correction(cov) -> None:
-    st.markdown("**Fix a stored record.** Works air-gapped.")
+    st.markdown("**Correct a place, fact, or event**")
     city = city_picker(cov, "rec_city")
     entity = st.selectbox("Record type", ["places", "facts", "events"])
     rows = cached_get(f"/{entity}", city=city, limit=200) or []
@@ -1464,7 +1482,7 @@ def render_correction(cov) -> None:
         st.warning(f"No {entity} on record for that city.")
         return
 
-    labels = {f"{r.get('name') or r.get('title')} (rev {r['revision']})": r for r in rows}
+    labels = {f"{r.get('name') or r.get('title')} (version {r['revision']})": r for r in rows}
     chosen = labels[st.selectbox("Record", list(labels))]
     field = st.selectbox(
         "Field",
@@ -1479,31 +1497,27 @@ def render_correction(cov) -> None:
     if st.button("Submit the correction", type="primary"):
         result = api_send("PATCH", f"/records/{entity}/{chosen['id']}", {field: value})
         if result:
-            st.success(f"Accepted as `{result['message_id']}`.")
+            st.success("Correction received. The updated record will appear shortly.")
             st.session_state["last_patch"] = (entity, chosen["id"], result["message_id"])
 
     last = st.session_state.get("last_patch")
     if last:
         entity_name, row_id, message_id = last
         st.divider()
-        st.markdown("**Where that edit got to**")
+        st.markdown("**Correction status**")
         status = api_get(f"/outbox/{message_id}")
         if status:
-            st.json(status)
+            st.write(f"Status: {status.get('status', 'pending')}")
         history = api_get(f"/records/{entity_name}/{row_id}/history") or []
         if history:
-            st.markdown(f"**History for `{row_id}`** — {len(history)} revision(s)")
+            st.markdown(f"**Previous versions** — {len(history)}")
             for item in history:
-                st.caption(f"revision {item['revision']} at {fmt_ts(item['changed_at'])}")
+                st.caption(f"Version {item['revision']} · {fmt_ts(item['changed_at'])}")
 
 
 def render_reenrich(cov) -> None:
-    st.markdown("**Ask the local model to re-word stored recommendations.** Works air-gapped.")
-    st.caption(
-        "Scores are untouched — they are the rule engine's output, and only a "
-        "weather refresh changes them. This resets the wording, and the enricher "
-        "picks the rows up on its next poll."
-    )
+    st.markdown("**Refresh recommendation notes**")
+    st.caption("Update the written explanation for an activity. The weather score stays the same.")
 
     city = city_picker(cov, "reenrich_city")
     status = cached_get("/enrichment", city=city) or {"counts": {}}
@@ -1514,9 +1528,8 @@ def render_reenrich(cov) -> None:
     columns[2].metric("Deferred", counts.get("deferred", 0))
     columns[3].metric("Failed", counts.get("failed", 0))
     st.caption(
-        f"The consumer sends the top {status.get('top_n_worded_per_day', '?')} "
-        "activities per day to the model and defers the rest. Deferred rows are "
-        "scored and charted; they were simply never queued for prose."
+        "Some scored activities may not have a written note yet. You can include "
+        "them in this update."
     )
 
     first, last = date_bounds(cov)
@@ -1532,7 +1545,7 @@ def render_reenrich(cov) -> None:
         include_deferred = st.checkbox(
             "Include deferred activities",
             value=True,
-            help="Pulls in the activities the consumer ranked out of the wording queue.",
+            help="Also prepare notes for activities that currently show a score only.",
         )
 
     if st.button("Queue the re-wording", type="primary"):
@@ -1546,11 +1559,8 @@ def render_reenrich(cov) -> None:
             },
         )
         if result:
-            st.success(f"Accepted as `{result['message_id']}`. It is in the queue now.")
-            st.caption(
-                "On CPU the model takes a few seconds per row, so a whole city is a "
-                "few minutes. Watch the counters above."
-            )
+            st.success("Update requested. New notes will appear when ready.")
+            st.caption("A whole city may take a few minutes. Check the counts above for progress.")
 
 
 # ------------------------------------------------------ 6. data coverage ----
@@ -1590,8 +1600,8 @@ def page_coverage(cov) -> None:
         width="stretch",
     )
     st.caption(
-        "`not date-scoped` is not a gap: a museum is not valid between two dates. "
-        "Those rows are stamped with the as-of of the fetch that collected them."
+        "Places and background facts are updated as collections, so they do not "
+        "have a start and end date."
     )
 
     freshness = cov.get("event_freshness") or {}
@@ -1673,20 +1683,15 @@ def page_coverage(cov) -> None:
         width="stretch",
         height=420,
     )
-    st.caption(
-        "Rows with `in the catalogue` false were typed in by a user on the "
-        "Suitability tab and scored against general outdoor comfort, not against a "
-        "rule tuned for them. The answer says so wherever they appear."
-    )
+    st.caption("Activities added by visitors use a general outdoor comfort score.")
 
     st.markdown("**Sources and licences**")
     st.markdown(
         "- **Weather** — Open-Meteo forecast API, CC BY 4.0, no API key\n"
         "- **Places** — Wikidata SPARQL, CC0 (OpenStreetMap via Overpass, ODbL, "
         "when selected at staging time)\n"
-        "- **Places map backdrop** — a 20 km OpenStreetMap extract per city, "
-        "© OpenStreetMap contributors, ODbL, staged into `data/map/` and read "
-        "from this image; plus Natural Earth 1:10m coastline, public domain\n"
+        "- **Places map backdrop** — OpenStreetMap contributors, ODbL; "
+        "Natural Earth coastline, public domain\n"
         "- **Background facts** — Wikipedia REST summaries, CC BY-SA 4.0: the city "
         "article plus one article per venue, resolved through its Wikidata sitelink\n"
         "- **Events (verified)** — `data/events.seed.jsonl`, hand-verified real "
@@ -1707,31 +1712,85 @@ def page_coverage(cov) -> None:
 
 # ---------------------------------------------------------------- layout ----
 
-TABS = {
-    "\N{SUN BEHIND CLOUD}️  Forecast": page_forecast,
-    "\N{DIRECT HIT}  Suitability": page_heatmap,
-    "\N{COMPASS}  Trip planner": page_planner,
-    "\N{WORLD MAP}  Places map": page_places_map,
-    "\N{SPEECH BALLOON}  Ask the agent": page_chat,
-    "\N{ANTICLOCKWISE DOWNWARDS AND UPWARDS OPEN CIRCLE ARROWS}  Update data": page_update,
-    "\N{BAR CHART}  Data coverage": page_coverage,
+PAGES = {
+    "forecast": ("☀  Forecast", page_forecast),
+    "suitability": ("◎  Suitability", page_heatmap),
+    "trip-planner": ("◇  Trip planner", page_planner),
+    "places-map": ("⌖  Places map", page_places_map),
+    "ask-the-agent": ("✦  Ask the agent", page_chat),
+    "update-data": ("↻  Update data", page_update),
+    "data-coverage": ("▥  Data coverage", page_coverage),
 }
+
+
+def remember_page() -> None:
+    page = st.session_state["page"]
+    st.query_params["page"] = page
+    st.session_state["_last_query_page"] = page
+
+
+requested_page = st.query_params.get("page", "forecast")
+if requested_page not in PAGES:
+    requested_page = "forecast"
+if requested_page != st.session_state.get("_last_query_page"):
+    st.session_state["page"] = requested_page
+st.session_state["_last_query_page"] = requested_page
+
+with st.container(key="main_nav"):
+    selected_page = st.radio(
+        "Main navigation",
+        list(PAGES),
+        format_func=lambda page: PAGES[page][0],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="page",
+        on_change=remember_page,
+    )
 
 cov = coverage()
 health = cached_get("/health")
-header(cov, health)
+header(cov)
 
-for tab, render in zip(st.tabs(list(TABS)), TABS.values(), strict=True):
-    with tab:
-        render(cov)
+PAGES[selected_page][1](cov)
 
 st.divider()
+
+
+def stored_state(cov, health) -> tuple:
+    """What "anything new?" means here: how many rows of each kind are stored
+    and how old each kind is, plus how many accepted writes are still in
+    flight. Row counts alone would miss a correction, which replaces a value
+    without adding a row, so the as-of stamp goes in too."""
+    return (
+        tuple(sorted((e["entity"], e["rows"], str(e["as_of"])) for e in cov["entities"])),
+        health["outbox"]["pending"],
+    )
+
+
+pending = health["outbox"]["pending"]
+state = stored_state(cov, health)
+
+# The button clears a cache and reruns. Almost always the screen it redraws is
+# identical, so without a word back the click reads as a dead button. This is
+# the pass after that rerun: compare what was on screen when it was pressed
+# with what was just read, and say which it was.
+was = st.session_state.pop("checked_against", None)
+if was is not None:
+    if was != state:
+        st.toast("New data loaded.")
+    elif pending:
+        st.toast(f"Nothing new yet. {pending} update(s) still in progress.")
+    else:
+        st.toast("Checked. Everything on screen is current.")
+
 left, right = st.columns([4, 1])
+checked_at = st.session_state.get("checked_at")
 left.caption(
-    f"Outbox: {health['outbox']['pending']} pending of {health['outbox']['total']} accepted "
-    "· every write is accepted to a durable outbox before it is answered, "
-    "and applied by the consumer after the queue delivers it."
+    f"Updates in progress: {pending}"
+    + (f" · last checked {checked_at.strftime('%H:%M UTC')}" if checked_at else "")
 )
-if right.button("Reload from the API", width="stretch"):
+if right.button("Check for updates", width="stretch"):
+    st.session_state["checked_against"] = state
+    st.session_state["checked_at"] = forecast.utc_now()
     st.cache_data.clear()
     st.rerun()

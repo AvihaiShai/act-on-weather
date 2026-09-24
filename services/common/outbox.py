@@ -64,6 +64,12 @@ class Outbox:
     def close(self) -> None:
         self.conn.close()
 
+    def __enter__(self) -> Outbox:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
     # -- producer side ------------------------------------------------------
     def accept(self, envelope: Envelope) -> str:
         """Durably accept one record. Returns its message_id.
@@ -119,6 +125,24 @@ class Outbox:
             "UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE seq = ?",
             (error[:500], seq),
         )
+
+    def purge_published_through(self, seq: int) -> None:
+        """Erase accepted API payloads after a committed user-data wipe."""
+        pending = self.conn.execute(
+            "SELECT COUNT(*) FROM outbox WHERE seq <= ? AND published_at IS NULL", (seq,)
+        ).fetchone()[0]
+        if pending:
+            raise RuntimeError("cannot purge an unpublished outbox envelope")
+        self.conn.execute("PRAGMA secure_delete=ON")
+        self.conn.execute("DELETE FROM outbox WHERE seq <= ?", (seq,))
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def purge_accepted_through(self, accepted_at: str) -> int:
+        """Discard pre-wipe model output; rebuilt scores will be worded again."""
+        self.conn.execute("PRAGMA secure_delete=ON")
+        cur = self.conn.execute("DELETE FROM outbox WHERE accepted_at <= ?", (accepted_at,))
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return cur.rowcount
 
     # -- observability ------------------------------------------------------
     def counts(self) -> dict[str, int]:

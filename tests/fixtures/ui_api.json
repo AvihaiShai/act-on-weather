@@ -1,4 +1,10 @@
 {
+ "user-data": {
+  "saved_itineraries": 1,
+  "requested_activities": 2,
+  "manual_corrections": 1
+ },
+ "user-data/wipe/test-message-id": {"status": "complete"},
  "activities": [
   {
    "activity": "boat_ride",

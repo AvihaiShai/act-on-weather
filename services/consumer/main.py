@@ -32,6 +32,7 @@ import yaml
 from ..common import coast, config, metrics, rules, schemas
 from ..common.db import Pool
 from ..common.envelope import Envelope
+from ..common.outbox import Outbox
 from ..common.rabbit import Poison, consume
 
 logging.basicConfig(
@@ -584,6 +585,79 @@ def upsert_itinerary(cur: psycopg.Cursor, p: schemas.Itinerary) -> None:
 
 
 HANDLERS[config.RK_ITINERARY] = upsert_itinerary
+
+
+def delete_itinerary(cur: psycopg.Cursor, p: schemas.ItineraryDelete) -> None:
+    cur.execute("DELETE FROM itineraries WHERE id = %s", (p.id,))
+    cur.execute(
+        "DELETE FROM record_history WHERE entity = 'itineraries' AND entity_id = %s",
+        (p.id,),
+    )
+
+
+HANDLERS[config.RK_ITINERARY_DELETE] = delete_itinerary
+
+
+SOURCE_KEYS = (
+    config.RK_WEATHER,
+    config.RK_PLACE,
+    config.RK_FACT,
+    config.RK_EVENT,
+)
+
+
+def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
+    """Rebuild collected rows and scores from accepted ingestor messages.
+
+    Replaying only committed source IDs preserves connected refreshes while
+    removing manual patches, saved trips, visitor activities and re-wording.
+    The source outbox is checked *before* deleting anything. A missing volume
+    or envelope aborts the transaction rather than producing a partial wipe.
+    """
+    with Outbox("/source-outbox/outbox.sqlite3", readonly=True) as source_box:
+        source_rows = source_box.conn.execute(
+            "SELECT message_id, routing_key, body FROM outbox"
+            " WHERE routing_key IN (?, ?, ?, ?) ORDER BY seq",
+            SOURCE_KEYS,
+        ).fetchall()
+
+    committed = {
+        row["message_id"]
+        for row in cur.execute(
+            "SELECT message_id FROM ingest_log" " WHERE routing_key = ANY(%s) AND source <> 'api'",
+            (list(SOURCE_KEYS),),
+        ).fetchall()
+    }
+    available = {row["message_id"] for row in source_rows}
+    missing = committed - available
+    if missing:
+        raise RuntimeError(f"cannot wipe: {len(missing)} collected envelopes are missing")
+
+    replay = []
+    for row in source_rows:
+        if row["message_id"] not in committed:
+            continue
+        envelope = Envelope.from_bytes(row["body"])
+        if envelope.message_id != row["message_id"] or envelope.routing_key != row["routing_key"]:
+            raise RuntimeError("cannot wipe: a collected envelope does not match its outbox row")
+        replay.append(
+            (envelope.routing_key, schemas.validate(envelope.routing_key, envelope.payload))
+        )
+
+    cur.execute("SELECT wipe_business_rows()")
+
+    for routing_key, payload in replay:
+        if routing_key == config.RK_WEATHER:
+            if upsert_weather(cur, payload):
+                score_defaults(cur, payload)
+        else:
+            HANDLERS[routing_key](cur, payload)
+
+    cur.execute("DELETE FROM record_history")
+    log.info("wiped user data; restored %d collected messages", len(replay))
+
+
+HANDLERS[config.RK_USER_DATA_WIPE] = wipe_user_data
 
 
 # ----------------------------------------------------------------- handle ----

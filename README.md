@@ -111,6 +111,38 @@ Stop it with `docker compose down`, and start it again later with
 `docker compose up -d`. Both keep the database and queue data. Do not use
 `docker compose down -v` unless you mean to delete those volumes.
 
+### Start with fresh local data
+
+Live saved itineraries, user edits, queued messages and edit history live in this
+Compose project's named volumes; they are not in Git or the offline release
+bundle. A new installation on another Docker host starts with no saved trips.
+If someone will reuse **this host and Compose project**, reset it before handoff:
+
+```sh
+docker compose down -v
+docker compose up -d
+```
+
+The first command permanently removes this project's Postgres, RabbitMQ and
+outbox volumes. The second rebuilds the database from the committed weather,
+places, facts and verified event snapshot. It creates no saved itineraries.
+`make clean` is shorthand for the first command. To remove one saved trip while
+keeping the rest of the local data, use the **Saved itineraries** list in
+**Trip planner**, confirm the selected trip and click **Delete selected saved
+itinerary**. A full volume reset is the way to remove all
+local test data, including queued payloads and prior edits.
+
+The **Wipe all user data** button on **Update data** clears every saved trip,
+visitor requested activity, manual correction and edit history from the live
+database. It rebuilds weather, places, facts, events and rule scores from the
+ingestor's retained source messages, including connected updates. Type `WIPE`
+to enable it; the UI reports when the queued wipe finishes. Generated
+recommendation wording may take time to refill afterward. The button also
+clears earlier API payloads and pre-wipe model output from their outboxes. For a same-host
+handoff that must erase old queue and volume bytes too, use the full volume
+reset above. Docker volumes are never included in a Git checkout or release
+bundle.
+
 ### Shorthand
 
 `make` is a convenience for hosts that have it, and nothing requires it — it
@@ -387,6 +419,11 @@ effectively-once storage. The idempotency key is `message_id`, inserted into
 data that was never accepted in the first place. Weather that was never fetched
 can be re-fetched while connected — `make refresh`. There is no absolute
 guarantee here and the code does not pretend otherwise.
+
+An intentional **Wipe all user data** is another boundary: after the consumer
+commits the reset, earlier API outbox payloads and pre-wipe model output are
+erased so those user writes cannot be replayed. The ingestor outbox remains
+intact to preserve collected records and connected updates.
 
 **Proof, not assertion:**
 
@@ -831,9 +868,10 @@ There is exactly one write path into this database.
 * The model is verified against `models.lock` before it is used.
 * Containers run as **uid 10001** wherever the base image allows.
 * **Three database roles**: the owner runs migrations; `aow_writer` (consumer
-  only) may `INSERT`/`UPDATE`, plus `DELETE` on `events` only so it can remove
-  generated demo rows when demo mode ends; `aow_reader` (api, agent, enricher)
-  may only `SELECT`. Enforced by grants, not convention.
+  only) may `INSERT`/`UPDATE`, plus narrow `DELETE` grants on `events`,
+  `itineraries` and `record_history` for demo and saved-trip cleanup, and may
+  call the owner-run wipe function; `aow_reader` (api, agent, enricher) may only
+  `SELECT`. Enforced by grants.
 * Secrets live only in a gitignored `.env`; `.env.example` is committed.
 * Only 8080 and 8000 are published, **and only on `127.0.0.1`** — see below.
 * **No container in the running stack can reach the Docker socket.** The one
@@ -850,7 +888,8 @@ Stated plainly, because it is the one real hole in this design and the fix for
 it is a deployment decision rather than a patch.
 
 The API accepts writes — `POST /recommendations`, `POST /itineraries`,
-`POST /reenrich`, `PATCH /records/{entity}/{id}` — and asks no caller for
+`DELETE /itineraries/{id}`, `POST /reenrich`, `PATCH /records/{entity}/{id}`,
+`POST /user-data/wipe` — and asks no caller for
 credentials. Any client that can open a socket to port 8000 can queue a
 correction, a recommendation or a batch of enrichment work. Nothing downstream
 distinguishes those messages from the ingestor's: they carry the same envelope,
@@ -875,8 +914,8 @@ routable address — the write path needs all of:
   client of this API, so a control that lives only in the UI is bypassed by
   `curl`.
 * **Authorisation by role**, because the routes are not equally dangerous. A
-  reader needs the `GET` routes only; a planner may `POST /itineraries`; a data
-  steward may `PATCH /records/...`; an operator may `POST /reenrich`, which
+  reader needs the `GET` routes only; a planner may save and delete itineraries; a data
+  steward may `PATCH /records/...`; an operator may wipe user data or `POST /reenrich`, which
   commits the whole model backlog to work. Enforced in the API, where the route
   is known, with the edge doing authentication and identity propagation only.
 * **An identity on every accepted message.** The envelope has `source`, and a

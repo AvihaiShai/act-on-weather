@@ -120,6 +120,8 @@ services:
            -f /db/migrations/001_init.sql
            -f /db/migrations/002_activities.sql
            -f /db/migrations/003_demo_events.sql
+           -f /db/migrations/004_itinerary_delete.sql
+           -f /db/migrations/005_user_data_wipe.sql
            -f /db/migrations/006_event_validity.sql
            -f /db/migrations/007_city_coast.sql
     networks: [backend]
@@ -212,6 +214,10 @@ services:
       # The only service in the stack holding write credentials.
       POSTGRES_WRITER_PASSWORD: ${POSTGRES_WRITER_PASSWORD:?set POSTGRES_WRITER_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-aow}
+    volumes:
+      # A wipe rebuilds collected rows from committed ingestor envelopes, so
+      # manual corrections can be removed without discarding source updates.
+      - ingestor_outbox:/source-outbox:ro
     networks: [backend]
 
   # Words the recommendations the rules already decided. Deliberately not bound
@@ -290,6 +296,8 @@ services:
       # database: `GET /refresh/last` serves it so the UI can show what the last
       # operator refresh did. The api cannot write it; only the ingestor can.
       - refresh_state:/refresh:ro
+      # Read-only cleanup check for the wipe status shown in the UI.
+      - enricher_outbox:/model-outbox:ro
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)\""]

@@ -26,7 +26,24 @@ restore_db() {
     dc start postgres >/dev/null 2>&1 || true
   fi
 }
-trap restore_db EXIT
+cleanup_drill_rows() {
+  restore_db
+  # The requests prove delivery while the drill runs; they are not catalogue
+  # activities and should not remain in the user's activity coverage view.
+  # If the script exits during the database outage, wait for Postgres to be
+  # ready again before removing the rows already accepted by earlier drills.
+  for _ in $(seq 1 15); do
+    if psql_q "DELETE FROM recommendations WHERE requested AND
+        (city_id = 'lisbon' AND activity = 'drill_one_paddleboarding' OR
+         city_id = 'rome' AND activity = 'drill_two_database_outage' OR
+         city_id = 'reykjavik' AND activity = 'drill_three_aurora_watching')" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 2
+  done
+  note "Could not clean up drill recommendations; remove them before presenting the UI."
+}
+trap cleanup_drill_rows EXIT
 
 hr "Setting the scene"
 note "queue depth:   $(queue_depth aow.ingest)"
