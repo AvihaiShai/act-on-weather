@@ -130,6 +130,61 @@ install cannot detect that even in principle. The air-gap certification is manua
 construction — a hosted runner cannot be made to lack a network it is using — and stays
 described as a manual operator step rather than dressed up as a gate.
 
+#### cannot-pull: the run
+
+Executed by the offline-release work, not by this session; recorded here with
+attribution. Full timings and residual limits in [`RELEASE-PROOF.md`](RELEASE-PROOF.md).
+
+Two commits packaged, each from its own green `main` CI build:
+
+| | commit | CI run |
+|---|---|---|
+| A | `f19224130aa859257f71f276f9bac53d30c7bb2e` | `36037543463` |
+| B | `bf4a2dfd49bc20c1a09f1a2abf646b6891395a7c` | `36041468062` |
+
+**Independently re-checked by this session** before citing: both runs are `success` with
+`guard`, `unit`, `lint`, `build-and-scan`, `ui-gate` and `publish-images` all green, and
+for both commits `services` and `ui` are published as a platform-described index
+(`manifest.list.v2+json`, `linux/amd64`). That is the half of the claim that lives in CI;
+everything below is the offline host's.
+
+- **Engine separation.** `docker-ce` 29.8.1, engine id `f99ef3b5…`, distinct from Docker
+  Desktop's `375fa6b6…`. **0 images and 0 volumes before the install**, so `docker load`
+  was the only possible source. Packaged on Docker Desktop 29.8.0 and installed on the
+  other engine — two engines, which is the point.
+- **Egress actually cut**, verified at install time from a container on a *routable*
+  network rather than the stack's `internal: true` backend, so it tests the host firewall
+  and not Docker's own isolation: `HTTPS raw-IP BLOCKED`, `HTTP raw-IP BLOCKED`,
+  `DNS ghcr.io BLOCKED`.
+- **Verification before load.** `verify-bundle.sh` exit 0 in 2 s with the checksum carried
+  out of band: `SHA256SUMS` matched, `images.bundle.lock` matched the CI manifest and the
+  committed `IMAGES.lock`, `images.tar` matched by verified manifest digest (10 images),
+  and — the check added after §6 — *"images.tar is complete: every image has its config
+  and layers, as linux/amd64"*. 195 files verified.
+- **Install:** exit 0 in 40 s, **0 pull attempts** in the log, 10 images loaded.
+  **Smoke:** `PASS: API, stored forecast, scores, agent, model, UI and edge`; stored counts
+  matched `MANIFEST.json`; `aow_backend Internal=true`.
+- **Upgrade A → B with live data:** PASS in 38 s, 0 pulls, pre-upgrade dump taken before
+  the new images touched the schema, three traced `message_id`s still `stored`.
+- **Deliberately failed migration:** aborted, `migrate` exit 3, its own dump taken first,
+  `weather_daily` 80 → 0, every other table untouched. **Image rollback:** reverted, and
+  the smoke **failed correctly**, waiting out its full 480 s deadline. **Restore:** PASS in
+  18 s, all counts and all three traced IDs back.
+- **Monitoring from the bundle:** 0 pulls, Grafana `database: ok`, 11 alert rules, seven
+  scrape targets up, `grafana.com` and `1.1.1.1` unreachable from the container, 0 error or
+  warn lines.
+- **`prove-offline.sh offline`:** exit 0; E1 and E2 answered from stored data with source
+  and as-of; an out-of-window question refused with `local model called: False`.
+
+**The limit, carried deliberately rather than buried.** This is a separate Docker engine
+and a separate Linux userspace — **not** a separate physical machine and not a separate
+VM. All WSL2 distributions share one utility VM, kernel and network-namespace root, so the
+cut is firewall-enforced inside a shared VM, and the bundle travelled over drvfs rather
+than physical media. What it establishes is a clean engine with **no image cache to fall
+back on and no reachable egress**, which is precisely what the broken bundle failed against
+and what a no-pull run on a connected runner would have passed. It is not a certification
+that the stack runs on hardware that has never seen a network.
+
 ---
 
 ## 5. Enforcement — `main` did not require CI
@@ -288,7 +343,7 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
 
 | Item | Why it is not a gate |
 |---|---|
-| Air-gap install certification | A hosted runner has internet throughout. Requires a separate engine with egress dropped; manual by construction |
+| Air-gap install certification | A hosted runner has internet throughout. Requires a separate engine with egress dropped; manual by construction. **Executed** — see §4 |
 | Action major upgrades | A behaviour change to security gates; deliberately a human decision (§8) |
 | Enricher container coverage | Not started in CI; recorded, not closed |
 | `consumer.handle()` routing unit tests | Covered only where integration happens to exercise a key |
