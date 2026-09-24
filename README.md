@@ -313,7 +313,8 @@ Eleven containers. `postgres`, `rabbitmq`, `migrate` (one-shot), `llm`,
 |---|---|---|
 | `backend` | everything | `internal: true` — Docker itself gives it no gateway |
 | `frontend` | `edge` only | Docker cannot publish a port from an internal network, so exactly one container straddles the boundary |
-| `egress` | nobody, by default | the operator refresh attaches the ingestor to it for the length of one fetch, then detaches it again and asserts it detached |
+| `egress` | nobody, by default | declared for `make snapshot` and the manual refresh sequence, which overlay `compose.connected.yml`. A plain `docker compose up -d` never even creates it |
+| `<project>_refresh_egress` | nobody, between refreshes | the operator refresh creates it, attaches the ingestor for the length of one fetch, then detaches the ingestor **and deletes the network**, and asserts both. It does not exist at any other time, which is a stronger thing to check than an absent attachment |
 
 Only 8080 and 8000 are published, and both only on `127.0.0.1`. Not the
 database, not the broker, not the management UI, not the model server.
@@ -537,10 +538,12 @@ docker compose -f compose.tools.yml run --rm refresh
 which:
 
 1. records what is stored now, per city — as-of and last day covered;
-2. attaches **only the ingestor container** to the `egress` network;
+2. creates a bridge network of its own, `<project>_refresh_egress`, and attaches
+   **only the ingestor container** to it;
 3. runs the fetch inside it, into the same outbox every other record uses;
-4. **closes that window again and asserts it closed**, from a `trap`, so a
-   failed fetch, a `Ctrl-C` or a crash mid-way ends the same way a success does;
+4. **closes that window again and asserts it closed** — detaches the ingestor,
+   deletes the network, and checks both — from a `trap`, so a failed fetch, a
+   `Ctrl-C` or a crash mid-way ends the same way a success does;
 5. follows the accepted message ids to the broker and to `ingest_log`;
 6. prints per-city success or failure, the as-of before and after, the accepted
    message ids, and how many of them are stored versus still in flight.

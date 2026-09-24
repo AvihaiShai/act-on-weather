@@ -871,8 +871,8 @@ def render_refresh(cov) -> None:
     that describes an operator action instead of performing one.
 
     There is deliberately no button here. Pressing it would have to reach
-    something that can attach the ingestor to the egress network, which means
-    either the Docker socket inside this container or an unauthenticated write
+    something that can attach the ingestor to a network with a route out, which
+    means either the Docker socket inside this container or an unauthenticated write
     endpoint that runs host commands. Both are a worse problem than the one they
     solve, in a container whose entire job is rendering read-only views.
 
@@ -916,10 +916,11 @@ def render_refresh(cov) -> None:
     st.markdown("#### The operator command")
     st.code("docker compose -f compose.tools.yml run --rm refresh", language="bash")
     st.caption(
-        "It attaches **only the ingestor** to the egress network, fetches the "
-        "forecast into the same outbox every other record uses, then closes that "
-        "window again from a trap — on success, on a failed fetch and on Ctrl-C "
-        "alike — and asserts it closed before reporting. It prints per-city "
+        "It attaches **only the ingestor** to a network it creates for the "
+        "occasion, fetches the forecast into the same outbox every other record "
+        "uses, then detaches the ingestor and deletes that network again from a "
+        "trap — on success, on a failed fetch and on Ctrl-C alike — and asserts "
+        "both before reporting. It prints per-city "
         "success or failure, the as-of before and after, the accepted message "
         "ids, and how many of them are stored versus still in flight. "
         "`--check` opens and closes the window without fetching, and needs no "
