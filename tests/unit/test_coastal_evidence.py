@@ -540,7 +540,7 @@ def test_the_ui_caption_is_word_for_word_the_agent_caveat(monkeypatch):
     the two drifting: the caption the heatmap actually renders is compared with
     the agent's, for the same city row, through a real app render.
     """
-    from tests.unit.test_ui import FIXTURES, _run
+    from tests.unit.test_ui import FIXTURES, _open_page, _run
 
     lisbon = {
         **next(c for c in FIXTURES["coverage"]["cities"] if c["id"] == "lisbon"),
@@ -554,7 +554,7 @@ def test_the_ui_caption_is_word_for_word_the_agent_caveat(monkeypatch):
         "cities": [lisbon if c["id"] == "lisbon" else c for c in FIXTURES["coverage"]["cities"]],
     }
 
-    app = _run(monkeypatch, overrides={"coverage": coverage})
+    app = _open_page(_run(monkeypatch, overrides={"coverage": coverage}), "suitability")
     assert not app.exception, [element.value for element in app.exception]
     captions = [element.value for element in app.caption]
     assert coast.sea_state_caveat(lisbon) in captions

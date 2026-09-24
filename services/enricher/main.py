@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from typing import Any
 
 from ..common import config, metrics
@@ -169,8 +170,14 @@ def call_model(client: LlmClient, row: dict[str, Any]) -> dict[str, Any]:
         metrics.ENRICHMENT_DURATION.observe(time.perf_counter() - started)
 
 
-def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
-    """Returns 'ready', 'invalid', or raises LlmUnavailable to pause the batch."""
+def enrich_one(
+    row: dict[str, Any],
+    client: LlmClient,
+    box: Outbox,
+    *,
+    stale: Callable[[], bool] | None = None,
+) -> str:
+    """Return ready/invalid/skipped, or raise to pause the batch."""
     base = {
         "city_id": row["city_id"],
         "forecast_date": row["forecast_date"].isoformat(),
@@ -181,6 +188,8 @@ def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
         parsed = call_model(client, row)
         text = validate_text(parsed.get("recommendation"))
     except LlmInvalidOutput as exc:
+        if stale and stale():
+            return "skipped"
         log.warning(
             "invalid output for %s/%s/%s: %s",
             row["city_id"],
@@ -192,6 +201,8 @@ def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
         metrics.ENRICHMENT_REQUESTS.labels(result="invalid").inc()
         return "invalid"
 
+    if stale and stale():
+        return "skipped"
     accept_result(
         box,
         {**base, "status": "ready", "text": text, "model": config.LLM_MODEL},
@@ -202,6 +213,14 @@ def enrich_one(row: dict[str, Any], client: LlmClient, box: Outbox) -> str:
     # process died holding.
     metrics.ENRICHMENT_REQUESTS.labels(result="ready").inc()
     return "ready"
+
+
+def latest_wipe(pool: Pool) -> dict[str, Any] | None:
+    return pool.conn.execute(
+        "SELECT message_id, processed_at FROM ingest_log"
+        " WHERE routing_key = %s ORDER BY processed_at DESC LIMIT 1",
+        (config.RK_USER_DATA_WIPE,),
+    ).fetchone()
 
 
 def main() -> None:
@@ -227,7 +246,28 @@ def main() -> None:
     )
 
     outage_backoff = 5.0
+    last_wipe_id = None
+
+    def result_is_stale() -> bool:
+        try:
+            return (latest_wipe(pool) or {}).get("message_id") != last_wipe_id
+        except Exception as exc:  # noqa: BLE001 - do not publish an unchecked result
+            log.warning("cannot check whether model result is stale (%s)", exc)
+            pool.drop()
+            return True
+
     while True:
+        try:
+            wipe = latest_wipe(pool)
+            if wipe and wipe["message_id"] != last_wipe_id:
+                removed = box.purge_accepted_through(wipe["processed_at"].isoformat())
+                last_wipe_id = wipe["message_id"]
+                log.info("discarded %d model results accepted before user-data wipe", removed)
+        except Exception as exc:  # noqa: BLE001 - retry while the database is down
+            log.warning("cannot check user-data wipe (%s); retrying", exc)
+            pool.drop()
+            time.sleep(5)
+            continue
         if not drain(box, publisher):
             time.sleep(5)
             continue
@@ -246,7 +286,12 @@ def main() -> None:
         ready = invalid = 0
         for row in rows:
             try:
-                outcome = enrich_one(row, client, box)
+                outcome = enrich_one(
+                    row,
+                    client,
+                    box,
+                    stale=result_is_stale,
+                )
                 if not drain(box, publisher):
                     time.sleep(5)
                     break

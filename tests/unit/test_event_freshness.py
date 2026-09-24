@@ -412,7 +412,7 @@ def test_the_coverage_tab_reports_the_freshness_split_through_a_real_render(monk
     the fixture is an older capture that predates them -- and asserts the
     caption names the current count, the expired count and the city spread.
     """
-    from tests.unit.test_ui import FIXTURES, _run
+    from tests.unit.test_ui import FIXTURES, _open_page, _run
 
     coverage = {
         **FIXTURES["coverage"],
@@ -430,7 +430,7 @@ def test_the_coverage_tab_reports_the_freshness_split_through_a_real_render(monk
         ],
     }
 
-    app = _run(monkeypatch, overrides={"coverage": coverage})
+    app = _open_page(_run(monkeypatch, overrides={"coverage": coverage}), "data-coverage")
     assert not app.exception, [element.value for element in app.exception]
     captions = " ".join(element.value for element in app.caption)
     assert "31 checked listing(s) are still inside their recheck window" in captions

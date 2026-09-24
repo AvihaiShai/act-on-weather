@@ -19,6 +19,14 @@
 
 source "$(dirname "$0")/lib.sh"
 FAILED=0
+cleanup_outage_row() {
+  # Keep the outage proof visible during the run, then remove its test activity.
+  if ! psql_q "DELETE FROM recommendations WHERE requested AND
+      city_id = 'rome' AND activity = 'an_outage_time_picnic'" >/dev/null; then
+    note "Could not clean up the outage recommendation; remove it before presenting the UI."
+  fi
+}
+trap cleanup_outage_row EXIT
 
 hr "Before"
 psql_q "SELECT '   ' || status || ': ' || count(*) FROM recommendations GROUP BY status ORDER BY status"

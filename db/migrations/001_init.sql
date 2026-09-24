@@ -261,8 +261,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO aow_writer;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE ON TABLES TO aow_writer;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO aow_writer;
 
--- No DELETE grant for either role: nothing in this system removes a record,
--- it supersedes it. Migration 003 makes exactly one exception, on `events`
--- alone, so that leaving demo mode can remove generated sample rows.
+-- Later migrations add narrow DELETE grants for demo-event and saved-trip
+-- cleanup. Neither role gets schema-wide DELETE privileges.
 
 COMMIT;

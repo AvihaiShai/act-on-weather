@@ -218,6 +218,7 @@ def london_app(monkeypatch) -> AppTest:
     # and this runs the script twice -- once to draw, once after picking the
     # city. A timeout here would be a flaky failure, not a useful one.
     app = AppTest.from_file(str(APP), default_timeout=240).run()
+    app.radio(key="page").set_value("places-map").run()
     app.selectbox(key="map_city").select("London").run()
     return app
 

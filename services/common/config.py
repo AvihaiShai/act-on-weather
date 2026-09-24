@@ -28,6 +28,8 @@ RK_EVENT = "event.record"
 RK_RECOMMENDATION_REQUEST = "recommendation.request"
 RK_LLM_RECOMMENDATION = "llm.recommendation"
 RK_ITINERARY = "itinerary.record"
+RK_ITINERARY_DELETE = "itinerary.delete"
+RK_USER_DATA_WIPE = "user_data.wipe"
 RK_PATCH = "record.patch"
 # M12, the third update path: ask the local model to re-word stored
 # recommendations. Like every other write it travels the queue, so the
@@ -43,6 +45,8 @@ ROUTING_KEYS = frozenset(
         RK_RECOMMENDATION_REQUEST,
         RK_LLM_RECOMMENDATION,
         RK_ITINERARY,
+        RK_ITINERARY_DELETE,
+        RK_USER_DATA_WIPE,
         RK_PATCH,
         RK_REENRICH,
     }

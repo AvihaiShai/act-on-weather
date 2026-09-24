@@ -145,6 +145,14 @@ class Itinerary(_Payload):
     as_of: datetime
 
 
+class ItineraryDelete(_Payload):
+    id: str
+
+
+class UserDataWipe(_Payload):
+    requested_by: str = "ui"
+
+
 class ReenrichRequest(_Payload):
     """M12, third update path: re-word stored recommendations.
 
@@ -178,6 +186,8 @@ PAYLOAD_MODELS: dict[str, type[_Payload]] = {
     config.RK_RECOMMENDATION_REQUEST: RecommendationRequest,
     config.RK_LLM_RECOMMENDATION: LlmRecommendation,
     config.RK_ITINERARY: Itinerary,
+    config.RK_ITINERARY_DELETE: ItineraryDelete,
+    config.RK_USER_DATA_WIPE: UserDataWipe,
     config.RK_PATCH: RecordPatch,
     config.RK_REENRICH: ReenrichRequest,
 }
