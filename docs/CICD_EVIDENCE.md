@@ -1,7 +1,7 @@
 # CI/CD evidence matrix — review item #4 (S1, B1)
 
 **Updated 2026-09-25.** Named run counts and timings are historical; the new
-clean-daemon release gate awaits its first successful CI run. Every row names
+clean-daemon release gate passed in release run `36071276502`. Every row names
 a gate and a run, or says plainly that it is manual.
 Written for a reviewer who wants to check the claims rather than read about them.
 
@@ -110,7 +110,7 @@ answer, not a better one.
 | Re-resolve digests | **Independently re-resolves each digest against the registry** rather than trusting the artifact. `SHA256SUMS` is self-attesting — whoever replaces the tar replaces the checksums with it — so the registry is the only external anchor |
 | Build the bundle | Calls `scripts/package-offline.sh` **unmodified** |
 | Verify the bundle | Calls `scripts/verify-bundle-images.sh` **unmodified** |
-| Install it (current source) | Starts a second Docker 29.8.1 daemon, requires a distinct engine ID and zero images and volumes, then runs `install-offline.sh` with `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`; the installer uses `--pull never` and runs the release smoke. A passing release run of this new step is still pending |
+| Install it | Starts a second Docker 29.8.1 daemon, requires a distinct engine ID and zero images and volumes, then runs `install-offline.sh` with `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`; the installer uses `--pull never` and runs the release smoke. Passed in release run [`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502) for merge commit `b21885a` |
 | Record the decision | `promotion-record.json`, written **into** the bundle so `SHA256SUMS` covers it |
 
 The promotion record states **per image** whether a digest was registry-re-resolved or
@@ -130,9 +130,15 @@ promotion records still correctly report their own HTTP 403 reads as
 `verified: false`; the manual read is not embedded in those records and the
 workflow still cannot verify protection with its default token.
 
-The hosted release runs cited next used the **packaging daemon** for their
-no-pull install. They predate the second empty-daemon gate now written in
-`release.yml`; none is evidence that the new gate has passed.
+The older hosted release runs cited next used the **packaging daemon** for their
+no-pull install. They predate the second empty-daemon gate. Release run
+[`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502)
+on `b21885a` passed that gate: the install daemon ID differed from the
+packaging daemon ID, its image and volume lists were empty before load, the
+archive passed the complete-image check for all 10 aliases, and the smoke
+reported `PASS: API, stored forecast, scores, agent, model, UI and edge`.
+The promotion artifact uploaded successfully. The runner remained connected;
+the separate manual cannot-pull exercise below supplies the no-egress evidence.
 
 The first complete hosted release run, [`36048802334`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36048802334),
 completed on `b6b38f9`: bundle build, archive verification, no-pull install,
@@ -195,14 +201,14 @@ the record because the live read returned HTTP 403.
 | | What it proves | Where |
 |---|---|---|
 | **Historical same-daemon no-pull** | the bundle boots without a pull on the packaging daemon; cached layers can mask a bad archive | hosted release runs cited above |
-| **New clean-daemon no-pull** | if it passes, the tar boots on a second initially empty image store without pulling | current `release.yml` source; **CI result pending** |
+| **Clean-daemon no-pull** | the tar boots on a second initially empty image store without pulling | release run [`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502) on `b21885a` |
 | **Manual cannot-pull** | the bundle installs and runs on a separate engine with an empty image store and no reachable egress, verified from inside a container | F10's manual drill |
 
 The historical same-daemon check would have **passed the broken bundle
 described in §6**, because packaging left the layers in that daemon's store.
-The new workflow source removes that cache dependency by starting another
-daemon and checking its initial image and volume lists. It has not yet run
-successfully after this change. The manual cannot-pull drill also cuts
+The new workflow removes that cache dependency by starting another
+daemon and checking its initial image and volume lists. It passed on
+`b21885a`. The manual cannot-pull drill also cuts
 egress; the hosted runner remains connected even when its second daemon has
 an empty store. A physical air-gap transfer remains untested.
 
