@@ -60,8 +60,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 # The gates this workflow enforces, in the order it enforces them. Recorded as
-# a fixed list, not a live re-check -- see the module docstring for why that
-# is sound here.
+# a fixed list rather than a live re-check, which is sound for one specific
+# reason and only that reason: every gate named here is a step that runs
+# BEFORE this script in release.yml, and a failed step fails the job. So the
+# fact that this script is running at all is the evidence -- reaching it is
+# not possible with any of them unsatisfied.
+#
+# That makes the list order-dependent, which is the trap. Adding a name here
+# for a step that runs AFTER this script would assert something that has not
+# happened yet, and the record would say so in a file sealed into the bundle.
+# Before adding an entry, check its step's position in release.yml. The two
+# most recent additions, `bundle_installed_without_pulls` and
+# `release_smoke_serves_data`, are the install-and-smoke step, which sits
+# ahead of "Write the promotion record into the bundle" -- verified when they
+# were added, and worth re-verifying rather than assuming next time.
+#
+# Contrast `branch_protection`, which is NOT in this list: it is a live
+# repository setting this workflow does not itself enforce, so it is read at
+# release time and recorded as unverified when the read fails.
 GATES = [
     "sha_format_valid",
     "checkout_matches_sha",
