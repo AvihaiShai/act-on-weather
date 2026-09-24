@@ -44,6 +44,32 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
+    # These three files are not independent, and an ungrouped bump breaks the
+    # build. `requests==2.32.3` is pinned in BOTH services/common and
+    # services/ui, and tests/Dockerfile installs them into one interpreter:
+    #
+    #   RUN pip install -r /tmp/req/requirements.txt -r /tmp/req/ui.txt ...
+    #
+    # so a bump to one file alone produces an unsatisfiable pin pair. That is
+    # not hypothetical -- Dependabot's first security PR here (#10, requests
+    # 2.32.3 -> 2.33.0 in /services/ui only) failed the `unit` job in 21s with
+    # "Cannot install requests==2.32.3 and requests==2.33.0 because these
+    # package versions have conflicting dependencies."
+    #
+    # Grouping makes a shared dependency move in every directory that pins it,
+    # in one pull request, so the tree stays internally consistent and the
+    # resulting PR can actually go green. Both kinds are grouped: a security
+    # update is exactly as capable of splitting a shared pin as a routine one,
+    # and `groups` only applies to the kind named in `applies-to`.
+    groups:
+      python-version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      python-security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   # Deliberately NOT configured: package-ecosystem: docker.
   #
