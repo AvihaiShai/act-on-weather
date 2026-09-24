@@ -275,38 +275,41 @@ vacuously.
 
 ### Measured run — 2026-09-24, exit 0
 
+This is the run on the tree as merged, after F9 landed on main. An earlier run
+on the same code before that merge gave RPO 24 s / RTO 31 s / 116 s, so the
+figures below are representative rather than a lucky sample.
+
 ```
-A  553139ff-32aa-484f-9cbb-bb07bd99ff3d  drill alpha one
-A  20c00be4-06af-448c-b449-e97868e985b0  drill alpha two
-A  ff97a541-2480-4c66-95eb-a9b11caef560  drill alpha three
-C  eadcee31-0e5d-4dc2-a05c-d122f34684f9  drill confirmed unstored
-B  655d0f0d-fa40-4469-9d4e-3ea95d2b9648  drill beta one
-B  bfee3dab-03dc-4179-8977-ae8ca75931ca  drill beta two
+A  7b179b67-6a10-4737-bcc1-a3d790030b17  drill alpha one
+A  8f3763c0-24ff-4c07-b36e-beff0060a7bc  drill alpha two
+A  b240c991-ed9b-4abe-8d10-692c9ab05f09  drill alpha three
+C  072a0d62-98de-4885-aca9-dd93edfaa851  drill confirmed unstored
+B  91181902-63c2-41b0-8ca0-86669341db85  drill beta one
+B  ffc5622a-fd2f-4800-bbef-ca0a5f536c8f  drill beta two
 
-PASS ingest_log count = 1 for 553139ff-...  + rome/2026-09-23/drill_alpha_one
-PASS ingest_log count = 1 for 20c00be4-...  + rome/2026-09-23/drill_alpha_two
-PASS ingest_log count = 1 for ff97a541-...  + rome/2026-09-23/drill_alpha_three
-PASS ingest_log count = 1 for eadcee31-...  + rome/2026-09-23/drill_confirmed_unstored
-PASS absent as expected, outside the backup window: 655d0f0d-...
-PASS absent as expected, outside the backup window: bfee3dab-...
+PASS ingest_log count = 1 for each of the three set A ids, with its
+     recommendations row (rome/2026-09-23/drill_alpha_{one,two,three})
+PASS ingest_log count = 1 for 072a0d62-...  + rome/2026-09-23/drill_confirmed_unstored
+PASS absent as expected, outside the backup window: 91181902-...
+PASS absent as expected, outside the backup window: ffc5622a-...
 
-RPO reference point (manifest started_at):   2026-09-24T15:56:01Z
-last set B id accepted at:                   2026-09-24T15:56:25Z
-disruption at:                               2026-09-24T15:56:29Z
+RPO reference point (manifest started_at):   2026-09-24T16:09:39Z
+last set B id accepted at:                   2026-09-24T16:10:05Z
+disruption at:                               2026-09-24T16:10:10Z
 records lost (set B):                        2 of 2
-RPO span (backup start -> last lost write):  24s
-at-risk window (backup start -> disruption): 28s
-RTO (restore + verification):                31s
-whole drill, wall clock:                     110s
+RPO span (backup start -> last lost write):  26s
+at-risk window (backup start -> disruption): 31s
+RTO (restore + verification):                35s
+whole drill, wall clock:                     120s
 ```
 
 The disruption is total: `docker compose down -v`, destroying the database,
 broker and all three outbox volumes. The drill asserts the database volume is
 actually gone before restoring.
 
-**Measured RPO 24 s, RTO 31 s, drill 116 s wall clock** (110 s self-reported,
-plus teardown). The 24 s RPO is a property of *this drill*, not of the system:
-in production the RPO is the backup interval.
+**Measured RPO 26 s, RTO 35 s, drill 120 s wall clock.** The 26 s RPO is a
+property of *this drill*, not of the system: in production the RPO is the
+backup interval.
 
 ---
 

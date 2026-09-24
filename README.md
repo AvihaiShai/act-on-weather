@@ -1138,7 +1138,7 @@ pre-backup id is present exactly once. Records accepted after the backup are
 asserted *absent*, because that is the honest boundary of a point-in-time
 backup rather than something to hide.
 
-Measured on 2026-09-24: **RPO 24 s, RTO 31 s**, whole drill 116 s. The RPO is a
+Measured on 2026-09-24: **RPO 26 s, RTO 35 s**, whole drill 120 s. The RPO is a
 property of the drill; in production it is the backup interval.
 
 Queue message bodies are not backed up. Confirmed envelopes return through
