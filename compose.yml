@@ -24,6 +24,11 @@ volumes:
   ingestor_outbox:
   api_outbox:
 
+x-queue-env: &queue_env
+  RABBITMQ_USER: ${RABBITMQ_USER:-aow}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
 services:
   postgres:
     image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -142,10 +147,12 @@ services:
       rabbitmq:
         condition: service_healthy
     command: ["python", "-m", "services.ingestor.main"]
-    environment: &queue_env
-      RABBITMQ_USER: ${RABBITMQ_USER:-aow}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    environment:
+      <<: *queue_env
+      # The read-only role lets an operator reconcile this producer's outbox
+      # against committed ingest_log IDs without granting it write access.
+      POSTGRES_READER_PASSWORD: ${POSTGRES_READER_PASSWORD:?set POSTGRES_READER_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-aow}
     volumes:
       # The outbox lives on a named volume: the no-data-loss guarantee begins
       # at an fsynced row here, so it must outlive the container.
