@@ -1014,6 +1014,9 @@ The script uses `COMPOSE_PROJECT_NAME` when an install is isolated under a
 different project, and otherwise targets `aow`. It reaches that project's
 internal backend network. The proof runner contains `curl` and Python; the
 offline host only needs Docker and bash to launch it.
+The bundle overlay also points the operator refresh's detached window guard
+at the packaged `demos` image, so `refresh --check` can enforce its deadline
+without a locally built `aow/demos:dev` tag.
 
 **Last release drill.** Commit `a129bb6` was packaged from its own green
 `main` workflow and digest manifest on a Windows Docker Desktop host with a

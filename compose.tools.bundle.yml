@@ -7,3 +7,5 @@ services:
     image: aow-bundle/demos:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
   refresh:
     image: aow-bundle/demos:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+    environment:
+      REFRESH_GUARD_IMAGE: aow-bundle/demos:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
