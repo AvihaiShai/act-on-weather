@@ -389,7 +389,7 @@ silence an annotation is how a gate stops gating.
 So the sweep was taken as two attributable changes rather than one. #39 moved the core and
 artifact actions (`checkout` v7.0.1, `setup-python` v7.0.0, `upload-artifact` v7.0.1,
 `download-artifact` v8.0.1, `cache` v6.1.0); #38 moved the two scanners, in a commit each.
-What was checked before closing:
+Evidence for the sweep and its follow-up:
 
 - **The annotation is gone.** Run `36050580394` (`804b5df`) carries six Node 20 warnings;
   run `36055198116` (`862a08f`) carries none. `model-grounding` and `restore-drill` are
@@ -402,8 +402,10 @@ What was checked before closing:
   `checkout` v6.0.1. All node24, and that is the bottom of the tree.
 - **Trivy still gates.** The bundled binary moved to v0.70.0 and all three scans report
   zero, so the newer scanner surfaced no new HIGH/CRITICAL to suppress.
-- **Gitleaks v3 is a runtime migration** — no input, output or behaviour change — and
-  the canary committed with it proves the pinned binary still detects a generated token.
+- **Gitleaks detects a positive control.** The v3 action runs the pinned CLI,
+  and the canary committed with the upgrade proves that binary detects a
+  generated token. The committed-tree scan below separately proves it reads
+  the source being released.
 - **The artifact chain survived the majors.** `if-no-files-found` and `retention-days` are
   unchanged in `upload-artifact` v7, and the least-common-ancestor rule still puts
   `images.lock` at the artifact root, so `package-offline.sh` finds what it expects. The
