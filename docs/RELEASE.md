@@ -61,6 +61,11 @@ operator, from the same inputs -- see below.
 Triggered by `workflow_dispatch` with a required `sha` input (see the
 workflow file for the full reasoning). In order:
 
+Before it touches an image, the job starts pinned Docker 29.8.1 with the
+containerd image store and checks the daemon reports that store. F10's proof
+found that the classic store rewrites the index digests during `docker save`,
+so its output cannot satisfy the bundle's digest lock.
+
 1. Validates `sha` is a 40-character hex commit SHA.
 2. Checks it out and asserts `git rev-parse HEAD` matches it.
 3. Queries the Actions API for a **completed, successful** `ci.yml` run with

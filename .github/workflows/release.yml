@@ -107,6 +107,25 @@ jobs:
             exit 1
           }
 
+      # F10's bundle proof found that a classic Docker image store rewrites
+      # image manifests during `docker save`, so the archive no longer carries
+      # the index digests in images.bundle.lock. GitHub's default runner uses
+      # that store. Use the containerd store that the release proof exercised,
+      # and stop before staging if the daemon did not actually switch.
+      - name: Set up Docker with the containerd image store
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5
+        with:
+          version: v29.8.1
+          daemon-config: |
+            {"features":{"containerd-snapshotter":true}}
+
+      - name: Require the containerd image store
+        run: |
+          if ! docker info --format '{{json .DriverStatus}}' | grep -q 'io.containerd.snapshotter.v1'; then
+            echo "::error::release packaging requires Docker's containerd image store"
+            exit 1
+          fi
+
       - name: Report starting runner disk headroom
         run: df -h .
 
