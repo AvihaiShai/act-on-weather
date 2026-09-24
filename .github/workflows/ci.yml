@@ -494,14 +494,20 @@ jobs:
           set -euo pipefail
           image_root="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="sha-${GITHUB_SHA}"
+          manifest_file="$(mktemp)"
+          trap 'rm -f "$manifest_file"' EXIT
           for component in services ui; do
             ref="$image_root/$component:$version"
-            docker buildx imagetools inspect --raw "$ref" | python3 - "$ref" <<'PY'
+            # The heredoc is Python's stdin, so the registry JSON must be in
+            # a file. Piping it here leaves json.load with an empty stream.
+            docker buildx imagetools inspect --raw "$ref" > "$manifest_file"
+            python3 - "$ref" "$manifest_file" <<'PY'
           import json
           import sys
 
           ref = sys.argv[1]
-          manifest = json.load(sys.stdin)
+          with open(sys.argv[2], encoding="utf-8") as source:
+              manifest = json.load(source)
           media_type = manifest.get("mediaType", "")
           is_index = media_type in (
               "application/vnd.oci.image.index.v1+json",
