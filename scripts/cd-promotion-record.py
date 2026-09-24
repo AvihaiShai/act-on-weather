@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -178,6 +179,21 @@ def read_checksums(path: Path) -> dict[str, str]:
     return out
 
 
+def read_model_lock(path: Path) -> tuple[str, str]:
+    """Read the one sha256sum entry; comments are documentation, not hashes."""
+    entries = [
+        line.strip()
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(entries) != 1:
+        raise ValueError(f"{path}: expected exactly one model checksum, got {len(entries)}")
+    match = re.fullmatch(r"([0-9a-f]{64}) [ *](models/[^\s]+\.gguf)", entries[0])
+    if not match:
+        raise ValueError(f"{path}: invalid sha256sum entry for a models/*.gguf file")
+    return match.group(1), match.group(2)
+
+
 def require_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -206,8 +222,9 @@ def main() -> int:
     release_lock = read_lock_pairs(release_lock_path)
     bundle_lock = read_lock_pairs(bundle_lock_path)
     checksums = read_checksums(bundle_checksums_path)
-    model_digest, _, model_name = models_lock_path.read_text().strip().partition(" ")
-    model_name = model_name.strip().lstrip("*")
+    model_digest, model_name = read_model_lock(models_lock_path)
+    if checksums.get(f"./{model_name}") != model_digest:
+        sys.exit(f"{bundle_checksums_path}: model checksum differs from {models_lock_path}")
 
     unknown_aliases = sorted(set(bundle_lock) - set(PROVENANCE_BY_ALIAS))
     if unknown_aliases:
