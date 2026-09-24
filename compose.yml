@@ -24,6 +24,10 @@ volumes:
   ingestor_outbox:
   api_outbox:
   enricher_outbox:
+  # One small JSON file: the report scripts/refresh.sh files about its last run.
+  # Written in the ingestor, read-only in the api. Operator telemetry, not data
+  # -- services/common/refresh_state.py says why it is not in the database.
+  refresh_state:
 
 x-queue-env: &queue_env
   RABBITMQ_USER: ${RABBITMQ_USER:-aow}
@@ -156,6 +160,9 @@ services:
       # The outbox lives on a named volume: the no-data-loss guarantee begins
       # at an fsynced row here, so it must outlive the container.
       - ingestor_outbox:/outbox
+      # The operator refresh runs its fetch inside this container, so this is
+      # where it files the report of its run. Writable here and nowhere else.
+      - refresh_state:/refresh
     networks: [backend]
 
   consumer:
@@ -248,6 +255,10 @@ services:
       # User edits are accepted here and published from here, so the API has an
       # outbox of its own on its own volume.
       - api_outbox:/outbox
+      # Read-only, and it is one JSON file rather than another service's live
+      # database: `GET /refresh/last` serves it so the UI can show what the last
+      # operator refresh did. The api cannot write it; only the ingestor can.
+      - refresh_state:/refresh:ro
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)\""]

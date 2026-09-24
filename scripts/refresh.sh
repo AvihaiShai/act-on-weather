@@ -15,12 +15,18 @@
 #   4. closes the egress window again and ASSERTS it is closed;
 #   5. follows the accepted message ids to the broker and to `ingest_log`;
 #   6. prints per-city success/failure, before/after as-of, the accepted ids
-#      and how many of them are stored versus still in flight.
+#      and how many of them are stored versus still in flight;
+#   7. files that same report where the UI can read it, at GET /refresh/last,
+#      so the page can show what the last run did and not just how fresh the
+#      stored data is. `--check` files nothing; it changes nothing.
 #
-# Step 4 also runs from a trap, so an interrupt (Ctrl-C), a failed fetch or a
-# crash mid-way still ends with the ingestor back on the internal network. The
-# only thing that can defeat it is SIGKILL, and the next run says so and
-# closes the window it inherited.
+# Steps 4 and 7 also run from a trap, so an interrupt (Ctrl-C), a failed fetch
+# or a crash mid-way still ends with the ingestor back on the internal network
+# and with a record of how far the run got. The only thing that can defeat it is
+# SIGKILL, and the next run says so and closes the window it inherited.
+#
+# It acts on the `aow` project by default. AOW_PROJECT picks a different stack
+# and AOW_API a different API address; see compose.tools.yml.
 #
 # Why `docker network connect` rather than a Compose overlay: it adds the one
 # interface and removes it again without recreating the container. A recreate
@@ -72,8 +78,14 @@ Options:
 
 Environment:
   API             where to reach the API (default http://localhost:8000; the
-                  tools container sets http://edge:8000).
+                  tools container sets http://edge:8000, or AOW_API).
+  AOW_PROJECT     which Compose project to act on (default aow). Read by
+                  compose.tools.yml, which sets COMPOSE_PROJECT_NAME and picks
+                  the stack's backend network from it.
   OPEN_METEO_URL  refresh from an internal mirror instead of the public API.
+
+Every run but --check files its report at GET /refresh/last, which the UI shows
+under Update data -> Operator refresh.
 EOF
 }
 
@@ -95,6 +107,18 @@ CID=""
 CNAME=""
 EGRESS=""
 OPENED_AT=""
+
+# What this run will file about itself (step 7). Kept in a temp directory the
+# exit trap reads, so a run that is interrupted halfway still records the half
+# it got through rather than nothing at all.
+RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+STATE_DIR="$(mktemp -d)"
+PERSIST=1
+WINDOW_OPENED=0
+WINDOW_CLOSED=0
+WINDOW_INHERITED=0
+HELD_SECONDS=""
+REPORTED=0
 
 # ------------------------------------------------------------ the window --
 
@@ -124,6 +148,7 @@ open_egress() {
     docker network connect "$EGRESS" "$CID" >/dev/null
   fi
   OPENED_AT="$(date +%s)"
+  WINDOW_OPENED=1
   if attached; then
     pass "ingestor attached to $EGRESS"
   else
@@ -165,6 +190,8 @@ close_egress() {
     note "recover by hand:  docker network rm $EGRESS"
     return 1
   fi
+  WINDOW_CLOSED=1
+  [ -n "$OPENED_AT" ] && HELD_SECONDS=$(( $(date +%s) - OPENED_AT ))
   return 0
 }
 
@@ -172,8 +199,74 @@ report_window_closed() {
   hr "Closing the egress window"
   if close_egress; then
     local held=""
-    [ -n "$OPENED_AT" ] && held=" (it was open for $(( $(date +%s) - OPENED_AT ))s)"
+    [ -n "$HELD_SECONDS" ] && held=" (it was open for ${HELD_SECONDS}s)"
     pass "ingestor is on the internal network only; $EGRESS no longer exists$held"
+  fi
+}
+
+# ------------------------------------------------------- recording the run --
+#
+# Everything above happens in somebody's terminal. This files it where the UI
+# can read it, so that "what did the last refresh actually do?" has an answer on
+# the page as well as in the scrollback. It is one JSON object, written inside
+# the ingestor container onto a named volume that the api mounts read-only, and
+# served at GET /refresh/last. services/common/refresh_state.py says why this is
+# a file and not a row.
+#
+# Called once, from the exit trap, after the window has been dealt with -- so it
+# runs on every path, and so it can state whether the window closed. A run that
+# was interrupted before the fetch records the part it reached; `--check`
+# records nothing, because it changes nothing and overwriting the last real
+# refresh with a window test would lose the more useful of the two.
+persist_report() {
+  [ "$PERSIST" = 1 ] || return 0
+  [ "$REPORTED" = 1 ] && return 0
+  REPORTED=1
+  [ -n "$CID" ] || return 0
+
+  local outcome
+  if [ "$CLEANUP_FAILED" = 1 ]; then
+    outcome="window-not-closed"
+  elif [ ! -s "$STATE_DIR/fetch.json" ]; then
+    outcome="no-fetch-report"
+  elif [ -n "$(cat "$STATE_DIR/failed_cities" 2>/dev/null)" ]; then
+    outcome="cities-failed"
+  elif [ "${TOTAL_IDS:-0}" -gt 0 ] && [ "${STORED:-0}" -eq 0 ]; then
+    outcome="accepted-not-stored"
+  elif [ "${STORED:-0}" -lt "${TOTAL_IDS:-0}" ]; then
+    outcome="ok-with-rows-in-flight"
+  else
+    outcome="ok"
+  fi
+
+  local report
+  report="$(
+    AOW_STARTED="$RUN_STARTED" \
+    AOW_OUTCOME="$outcome" \
+    AOW_EXIT="${1:-}" \
+    AOW_PROJECT_NAME="$PROJECT" \
+    AOW_WINDOW="$EGRESS" \
+    AOW_WINDOW_OPENED="$WINDOW_OPENED" \
+    AOW_WINDOW_CLOSED="$WINDOW_CLOSED" \
+    AOW_WINDOW_INHERITED="$WINDOW_INHERITED" \
+    AOW_HELD="${HELD_SECONDS:-}" \
+    AOW_ACCEPTED="${TOTAL_IDS:-0}" \
+    AOW_PUBLISHED="${PUBLISHED:-unknown}" \
+    AOW_STORED="${STORED:-0}" \
+    AOW_STATE_DIR="$STATE_DIR" \
+    python3 "$(dirname "$0")/refresh_report.py" 2>/dev/null
+  )" || report=""
+
+  if [ -z "$report" ]; then
+    note "could not assemble the run report -- the run itself is unaffected"
+    return 0
+  fi
+  if printf '%s' "$report" \
+    | dc exec -T ingestor python -m services.common.refresh_state >/dev/null 2>&1; then
+    note "filed this run at GET /refresh/last (outcome: $outcome)"
+  else
+    note "could not file the run report in the ingestor (outcome: $outcome)"
+    note "the refresh itself is unaffected; GET /refresh/last still shows the previous run"
   fi
 }
 
@@ -186,7 +279,11 @@ on_exit() {
     hr "Closing the egress window (from the exit trap)"
     close_egress && pass "ingestor is on the internal network only; $EGRESS removed"
   fi
-  [ "$CLEANUP_FAILED" = 1 ] && exit 3
+  [ "$CLEANUP_FAILED" = 1 ] && rc=3
+  # After the window, never before it: the boundary matters more than the
+  # bookkeeping, and this records whether the boundary held.
+  persist_report "$rc"
+  rm -rf "$STATE_DIR" 2>/dev/null
   exit "$rc"
 }
 trap on_exit EXIT
@@ -232,6 +329,7 @@ note "project $PROJECT, ingestor $CNAME, egress window $EGRESS"
 # is still there. Say so rather than silently inheriting it, and close it now
 # whether or not the rest of this run gets that far.
 if network_exists; then
+  WINDOW_INHERITED=1
   note "WARNING: $EGRESS already exists -- a previous refresh did not close its"
   note "         window. It is closed at the end of this run either way."
   if attached; then
@@ -255,8 +353,11 @@ if [ -z "$CITIES" ]; then
     'import json,sys;print(" ".join(c["id"] for c in json.load(sys.stdin)))')"
 fi
 
+printf '%s' "$CITIES" >"$STATE_DIR/requested"
+
 hr "Stored now"
 BEFORE_COV="$(curl -s "$API/coverage")"
+printf '%s' "$BEFORE_COV" >"$STATE_DIR/cov_before.json"
 note "weather as-of $(printf '%s' "$BEFORE_COV" | json_field weather_as_of), covering $(printf '%s' "$BEFORE_COV" | json_field weather_first_date) .. $(printf '%s' "$BEFORE_COV" | json_field weather_last_date)"
 declare -A BEFORE
 printf '   %-12s %-21s %-12s %s\n' "city" "as-of (UTC)" "covers-to" "days"
@@ -264,9 +365,16 @@ for c in $CITIES; do
   BEFORE[$c]="$(city_state "$c")"
   IFS='|' read -r b_asof b_last b_rows <<<"${BEFORE[$c]}"
   printf '   %-12s %-21s %-12s %s\n' "$c" "$b_asof" "$b_last" "$b_rows"
+  # The same numbers the run report carries, written as they are printed, so
+  # what the page shows and what the terminal showed cannot drift apart.
+  printf '%s\t%s\t%s\t%s\n' "$c" "$b_asof" "$b_last" "$b_rows" >>"$STATE_DIR/before.tsv"
 done
 
 if [ "$CHECK" = 1 ]; then
+  # A window test is not a refresh. It records nothing, because overwriting the
+  # last real refresh with "someone checked the window" would lose the report an
+  # operator came to the page for.
+  PERSIST=0
   note "--check: opening and closing the window without fetching anything"
   open_egress
   report_window_closed
@@ -284,7 +392,9 @@ fi
 open_egress
 
 hr "Fetching (the only step that needs the internet)"
-REPORT_FILE="$(mktemp)"
+# In the state directory, not /tmp: the exit trap reads it to build the run
+# report, so an interrupt after the fetch still records what the fetch returned.
+REPORT_FILE="$STATE_DIR/fetch.json"
 FETCH_RC=0
 # The mirror override is passed through only when one is actually set. An empty
 # -e would *unset* the provider's default URL inside the ingestor, and every
@@ -302,7 +412,6 @@ report_window_closed
 
 if [ ! -s "$REPORT_FILE" ]; then
   fail "the fetch produced no report (exit $FETCH_RC) -- nothing was accepted"
-  rm -f "$REPORT_FILE"
   exit 2
 fi
 
@@ -338,6 +447,13 @@ IDS="$(python3 -c \
   'import json,sys;print(",".join(json.load(open(sys.argv[1],encoding="utf-8"))["message_ids"]))' \
   "$REPORT_FILE")"
 TOTAL_IDS="$(python3 -c 'import sys;print(len([i for i in sys.argv[1].split(",") if i]))' "$IDS")"
+# Recorded here rather than at the verdict below, because the exit trap reads it
+# and an interrupt during the wait-for-storage loop must still record which
+# cities the provider refused.
+FAILED_CITIES="$(python3 -c \
+  'import json,sys;print(" ".join(json.load(open(sys.argv[1],encoding="utf-8"))["failed_cities"]))' \
+  "$REPORT_FILE")"
+printf '%s' "$FAILED_CITIES" >"$STATE_DIR/failed_cities"
 
 # ------------------------------------------------- follow them to the DB --
 
@@ -392,22 +508,19 @@ fi
 
 hr "Stored after the refresh"
 AFTER_COV="$(curl -s "$API/coverage")"
+printf '%s' "$AFTER_COV" >"$STATE_DIR/cov_after.json"
 note "weather as-of $(printf '%s' "$AFTER_COV" | json_field weather_as_of), covering $(printf '%s' "$AFTER_COV" | json_field weather_first_date) .. $(printf '%s' "$AFTER_COV" | json_field weather_last_date)"
 printf '   %-12s %-21s %-12s %-21s %s\n' "city" "as-of before" "covers-to" "as-of after" "covers-to"
 for c in $CITIES; do
   IFS='|' read -r b_asof b_last _ <<<"${BEFORE[$c]}"
-  IFS='|' read -r a_asof a_last _ <<<"$(city_state "$c")"
+  IFS='|' read -r a_asof a_last a_rows <<<"$(city_state "$c")"
   printf '   %-12s %-21s %-12s %-21s %s\n' "$c" "$b_asof" "$b_last" "$a_asof" "$a_last"
+  printf '%s\t%s\t%s\t%s\n' "$c" "$a_asof" "$a_last" "$a_rows" >>"$STATE_DIR/after.tsv"
 done
 
 # ---------------------------------------------------------------- verdict --
 
 hr "Result"
-FAILED_CITIES="$(python3 -c \
-  'import json,sys;print(" ".join(json.load(open(sys.argv[1],encoding="utf-8"))["failed_cities"]))' \
-  "$REPORT_FILE")"
-rm -f "$REPORT_FILE"
-
 if [ -n "$FAILED_CITIES" ]; then
   fail "the provider did not answer for: $FAILED_CITIES"
   note "their stored forecast is unchanged and still carries its older as-of"

@@ -62,7 +62,7 @@ class FakeResponse:
         return self._payload
 
 
-def _payload_for(url: str):
+def _payload_for(url: str, overrides: dict | None = None):
     """Fixtures are keyed by the whole path, then by its first segment.
 
     The first segment alone serves `/weather/{city}` and `/records/{entity}/{id}`
@@ -70,21 +70,27 @@ def _payload_for(url: str):
     a particular city's data. The full path is tried first because
     `/itineraries` and `/itineraries/{id}` return genuinely different shapes --
     a list of titles and dates, and one plan with its days.
+
+    `overrides` replaces one path for one test. The fixture holds a single
+    example per endpoint, and a couple of states are only interesting as the
+    other case -- `/refresh/last` with nothing recorded, for instance.
     """
     path = urlparse(url).path.strip("/")
+    if overrides and path in overrides:
+        return overrides[path]
     for key in (path, path.split("/")[0]):
         if key in FIXTURES:
             return FIXTURES[key]
     raise AssertionError(f"the UI called /{path}, which the fixture does not cover")
 
 
-def _run(monkeypatch, *, offline=False) -> AppTest:
+def _run(monkeypatch, *, offline=False, overrides=None) -> AppTest:
     import requests
 
     def fake_get(url, params=None, timeout=None, **kwargs):
         if offline:
             raise requests.ConnectionError("no route to the API")
-        return FakeResponse(_payload_for(url))
+        return FakeResponse(_payload_for(url, overrides))
 
     def fake_request(method, url, json=None, timeout=None, **kwargs):
         if offline:
@@ -211,6 +217,8 @@ def test_the_saved_list_is_there_before_anything_is_built(app):
     """It is the whole point of the section: a trip saved in an earlier session
     has to be findable on arrival, with no plan in session state."""
     assert any("Saved itineraries" in element.value for element in app.markdown)
+
+
 def test_the_operator_refresh_tab_is_honest_about_what_it_does(app):
     """F4. The tab prints a command; it does not run one. A page that shows a
     freshness stamp next to a shell command reads as though it had just
@@ -228,7 +236,71 @@ def test_the_refresh_tab_shows_freshness_per_city(app):
     """A refresh that only half worked shows up as one city with an older
     as-of. A single global stamp would hide it."""
     update = next(tab for tab in app.tabs if "Update data" in tab.label)
-    frames = update.get("arrow_data_frame") or update.get("dataframe")
-    assert frames, "the per-city freshness table did not render"
-    columns = list(frames[0].value.columns)
-    assert {"City", "As of", "Covers to", "State"} <= set(columns)
+    frame = _frames(update)[0].value
+    assert {"City", "As of", "Covers to", "State"} <= set(frame.columns)
+
+
+def _frames(tab):
+    frames = list(tab.get("arrow_data_frame")) or list(tab.get("dataframe"))
+    assert frames, "the tab rendered no dataframe"
+    return frames
+
+
+def test_the_refresh_tab_keeps_stored_freshness_and_the_last_run_apart(app):
+    """F4. These answer different questions and the tab used to show only the
+    first, which let a failed refresh hide behind data that still looked fresh.
+    Two numbered sections, from two different sources, and the page says which is
+    which."""
+    update = next(tab for tab in app.tabs if "Update data" in tab.label)
+    text = " ".join(element.value for element in list(update.markdown) + list(update.caption))
+    assert "1. What is stored right now" in text
+    assert "2. What the last run of that command did" in text
+    assert "3. The operator command" in text
+    assert "state of the data, not the outcome of any particular refresh" in text
+    # Two tables, in that order: stored state, then the run.
+    assert len(_frames(update)) >= 2
+
+
+def test_the_last_run_report_names_the_city_the_provider_refused(app):
+    """The fixture is a run where four cities refreshed and Reykjavik did not.
+    Its stored as-of is unchanged, so the only place that failure appears is the
+    run report -- which is the whole reason the report exists."""
+    update = next(tab for tab in app.tabs if "Update data" in tab.label)
+    run_table = _frames(update)[1].value
+    assert {"City", "Result", "As of before", "As of after", "Why not"} <= set(run_table.columns)
+
+    row = run_table[run_table["City"] == "Reykjavik"].iloc[0]
+    assert row["Result"] == "FAILED"
+    assert row["As of before"] == row["As of after"], "a refused city's as-of must not move"
+    assert "ConnectionError" in row["Why not"]
+
+    rome = run_table[run_table["City"] == "Rome"].iloc[0]
+    assert rome["Result"] == "fetched"
+    assert rome["As of before"] != rome["As of after"]
+
+
+def test_the_last_run_report_states_whether_the_egress_window_closed(app):
+    """The one claim the command exists to make gets a card of its own."""
+    update = next(tab for tab in app.tabs if "Update data" in tab.label)
+    window = next(m for m in update.get("metric") if m.label == "Egress window")
+    assert window.value == "closed"
+
+
+def test_a_failed_run_is_not_reported_as_a_success(app):
+    update = next(tab for tab in app.tabs if "Update data" in tab.label)
+    errors = " ".join(element.value for element in update.get("error"))
+    assert "provider refused at least one city" in errors
+    assert "exit code" in errors
+    assert not update.get("success"), "a run that exited 2 must not render a success banner"
+
+
+def test_nothing_recorded_reads_as_nothing_recorded(monkeypatch):
+    """A fresh install has never refreshed. That must not look like a failure, and
+    it must not look like a success either."""
+    at = _run(monkeypatch, overrides={"refresh/last": {"recorded": False}})
+    assert not at.exception, [e.value for e in at.exception]
+    update = next(tab for tab in at.tabs if "Update data" in tab.label)
+    info = " ".join(element.value for element in update.get("info"))
+    assert "No refresh run has been recorded on this stack" in info
+    assert "not that a refresh failed" in info
+    assert not update.get("error")

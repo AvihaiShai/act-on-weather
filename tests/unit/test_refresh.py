@@ -179,4 +179,65 @@ def test_the_refresh_container_has_no_route_out():
     assert "egress" not in service
 
     # And it is not part of the stack: `docker compose up -d` cannot start it.
-    assert "scripts/refresh.sh" not in (ROOT / "compose.yml").read_text(encoding="utf-8")
+    # Comments are stripped first -- compose.yml mentions the script by name
+    # where it explains the refresh_state volume, and that is documentation,
+    # not a service that runs it.
+    stack = "\n".join(
+        line
+        for line in (ROOT / "compose.yml").read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "refresh.sh" not in stack
+
+
+def test_the_tools_target_the_aow_project_unless_told_otherwise():
+    """AOW_PROJECT exists so a drill can run the shipped command against an
+    isolated stack instead of editing this file. Its default has to stay `aow`,
+    and the project and the network have to be driven by the same variable --
+    otherwise these tools would drive one stack over another stack's network.
+    """
+    tools = (ROOT / "compose.tools.yml").read_text(encoding="utf-8")
+    assert "name: ${AOW_PROJECT:-aow}-tools" in tools
+    assert "name: ${AOW_PROJECT:-aow}_backend" in tools
+    # Both socket-holding services, not just the refresh one.
+    assert tools.count("COMPOSE_PROJECT_NAME: ${AOW_PROJECT:-aow}") == 2
+    assert ": aow\n" not in tools, "a hardcoded project name came back"
+
+
+def test_the_image_owns_the_directory_the_report_is_written_to():
+    """Docker takes a fresh named volume's ownership from the image's directory.
+    The services image runs as uid 10001, so a mount point that does not exist in
+    the image comes out root-owned and the write fails with EACCES -- and only on
+    a first run with a fresh volume, which is the run a reviewer does. This is
+    that bug, found in the drill and pinned here.
+    """
+    dockerfile = (ROOT / "services" / "Dockerfile").read_text(encoding="utf-8")
+    mount = str(config.REFRESH_STATE_PATH.parent)
+    assert f"mkdir -p /outbox {mount}" in dockerfile
+    assert f"chown -R appuser /app /outbox {mount}" in dockerfile
+
+
+def test_only_the_ingestor_may_write_the_report():
+    """The api serves the report and must not be able to change it: a status page
+    that can rewrite the status it reports is not a status page. Read-only there,
+    writable in the ingestor, which is where the refresh already runs."""
+    stack = (ROOT / "compose.yml").read_text(encoding="utf-8")
+    mount = str(config.REFRESH_STATE_PATH.parent)
+    ingestor = stack.split("  ingestor:", 1)[1].split("\n  consumer:", 1)[0]
+    api = stack.split("\n  api:", 1)[1].split("\n  ui:", 1)[0]
+    assert f"- refresh_state:{mount}\n" in ingestor
+    assert f"- refresh_state:{mount}:ro" in api
+
+
+def test_the_run_report_is_filed_on_every_path_but_a_check():
+    """The report is what the UI reads at GET /refresh/last. It is written from
+    the exit trap, so an interrupted run still records how far it got -- and
+    `--check` writes nothing, because overwriting the last real refresh with a
+    window test would lose the more useful of the two."""
+    script = (ROOT / "scripts" / "refresh.sh").read_text(encoding="utf-8")
+    trap = script.split("on_exit() {", 1)[1].split("\ntrap ", 1)[0]
+    assert "persist_report" in trap, "the exit trap does not file the run report"
+    # After the window is dealt with, never before: the boundary outranks the
+    # bookkeeping.
+    assert trap.index("close_egress") < trap.index("persist_report")
+    assert "PERSIST=0" in script.split('if [ "$CHECK" = 1 ]; then', 1)[1]
