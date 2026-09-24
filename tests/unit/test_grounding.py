@@ -991,6 +991,7 @@ def test_a_figure_no_row_carries_is_rejected():
 
     answer = "Lisbon has a history dating back over 2,000 years."
     assert any("2000" in v for v in grounding.violations(answer, brief))
+    assert any("40" in v for v in grounding.violations("Lisbon has a 40-year tradition.", brief))
 
     # The figures the summary does carry are fine, however they are spelled.
     assert grounding.violations("Lisbon had 658236 people in 2025.", brief) == []

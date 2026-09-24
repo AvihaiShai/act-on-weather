@@ -919,10 +919,11 @@ def violations(answer: str, brief: Brief) -> list[str]:
         # 9. A quantity from the same place. Asked about the history of Lisbon
         #    the model wrote "a history dating back over 2,000 years" from a
         #    summary that gives a population and a river and no age at all.
-        #    Only three digits and up: a stray "5 days" is a restatement, while
-        #    a number this size is a fact, and it has to have come from a row.
+        #    Smaller invented quantities are facts too: "a 40-year tradition"
+        #    needs support just as much as "2,000 years" does. The question,
+        #    requested dates and rendered measurements are in the vocabulary.
         for number in sorted(_numbers_in(raw)):
-            if len(number) >= 3 and number not in allowed_numbers:
+            if number not in allowed_numbers:
                 found.append(f"states the figure {number}, which no retrieved row carries")
 
     # Stable and deduplicated: this string ends up in a log line and a note.
