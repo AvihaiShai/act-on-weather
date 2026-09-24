@@ -191,10 +191,23 @@ start_window_guard() {
 
 open_egress() {
   hr "Opening the egress window"
-  start_window_guard
+  # Order matters, and the drill is what settled it. The network is created
+  # first, then the guard, then the attachment:
+  #
+  #   * guard before the network, and its first look finds nothing. It then has
+  #     to sit in a timed wait for a window to appear, which makes it linger for
+  #     the length of that wait after a fast run and lets it adopt a LATER run's
+  #     window under this run's deadline. Both observed.
+  #   * guard after the attachment, and there is a gap in which a kill leaves a
+  #     window nothing is watching.
+  #
+  # Between create and connect there is no route out for anyone -- the network
+  # exists and has no members -- so a kill there is harmless, and the next run
+  # removes the empty network.
   if ! network_exists; then
     docker network create --label "$EGRESS_LABEL" "$EGRESS" >/dev/null
   fi
+  start_window_guard
   # Already attached means a previous run was killed before it could close its
   # window. Adopt it rather than refusing: this run closes it either way, which
   # is the whole point of running this command instead of typing the sequence.

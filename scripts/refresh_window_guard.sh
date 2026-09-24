@@ -32,13 +32,13 @@
 # runner already make, and for the same reason: driving Docker IS the job.
 # Nothing in the running stack has the socket.
 #
-# It is started before the network exists, deliberately: a guard started after
-# the window opens has a gap in which a kill leaves an unguarded window. So it
-# waits for the window to appear first, and gives up if it never does -- a
-# refresh that died before opening anything leaves nothing to guard. Getting
-# this backwards is how the first version of this script failed its own drill:
-# it checked once, saw no network, decided the window was already closed, and
-# exited a second before the window it was meant to bound was created.
+# It is started after the network is created and before the ingestor is attached
+# to it, so the window is never unwatched while anything can route through it,
+# and the guard's first look already finds the network. The short wait below is
+# only a belt: two earlier orderings each failed a drill -- started before the
+# network, the guard checked once, saw nothing, and exited a second before the
+# window it existed to bound was created; given a long wait instead, it lingered
+# after fast runs and adopted a later run's window under the wrong deadline.
 #
 # Usage (the refresh does this; it is not typed by hand):
 #   bash refresh_window_guard.sh NETWORK CONTAINER DEADLINE_S [POLL_S] [APPEAR_S]
@@ -48,9 +48,11 @@ EGRESS="${1:?network name}"
 CID="${2:?ingestor container}"
 DEADLINE="${3:?deadline in seconds}"
 POLL="${4:-5}"
-# How long to wait for the window to be created at all. The refresh creates it
-# within a second of starting this; a minute is slack, not a design parameter.
-APPEAR="${5:-60}"
+# How long to wait for the window to exist. The refresh creates it BEFORE
+# starting this, so the normal answer is "already there" and this wait covers
+# only a daemon slow to answer. Short on purpose: a long wait here is how a
+# guard outlives its own run and starts watching the next one's window.
+APPEAR="${5:-10}"
 
 log() { printf '%s window-guard %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 

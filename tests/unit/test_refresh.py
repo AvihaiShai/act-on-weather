@@ -247,9 +247,16 @@ def test_the_egress_window_has_a_deadline_that_outlives_this_process():
 
     opener = script.split("open_egress() {", 1)[1].split("\n}", 1)[0]
     assert "start_window_guard" in opener, "the guard is not started by open_egress"
-    # Before the network is created, not after: a guard started afterwards has a
-    # gap in which a kill leaves an unguarded window.
-    assert opener.index("start_window_guard") < opener.index("docker network create")
+    # After the network is created and before the ingestor is attached to it.
+    # Earlier than that and the guard's first look finds nothing, so it has to
+    # sit in a timed wait and can outlive its own run; later and there is a gap
+    # in which a kill leaves a window nothing is watching. Both were observed in
+    # drills, which is why the order is asserted rather than left to a comment.
+    assert (
+        opener.index("docker network create")
+        < opener.index("start_window_guard")
+        < opener.index("docker network connect")
+    )
 
     # The guard needs the socket and nothing else. No route out, so a guard that
     # is somehow compromised cannot reach the internet through the very hole it
@@ -284,18 +291,16 @@ def test_the_guard_closes_the_window_and_gives_up_loudly():
     assert "exit 1" in tail, "a guard that cannot close the window must fail, not pass"
 
 
-def test_the_guard_waits_for_the_window_before_watching_it():
-    """The bug the first drill found. The guard is started before the window is
-    created -- on purpose, so there is no unguarded gap -- so its first check
-    finds no network. A single check there makes the guard exit instantly and
-    leaves the window it was meant to bound completely unguarded, which is how
-    the first version failed. It has to wait for the window to appear, and give
-    up only after a bounded wait."""
+def test_the_guard_tolerates_a_window_that_is_not_there_yet_but_does_not_linger():
+    """Two drills shaped this. A guard that checks once and exits abandons the
+    window when the daemon is a beat slow; a guard that waits a long time
+    outlives its own fast run and starts watching the next run's window under
+    the wrong deadline. So: wait, but briefly, and give up loudly."""
     guard = (ROOT / "scripts" / "refresh_window_guard.sh").read_text(encoding="utf-8")
     appear, _, watch = guard.partition("# Phase 2")
     assert "while ! network_exists; do" in appear, "the guard does not wait for the window"
     assert "never appeared" in appear, "the guard never gives up waiting"
-    assert 'APPEAR="${5:-60}"' in guard
+    assert 'APPEAR="${5:-10}"' in guard, "the appear-wait is long enough to outlive a run"
     # And the deadline is counted from when the window opened, not from when the
     # guard started, or a slow start would eat into the bound.
     assert "elapsed=0" in watch and watch.index("elapsed=0") < watch.index("DEADLINE")
