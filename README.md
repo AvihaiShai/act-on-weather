@@ -370,6 +370,22 @@ Four drills — consumer down, database down, broker down and poison message. Ea
 **single accepted `message_id`** to its terminal state. Row counts are
 deliberately not the assertion: a loss and a duplicate cancel out in a count.
 
+**The same guarantee is a CI gate.** `scripts/ci-integration.sh` runs against a
+real broker and database in a throwaway Compose project, and no image is
+published unless it passes. It accepts one record per failure mode — consumer
+stopped, broker stopped, database stopped — each with its own `message_id`,
+then restarts every service in the path and asks a **separate reader
+connection** for all of them at once. Any single missing ID fails the job, and
+so does any duplicate.
+
+The database drill waits for the consumer to log a failed delivery before
+restoring Postgres. That wait is the drill: if the database comes back before
+the delivery arrives, the consumer never drops its connection, never takes the
+reconnect path, and the drill passes against a broken build. Verified by
+rebuilding the service image with the reconnect fix removed — the gate then
+fails naming the lost ID, while the consumer-down and broker-down drills still
+pass, because neither touches that path.
+
 **Reconcile older accepted records.** After an upgrade from a version with the
 database reconnect bug, audit both producer outboxes while the stack is up:
 
@@ -885,7 +901,7 @@ you can run.
 | M8 | Tourism: history, places, sports events | `facts`, `places`, `events` tables | `docker compose -f compose.tools.yml run --rm demos questions` (Lisbon history, London sports) |
 | M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build and save a plan in the UI |
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
-| M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `docker compose -f compose.tools.yml run --rm demos no-data-loss` |
+| M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive, outbox↔`ingest_log` reconciliation | `docker compose -f compose.tools.yml run --rm demos no-data-loss`; the CI gate in `scripts/ci-integration.sh` |
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh (`scripts/refresh.sh`), re-enrichment | `docker compose -f compose.tools.yml run --rm demos update`; `… run --rm refresh --check` for the egress window |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
@@ -963,8 +979,18 @@ Docker socket, for the reason given there.
 Stated, not implied:
 
 * **Single-replica broker and database.** Fine for this; not an HA design.
-* **The guarantee is demonstrated by four drills, not by per-message
-  accounting.** There is no reconciler proving every enrichment was delivered.
+* **Per-message accounting covers the producer outboxes, not the whole
+  system.** `services.common.reconcile` audits every confirmed outbox envelope
+  against `ingest_log` and can replay a missing one, so an accepted record can
+  always be accounted for. There is still no equivalent reconciler proving
+  every *enrichment* was delivered.
+* **The outage gate drives the API outbox, not the ingestor's.** The three
+  drills accept through the API, so it is the API's outbox that is proven
+  across a broker and a database outage. The ingestor's outbox is audited on
+  every CI run -- every confirmed envelope reconciled against `ingest_log` --
+  but this gate never stops a dependency underneath the ingestor and replays
+  through it. Same code path on both sides, so the risk is small; it is still
+  audited rather than exercised, and the claim stops there.
 * **The enricher polls** rather than binding to the weather stream. That is a
   deliberate trade: no second delivery branch means no silent partial fan-out.
 * **A user-entered activity is scored against general outdoor comfort**, not a

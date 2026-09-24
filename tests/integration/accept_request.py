@@ -1,4 +1,14 @@
-"""Accept one durable API write while Postgres is stopped in CI."""
+"""Accept one durable API write while a dependency is stopped behind it.
+
+Run once per M11 failure mode -- consumer down, broker down, database down --
+so each drill carries its own `message_id`. `AOW_TEST_LABEL` keeps the three
+activities distinct, which makes the recommendation rows as traceable as the
+ingest_log rows.
+
+The assertion here is only about acceptance: the record reached the fsynced
+outbox, which is where the no-data-loss guarantee starts. Whether it was
+committed is `verify_db_recovery.py`'s question, asked from another connection.
+"""
 
 import json
 import os
@@ -11,7 +21,7 @@ body = json.dumps(
     {
         "city": "rome",
         "forecast_date": os.environ["AOW_TEST_DATE"].strip(),
-        "activity": "ci database outage",
+        "activity": os.environ["AOW_TEST_LABEL"].strip(),
     }
 ).encode()
 request = urllib.request.Request(
