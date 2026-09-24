@@ -275,6 +275,9 @@ jobs:
       # scripts/verify-bundle-images.sh on itself before returning. It writes
       # dist/aow-<sha>/{images.tar,images.bundle.lock,SHA256SUMS,...}.
       - name: Build the offline bundle (scripts/package-offline.sh)
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/package-offline.sh release/images.lock
 
       # Gate 5, explicit and separate from the internal check above: same

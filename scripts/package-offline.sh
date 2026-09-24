@@ -149,6 +149,13 @@ docker save -o "$out/images.tar" \
   "aow-bundle/stage:$commit" "aow-bundle/demos:$commit" \
   "aow-bundle/prometheus:$commit" "aow-bundle/grafana:$commit"
 
+# Docker's containerd image store can save the registry index and child
+# manifest while omitting shared config/layer blobs. The verifier below catches
+# that, but repairing it here from GHCR by digest lets the same archive pass
+# on a clean offline host. The helper hashes every fetched blob before adding
+# it, and verify-bundle.sh independently checks the finished archive.
+python3 scripts/complete-bundle-archive.py "$out/images.tar" "$out/images.bundle.lock"
+
 # The proof runner is built from this release's pinned Dockerfile on the
 # connected machine. Record its manifest digest from the archive we ship.
 demos_digest="$(bash scripts/bundle-image-manifests.sh "$out/images.tar" | awk '$1 == "demos" {print $2}')"
