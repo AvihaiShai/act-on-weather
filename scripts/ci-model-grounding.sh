@@ -29,6 +29,13 @@ cleanup() {
 trap cleanup EXIT
 
 dc config --quiet
+# Same reason the browser gate pulls `edge`: everything below runs with
+# --pull never, so the llama.cpp server image has to be fetched first. On a
+# developer machine it is already in the store because the stack has been run;
+# on a clean runner it is not, and the first real run failed with
+# `No such image: ghcr.io/ggml-org/llama.cpp:server@sha256:...` after having
+# successfully staged the 1.28 GB model.
+dc pull llm
 dc up -d --no-build --pull never llm
 dc run --rm --no-deps probe
 echo "PASS: the real-model grounding probe held against llama.cpp + Qwen3-1.7B"
