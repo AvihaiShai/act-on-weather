@@ -1,11 +1,22 @@
-# Connected mode. Overlaid on compose.yml ONLY for staging and for a refresh:
+# Connected mode. Overlaid on compose.yml for the two developer-side commands
+# that need a route out and a writable ./data:
 #
-#   docker compose -f compose.yml -f compose.connected.yml up -d ingestor
+#   make snapshot   -- rebuild data/snapshot/ from source
+#   (and the manual refresh sequence the README documents as the fallback)
 #
 # It attaches the ingestor -- and nothing else -- to the `egress` bridge. Every
 # other service stays on `backend`, which Docker itself keeps unrouted, so the
 # LLM, the agent, the queue and the database have no way out even while this
 # overlay is active.
+#
+# For refreshing a RUNNING stack, use the operator command instead:
+#
+#   docker compose -f compose.tools.yml run --rm refresh
+#
+# It attaches the one interface without recreating the ingestor, and -- unlike
+# `up -d ingestor` with this overlay -- it closes the window again from a trap
+# and asserts that it closed. `up` leaves the ingestor connected until someone
+# remembers to run `docker compose up -d ingestor` a third time.
 #
 # The default `docker compose up -d` does not include this file, which is why
 # the normal run has no egress at all.

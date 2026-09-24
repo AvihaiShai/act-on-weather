@@ -162,3 +162,26 @@ def test_an_unreachable_api_is_reported_not_crashed(monkeypatch):
     at = _run(monkeypatch, offline=True)
     assert not at.exception, [e.value for e in at.exception]
     assert any("unreachable" in error.value for error in at.error)
+
+
+def test_the_operator_refresh_tab_is_honest_about_what_it_does(app):
+    """F4. The tab prints a command; it does not run one. A page that shows a
+    freshness stamp next to a shell command reads as though it had just
+    refreshed, so the disclaimer and the absence of a fetch button are the
+    assertion."""
+    update = next(tab for tab in app.tabs if "Update data" in tab.label)
+    code = " ".join(element.value for element in update.get("code"))
+    assert "compose.tools.yml run --rm refresh" in code
+    assert "docker compose up -d ingestor" in code, "the manual sequence lost its last command"
+    assert any("does not fetch" in element.value for element in update.get("warning"))
+    assert not [b for b in update.get("button") if "fetch" in b.label.lower()]
+
+
+def test_the_refresh_tab_shows_freshness_per_city(app):
+    """A refresh that only half worked shows up as one city with an older
+    as-of. A single global stamp would hide it."""
+    update = next(tab for tab in app.tabs if "Update data" in tab.label)
+    frames = update.get("arrow_data_frame") or update.get("dataframe")
+    assert frames, "the per-city freshness table did not render"
+    columns = list(frames[0].value.columns)
+    assert {"City", "As of", "Covers to", "State"} <= set(columns)

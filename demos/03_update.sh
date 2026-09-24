@@ -8,9 +8,11 @@
 #   1. a user correction  PATCH /records/{entity}/{id}  -- accepted, queued,
 #      applied by the consumer, revision bumped, before-and-after filed.
 #      Works offline. Demonstrated below.
-#   2. a connected refresh  docker compose exec ingestor python -m
-#      services.ingestor.refresh  -- re-fetches the forecast and moves the
-#      coverage window forward. Needs connectivity, by definition.
+#   2. a connected refresh  docker compose -f compose.tools.yml run --rm
+#      refresh  -- opens a temporary egress window for the ingestor alone,
+#      re-fetches the forecast, moves the coverage window forward and closes
+#      the window again. Needs connectivity, by definition, which is why it is
+#      named here rather than run: these proofs run air-gapped.
 #   3. re-enrichment  when weather behind a recommendation changes, the
 #      consumer resets that row to pending and the enricher rewords it.
 #      Works offline. Demonstrated by demos/04_reenrich.sh.

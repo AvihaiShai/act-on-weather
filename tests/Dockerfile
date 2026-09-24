@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r /tmp/req/requirements.txt -r /tmp/req/ui.txt \
       pytest==8.3.3 ruff==0.8.4 httpx==0.27.2
 
 COPY pytest.ini ruff.toml ./
-# Two tests read the deployment files themselves rather than the code.
+# Three tests read the deployment files themselves rather than the code.
 # test_demo_events.py asserts that AOW_DEMO_EVENTS appears only in the demo
 # overlay -- if demo mode ever leaked into the default compose file it would
 # stop being opt-in. test_compose_ports.py asserts that every published port,
@@ -24,6 +24,8 @@ COPY pytest.ini ruff.toml ./
 # it is the file an operator copies before their first run, and a wide address
 # there would override every default in the Compose files. It holds
 # placeholders only; the real `.env` is excluded by .dockerignore.
+# test_refresh.py reads compose.tools.yml from the same set: the
+# operator-refresh container must not be on the egress network.
 COPY compose*.yml .env.example ./
 COPY data/ ./data/
 COPY services/ ./services/

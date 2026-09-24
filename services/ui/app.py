@@ -21,8 +21,9 @@ click would fire every query in the app.
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from html import escape
+from zoneinfo import ZoneInfo
 
 import forecast
 import pandas as pd
@@ -851,7 +852,7 @@ def page_update(cov) -> None:
 
     refresh_tab, correct_tab, reword_tab = st.tabs(
         [
-            "1 · Refresh from the provider",
+            "1 · Operator refresh (connected)",
             "2 · Correct a record",
             "3 · Re-word with the model",
         ]
@@ -866,36 +867,149 @@ def page_update(cov) -> None:
 
 
 def render_refresh(cov) -> None:
-    st.markdown(
-        "**Fetch a newer forecast.** Needs connectivity — this is the one path "
-        "that cannot work air-gapped, by design."
-    )
-    columns = st.columns(3)
-    columns[0].metric("Weather as of", fmt_ts(cov.get("weather_as_of")).replace(" UTC", ""))
-    columns[1].metric("Covers from", cov.get("weather_first_date") or "-")
-    columns[2].metric("Covers to", cov.get("weather_last_date") or "-")
+    """The one update path that needs a route out -- and the only tab in this UI
+    that describes an operator action instead of performing one.
 
+    There is deliberately no button here. Pressing it would have to reach
+    something that can attach the ingestor to the egress network, which means
+    either the Docker socket inside this container or an unauthenticated write
+    endpoint that runs host commands. Both are a worse problem than the one they
+    solve, in a container whose entire job is rendering read-only views.
+
+    So this tab shows the two things it can show honestly: how fresh the stored
+    forecast actually is, city by city, and the exact command an operator runs.
+    Nothing on this page fetches anything -- and it says so, because a page that
+    prints a command next to a freshness stamp reads as if it had just run it.
+    """
     st.markdown(
-        "The default `docker compose up` gives no service a route out. A refresh "
-        "attaches **only the ingestor** to the egress network, fetches a fresh "
-        "forecast, and drops it into the same outbox everything else uses:"
+        "**Operator refresh.** Run from a shell on the Docker host. Needs "
+        "connectivity — this is the one path that cannot work air-gapped, by design."
     )
-    st.code(
-        "docker compose -f compose.yml -f compose.connected.yml up -d ingestor\n"
-        "docker compose exec ingestor python -m services.ingestor.refresh",
-        language="bash",
+    st.warning(
+        "This page does not fetch. It shows what is stored right now, and the "
+        "command that changes it. Nothing here reaches the provider.",
+        icon="ℹ",
     )
+
+    st.markdown("#### What is stored right now")
+    columns = st.columns(4)
+    columns[0].metric("Newest weather as-of", fmt_ts(cov.get("weather_as_of")).replace(" UTC", ""))
+    columns[1].metric("Age", age_of(cov.get("weather_as_of")))
+    columns[2].metric("Covers from", cov.get("weather_first_date") or "-")
+    columns[3].metric("Covers to", cov.get("weather_last_date") or "-")
+
+    st.dataframe(freshness_table(cov), hide_index=True, width="stretch")
     st.caption(
-        "Each refreshed day carries a new `as_of`, so the consumer bumps the row's "
-        "revision, files the before-and-after into `record_history`, re-scores every "
-        "activity for that day and resets their wording to pending. The coverage "
-        "window above moves forward on its own."
+        "Per city, because a refresh that only half worked looks exactly like "
+        "this: four cities stamped minutes ago and one still carrying last "
+        "week's as-of. The command below reports the same split at the time it "
+        "runs, and exits non-zero when any city fails."
     )
+    if st.button("Re-read stored data", key="refresh_reread"):
+        st.cache_data.clear()
+        st.rerun()
+    st.caption(
+        "Re-reads the database through the API. It does not contact the weather "
+        "provider — only the command below does that."
+    )
+
+    st.markdown("#### The operator command")
+    st.code("docker compose -f compose.tools.yml run --rm refresh", language="bash")
+    st.caption(
+        "It attaches **only the ingestor** to the egress network, fetches the "
+        "forecast into the same outbox every other record uses, then closes that "
+        "window again from a trap — on success, on a failed fetch and on Ctrl-C "
+        "alike — and asserts it closed before reporting. It prints per-city "
+        "success or failure, the as-of before and after, the accepted message "
+        "ids, and how many of them are stored versus still in flight. "
+        "`--check` opens and closes the window without fetching, and needs no "
+        "connectivity."
+    )
+
+    with st.expander("The manual sequence, and why the wrapper exists"):
+        st.markdown(
+            "Typed by hand it is three commands, and the **third** is the one "
+            "that matters: it is what puts the ingestor back on the internal "
+            "network. Until it runs, one service in this stack still has a route "
+            "out."
+        )
+        st.code(
+            "docker compose -f compose.yml -f compose.connected.yml up -d ingestor\n"
+            "docker compose exec ingestor python -m services.ingestor.refresh\n"
+            "docker compose up -d ingestor",
+            language="bash",
+        )
+        st.markdown(
+            "The wrapper exists because a step an operator has to remember is a "
+            "step that gets skipped — and because a failed fetch, or a closed "
+            "terminal, skips it too."
+        )
+
     st.info(
         "Offline, this is deliberately the one thing that does not work. The system "
         "keeps answering from what it holds and refuses dates outside the stored "
         "window rather than guessing at them."
     )
+
+
+def age_of(as_of) -> str:
+    """How old a stamp is, in words. An as-of is only meaningful next to how
+    long ago it was."""
+    if not as_of:
+        return "never"
+    try:
+        stamp = datetime.fromisoformat(str(as_of).replace("Z", "+00:00"))
+    except ValueError:
+        return "unknown"
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    minutes = int((datetime.now(UTC) - stamp).total_seconds() // 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h"
+    return f"{minutes // 1440} days"
+
+
+def freshness_table(cov) -> pd.DataFrame:
+    """One row per city: its own as-of, its own coverage end, and whether that
+    still reaches today in that city.
+
+    Built from the stored rows, not from a refresh log -- there is no such log,
+    and inventing one would let this page claim a refresh that never landed.
+    "Days ahead" is counted against the city's local date, the same date
+    `forecast.next_row` uses for the forecast card, so the two cannot disagree.
+    """
+    now = forecast.utc_now()
+    rows = []
+    for city in cov["cities"]:
+        stored = cached_get(f"/weather/{city['id']}") or []
+        as_of = max((str(row["as_of"]) for row in stored), default="")
+        last = max((str(row["forecast_date"]) for row in stored), default="")
+        today = now.astimezone(ZoneInfo(city["timezone"])).date()
+        ahead = (date.fromisoformat(last) - today).days if last else None
+        if not stored:
+            state = "no stored forecast"
+        elif ahead is None or ahead < 0:
+            state = "expired — refresh needed"
+        elif ahead < 2:
+            state = "runs out within a day"
+        else:
+            state = "covers the week ahead"
+        rows.append(
+            {
+                "City": city["name"],
+                "As of": fmt_ts(as_of),
+                "Age": age_of(as_of),
+                "Covers to": last or "-",
+                "Days ahead": "-" if ahead is None else ahead,
+                "State": state,
+                "Stored days": len(stored),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def render_correction(cov) -> None:

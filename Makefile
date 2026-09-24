@@ -8,8 +8,8 @@ DEMO           := -f compose.yml -f compose.demo.yml
 TOOLS          := -f compose.tools.yml
 
 .PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
-        offline no-data-loss update reenrich questions refresh snapshot \
-        samples redrive dlq clean
+        offline no-data-loss update reenrich questions refresh refresh-check \
+        snapshot samples redrive dlq clean
 
 help:
 	@echo "Staging (needs the internet, once):"
@@ -31,7 +31,8 @@ help:
 	@echo "  make demo           all of the above, in order"
 	@echo ""
 	@echo "Connected maintenance:"
-	@echo "  make refresh        re-fetch the forecast (extends the coverage window)"
+	@echo "  make refresh        re-fetch the forecast through a temporary egress window"
+	@echo "  make refresh-check  prove that window opens and closes (no internet needed)"
 	@echo "  make snapshot       rebuild data/snapshot/ from source"
 	@echo "  make samples        regenerate the labelled sample events (no network)"
 	@echo ""
@@ -111,10 +112,22 @@ questions:     ; bash demos/05_questions.sh
 demo: offline questions no-data-loss update reenrich
 
 # ------------------------------------------------------ connected updates --
+# The operator refresh. One command, because the dangerous part of a refresh is
+# not the fetch -- it is the step afterwards that puts the ingestor back on the
+# internal network, and a step an operator has to remember is a step that gets
+# skipped. scripts/refresh.sh closes that window from a trap and asserts it
+# closed, so an interrupt or a failed fetch cannot leave a route out.
+#
+# The portable form -- what the README documents, and what a Windows reviewer
+# runs -- is the compose line below, executing this same script from this same
+# working tree.
 refresh:
-	$(COMPOSE) $(CONNECTED) up -d ingestor
-	$(COMPOSE) exec ingestor python -m services.ingestor.refresh
-	@echo "Accepted. It publishes within a few seconds; check GET /coverage."
+	$(COMPOSE) $(TOOLS) run --rm refresh
+
+# Opens and closes the egress window without fetching anything: the drill for
+# "does this always put the ingestor back?". Needs no internet.
+refresh-check:
+	$(COMPOSE) $(TOOLS) run --rm refresh --check
 
 snapshot:
 	$(COMPOSE) $(CONNECTED) run --rm --no-deps ingestor \

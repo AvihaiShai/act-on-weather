@@ -137,26 +137,62 @@ def accept_snapshot(box: Outbox, snapshot_dir: Path) -> int:
     return total
 
 
-def accept_live_weather(box: Outbox, cities: list[dict[str, Any]], days: int) -> int:
+def accept_live_weather(
+    box: Outbox, cities: list[dict[str, Any]], days: int
+) -> list[dict[str, Any]]:
     """Connected refresh: fetch a fresh forecast and accept it (M12).
 
     Every accepted day carries a new as_of, so the consumer's revision bump
     fires and the coverage window moves forward.
+
+    Returns one result per city rather than a single total. A refresh is an
+    operator action, and "203 days accepted" hides the case the operator most
+    needs to see: the provider answered for four cities and refused the fifth,
+    whose stored forecast is now quietly older than the rest. The accepted
+    message ids come back too, so the wrapper can follow them to the database.
     """
     from .providers import get_provider
 
     provider = get_provider(os.environ.get("WEATHER_PROVIDER", "open-meteo"))
-    total = 0
+    results: list[dict[str, Any]] = []
     for city in cities:
+        result: dict[str, Any] = {
+            "city": city["slug"],
+            "name": city.get("name", city["slug"]),
+            "provider": provider.name,
+            "ok": False,
+            "error": None,
+            "accepted": 0,
+            "message_ids": [],
+            "as_of": None,
+            "first_date": None,
+            "last_date": None,
+        }
         try:
             payloads = provider.daily_forecast(city, days)
         except Exception as exc:  # noqa: BLE001 - one city must not stop the rest
             log.error("forecast fetch failed for %s: %s", city["slug"], exc)
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            results.append(result)
+            continue
+        if not payloads:
+            log.error("forecast fetch returned no days for %s", city["slug"])
+            result["error"] = "provider returned no forecast days"
+            results.append(result)
             continue
         ids = box.accept_many(list(envelopes_from(config.RK_WEATHER, payloads, provider.name)))
-        total += len(ids)
+        dates = sorted(p["forecast_date"] for p in payloads)
+        result.update(
+            ok=True,
+            accepted=len(ids),
+            message_ids=ids,
+            as_of=max(p["as_of"] for p in payloads),
+            first_date=dates[0],
+            last_date=dates[-1],
+        )
+        results.append(result)
         log.info("accepted %d forecast days for %s", len(ids), city["slug"])
-    return total
+    return results
 
 
 # ------------------------------------------------------------ publishing ----
@@ -192,7 +228,7 @@ def main() -> int:
 
     def accept_once() -> int:
         if mode == "live":
-            return accept_live_weather(box, cities, days)
+            return sum(r["accepted"] for r in accept_live_weather(box, cities, days))
         return accept_snapshot(box, config.SNAPSHOT_DIR)
 
     accepted = accept_once()
