@@ -232,6 +232,12 @@ jobs:
           bash -n demos/*.sh
           docker compose -f compose.yml -f compose.ci.yml --env-file .env.example config --quiet
           AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml --env-file .env.example config --quiet
+          # The monitoring overlay's bundled form. A reviewer running the
+          # observability profile from an installed release passes all four,
+          # so all four are rendered here -- an overlay combination nobody
+          # validates is one that breaks on the reviewer's machine and
+          # nowhere else.
+          AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml -f compose.observability.yml -f compose.observability.bundle.yml --env-file .env.example config --quiet
           # Every overlay a reviewer can actually pass to `docker compose -f`
           # is rendered here. An overlay nobody validates is one that breaks on
           # the reviewer's machine and nowhere else.
@@ -444,21 +450,31 @@ jobs:
             docker buildx imagetools create --tag "$image" "$image"
             # Re-resolved after imagetools create, deliberately: the lock
             # must record the digest the tag resolves to now (the index),
-            # not the pre-wrap child-manifest digest -- verified directly
-            # against a real public multi-arch tag (alpine:3.20): `docker
-            # pull` + `docker image inspect .RepoDigests` reports the same
-            # digest `docker pull` prints on its own "Digest:" line, i.e.
-            # whatever the tag itself resolves to server-side (the index),
-            # never a per-platform child. `docker manifest inspect -v` is a
-            # different code path and does NOT have this property -- it
-            # returns one entry per child manifest, and naively indexing it
-            # (e.g. `[0]`) hands back an amd64 child digest, not the index.
-            # That is the mistake the "linux/amd64 platform descriptor"
-            # assertion step below exists to catch, for any image, not only
-            # this one -- see its comment.
-            docker pull "$image" >/dev/null
-            digest_ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" | grep -F -m1 "$image_root/$component@sha256:")"
-            test -n "$digest_ref"
+            # not the pre-wrap child-manifest digest, because the index is
+            # what a `docker save` archive records per alias, and therefore
+            # what the offline bundle verification anchors against.
+            #
+            # Resolved with `imagetools inspect --format`: a registry-side
+            # query that never consults the local image store. That matters
+            # more than it looks. The previous version used `docker pull` +
+            # `docker image inspect .RepoDigests`, verified against a real
+            # multi-arch tag on a containerd-store engine, where it does
+            # return the index. On the GitHub runner's *classic* store,
+            # pulling a manifest list resolves to the platform-specific child
+            # and RepoDigests records THAT instead. Same command, two answers,
+            # decided by an image-store type nothing in this repo controls.
+            # It shipped a lock naming the child while the tag named the
+            # index, which fails bundle verification on the offline host.
+            #
+            # `docker manifest inspect -v` is a third code path with the same
+            # trap: it returns one entry per child manifest, so naively
+            # indexing it (e.g. `[0]`) also hands back a child digest.
+            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image")"
+            case "$digest" in
+              sha256:*) ;;
+              *) echo "::error::no index digest resolved for $image (got '$digest')"; exit 1 ;;
+            esac
+            digest_ref="$image_root/$component@$digest"
             echo "$component $digest_ref" | tee -a release/images.lock "$GITHUB_STEP_SUMMARY"
           done
 
