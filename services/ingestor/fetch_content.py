@@ -597,6 +597,7 @@ def fetch_places(
 
     tag_to_category = {(k, v): c for k, v, c in OSM_CATEGORIES}
     groups = [OSM_CATEGORIES[i : i + 4] for i in range(0, len(OSM_CATEGORIES), 4)]
+    seen_ids: set[str] = set()
 
     for city in cities:
         elements: list[dict[str, Any]] = []
@@ -624,14 +625,18 @@ def fetch_places(
             name = tags.get("name")
             if not category or not name:
                 continue
+            place_id = f"osm:{element['type']}/{element['id']}"
+            if place_id in seen_ids:
+                continue
             if per_category.get(category, 0) >= PER_CATEGORY_LIMIT:
                 continue
+            seen_ids.add(place_id)
             per_category[category] = per_category.get(category, 0) + 1
 
             centre = element.get("center") or {}
             rows.append(
                 {
-                    "id": f"osm:{element['type']}/{element['id']}",
+                    "id": place_id,
                     "city_id": city["slug"],
                     "name": name,
                     "category": category,

@@ -195,6 +195,7 @@ jobs:
           # Rendered on its own: it is never combined with compose.yml, and its
           # one external network is not resolved at config time.
           docker compose -f compose.tools.yml --env-file .env.example config --quiet
+          AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.tools.yml -f compose.tools.bundle.yml --env-file .env.example config --quiet
 
       - name: Workflow actions are pinned by commit
         run: |

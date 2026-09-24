@@ -19,16 +19,7 @@ test -f images.tar || { echo "no images.tar in $dir" >&2; exit 1; }
 test -f images.bundle.lock || { echo "no images.bundle.lock in $dir" >&2; exit 1; }
 
 # alias -> manifest digest, as recorded inside the archive.
-actual="$(tar -xOf images.tar index.json \
-  | tr ',{}' '\n\n\n' \
-  | awk -F'"' '
-      /"digest"/ { digest = $4 }
-      /"io\.containerd\.image\.name"/ {
-        count = split($4, parts, "/")
-        alias = parts[count]
-        sub(/:.*/, "", alias)
-        print alias, digest
-      }')"
+actual="$(bash scripts/bundle-image-manifests.sh images.tar)"
 
 status=0
 expected_count=0

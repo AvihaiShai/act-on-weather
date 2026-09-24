@@ -14,13 +14,14 @@ source "$(dirname "$0")/lib.sh"
 FAILED=0
 
 hr "1. Docker itself forbids a route out of the application network"
-INTERNAL=$(docker network inspect aow_backend -f '{{.Internal}}' 2>/dev/null || echo "?")
-note "aow_backend Internal = $INTERNAL"
+STACK_PROJECT="${COMPOSE_PROJECT_NAME:-aow}"
+INTERNAL=$(docker network inspect "${STACK_PROJECT}_backend" -f '{{.Internal}}' 2>/dev/null || echo "?")
+note "${STACK_PROJECT}_backend Internal = $INTERNAL"
 [ "$INTERNAL" = "true" ] && pass "every application service is on a network with no gateway" \
-                         || fail "aow_backend is not internal"
+                         || fail "${STACK_PROJECT}_backend is not internal"
 
 note "which containers are attached to a routable network:"
-for net in aow_frontend aow_egress; do
+for net in "${STACK_PROJECT}_frontend" "${STACK_PROJECT}_egress"; do
   printf '   %-16s %s\n' "$net" \
     "$(docker network inspect "$net" -f '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || echo '-')"
 done

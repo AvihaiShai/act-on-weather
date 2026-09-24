@@ -861,11 +861,11 @@ docker compose -f compose.tools.yml --env-file .env.example run --rm stage
 bash scripts/package-offline.sh release/images.lock
 ```
 
-`dist/aow-<commit>/` contains the exact CI images (plus the digest-pinned
-upstream images) in `images.tar`, the verified model, the Compose files, code,
-migrations, snapshot, an installer, and two files that say what the rest is
+`dist/aow-<commit>/` contains the exact CI images, the digest-pinned upstream
+images and the locally built proof runner in `images.tar`, plus the verified
+model, Compose files, code, migrations, snapshot, an installer, and two files that say what the rest is
 supposed to be: `SHA256SUMS` over **every** file in the folder, and
-`images.bundle.lock`, which records the registry digest each bundled image was
+`images.bundle.lock`, which records the manifest digest each bundled image was
 tagged from. Copy the folder to the on-prem **Linux/amd64 Docker host**. There,
 fill in a new `.env` and run:
 
@@ -882,7 +882,9 @@ The installer checks the bundle before it changes anything on the host:
 different questions. `SHA256SUMS` answers *did these bytes arrive intact*; it
 cannot answer *are these the bytes CI built*, because anyone replacing the
 archive would replace the checksum file with it. The digest check answers the
-second question, against digests that came out of the CI run artifact.
+second question for the two application images, against digests from the CI
+run artifact. The proof runner is built from this release's Dockerfile during
+packaging; its archive digest is recorded in `images.bundle.lock` at that point.
 
 Then it loads the images, starts Compose with `--no-build --pull never`, and
 runs `scripts/release-smoke.py`: API health, stored weather and scores, the
@@ -915,46 +917,43 @@ in, which is why it lives in the failed release's folder. The outbox volumes
 are deliberately left alone: they hold records that were accepted but not yet
 published, and replaying them after the restore is the point.
 
-**Two different offline claims, kept apart.** A machine that has completed
-[staging](#2-stage-it--once-with-internet) runs the whole system *and* every
-proof with the network off, because staging built the proof runner too. The
-transport folder is narrower: `images.tar` holds the six runtime images only.
-The `stage` and `demos` tool images are **not** in it. The demo scripts
-themselves travel with the folder, so on a bundle-installed host they run if
-that host has `bash`, `curl` and `python3` — which is the per-OS dependency
-this whole section exists to avoid. Putting those two images in the release
-would fix it; that is a change to `scripts/package-offline.sh` which has not
-been made or verified here.
+The transport folder includes the `stage` and `demos` tool images too. After
+installing, run a packaged proof without pulling or building another image:
 
-**What was actually run, and where.** The release path was exercised end to end
-from the digest manifest of a green `main` run, on a Windows Docker Desktop
-host with a Linux/amd64 engine. Packaging took 3m15s and produced a 1.8 GB
-folder (539 MB `images.tar`, 1.2 GB model, 129 checksummed files). The install
-ran in its own Compose project against fresh volumes
-(`COMPOSE_PROJECT_NAME=aow-rel`, `AOW_BIND_ADDR=127.0.0.2` in that folder's
-`.env`, which is also how you stand a release test beside a running stack), and
-these are the results:
+```sh
+bash scripts/prove-offline.sh offline
+```
+
+The script uses `COMPOSE_PROJECT_NAME` when an install is isolated under a
+different project, and otherwise targets `aow`. It reaches that project's
+internal backend network. The proof runner contains `curl` and Python; the
+offline host only needs Docker and bash to launch it.
+
+**Last release drill.** Commit `a129bb6` was packaged from its own green
+`main` workflow and digest manifest on a Windows Docker Desktop host with a
+Linux/amd64 engine. The 1.8 GB folder was installed in a second Compose
+project against fresh volumes (`COMPOSE_PROJECT_NAME=aow-rel2`,
+`AOW_BIND_ADDR=127.0.0.3` in that folder's `.env`). This drill predates the
+addition of tool images above; its archive held the six runtime images.
 
 | Exercise | Result |
 |---|---|
-| First install, empty volumes | 61 s to `PASS`, all 11 services up |
-| Upgrade over the running install | 49 s; pre-upgrade dump written first, 4012 lines, all nine tables |
-| `SHA256SUMS`, all 129 files | verified; appending one line to a migration failed the check |
-| `images.bundle.lock` vs `images.tar` | 6/6 digests matched; a wrong digest and a missing entry both failed |
-| `--pull never` with an image deleted | Compose refused — "No such image" — and reached no registry |
-| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel_backend` reports `Internal=true` |
+| First install, empty volumes | 60 s to `PASS`; weather 80, places 620, events 26, facts 81 |
+| Upgrade over the running install | pre-upgrade dump written first (628 KB); `PASS` |
+| `SHA256SUMS` | all 142 files verified, including after the rollback drill |
+| `images.bundle.lock` vs `images.tar` | all six image digests matched |
+| `--pull never` | installer smoke passed with fresh volumes |
+| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel2_backend` reports `Internal=true` |
 | E1 through the installed release | answered from stored data, with source and as-of |
 | Failed upgrade (a migration that deletes and then errors) | install aborted; forecast rows 80 → 0 |
 | Rollback: previous folder's installer | images and migrations reverted; smoke **failed**, correctly, on the still-empty forecast |
-| `scripts/restore-offline.sh` with the failed release's dump | 11 s; every row back (80 forecast, 620 place and 81 fact rows, as that bundle's own snapshot holds); smoke passed |
+| `scripts/restore-offline.sh` with the failed release's dump | 12 s; weather 80, places 620, events 26 and facts 81 restored; smoke passed |
 
-Two limits on that. The isolation is a **second Compose project on the same
-machine**, not a physically disconnected host: the Docker network is
-`internal: true` and the containers cannot route out, but the host NIC stayed
-up and the folder was never transferred anywhere. And the bundle was built from
-the last published `main` commit, so the release tooling in it is this branch's
-copy laid over that bundle rather than a bundle that commit produced — the next
-bundle cut from `main` produces `images.bundle.lock` itself.
+The isolation was a **second Compose project on the same machine**. Its backend
+network was `internal: true`, and agent, API, consumer and ingestor got
+`errno 101` when they tried to reach `1.1.1.1:443`. The host NIC stayed up and
+the folder was not transferred to another machine, so this is not a physical
+air-gap certification.
 
 ---
 
