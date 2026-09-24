@@ -125,6 +125,11 @@ services:
       REFRESH_WAIT_S: ${REFRESH_WAIT_S:-180}
       # Set to refresh from an internal mirror instead of the public API.
       OPEN_METEO_URL: ${OPEN_METEO_URL:-}
+      # Hard lifetime of the egress window, enforced by a detached guard so that
+      # a SIGKILL of this container cannot leave the window open indefinitely.
+      # The guard runs in this same image, which is why it is named here.
+      REFRESH_WINDOW_MAX_S: ${REFRESH_WINDOW_MAX_S:-600}
+      REFRESH_GUARD_IMAGE: ${REFRESH_GUARD_IMAGE:-aow/demos:dev}
     volumes:
       - .:/work
       - /var/run/docker.sock:/var/run/docker.sock

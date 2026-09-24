@@ -115,6 +115,12 @@ def main() -> int:
             "closed_and_verified": _flag("AOW_WINDOW_CLOSED"),
             "inherited_open_window": _flag("AOW_WINDOW_INHERITED"),
             "held_seconds": _int("AOW_HELD", -1) if os.environ.get("AOW_HELD") else None,
+            # The hard lifetime a detached guard enforced on this window, or None
+            # when no guard could be started -- in which case the only thing that
+            # closed the window was this command's own trap, which SIGKILL beats.
+            "deadline_seconds": (
+                _int("AOW_WINDOW_DEADLINE", -1) if os.environ.get("AOW_WINDOW_DEADLINE") else None
+            ),
         },
         "accepted": _int("AOW_ACCEPTED"),
         "published": published if published == "unknown" else _int("AOW_PUBLISHED"),

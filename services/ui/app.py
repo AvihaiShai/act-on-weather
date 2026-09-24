@@ -1196,6 +1196,17 @@ def render_last_run() -> None:
     )
     if window.get("held_seconds") is not None:
         caption += f", open for {window['held_seconds']}s"
+    if window.get("deadline_seconds"):
+        caption += (
+            f" of a {window['deadline_seconds']}s hard limit that a separate guard "
+            "enforced, so the window could not have outlived the command even if "
+            "it had been killed outright"
+        )
+    else:
+        caption += (
+            " with **no deadline guard on this run** — the window was closed only by "
+            "the command's own trap, which a `kill -9` would have beaten"
+        )
     if window.get("inherited_open_window"):
         caption += ". It also found a window left open by an earlier run and closed that"
     st.caption(caption + ".")

@@ -628,7 +628,12 @@ which:
 3. runs the fetch inside it, into the same outbox every other record uses;
 4. **closes that window again and asserts it closed** — detaches the ingestor,
    deletes the network, and checks both — from a `trap`, so a failed fetch, a
-   `Ctrl-C` or a crash mid-way ends the same way a success does;
+   `Ctrl-C` or a crash mid-way ends the same way a success does. A `SIGKILL`
+   beats any trap, so before opening the window it also starts a detached
+   [guard](scripts/refresh_window_guard.sh) that closes the window after
+   `REFRESH_WINDOW_MAX_S` (default 600) no matter what happens to the command.
+   A normal run closes its own window in seconds and the guard exits having
+   done nothing;
 5. follows the accepted message ids to the broker and to `ingest_log`;
 6. prints per-city success or failure, the as-of before and after, the accepted
    message ids, and how many of them are stored versus still in flight;
@@ -989,6 +994,14 @@ AOW_PROJECT=aow-drill docker compose -f compose.tools.yml run --rm refresh
 AOW_PROJECT=aow-drill OPEN_METEO_URL=http://127.0.0.1:9/forecast \
   docker compose -f compose.tools.yml run --rm refresh
 
+# 4. kill -9 the command itself: the guard must close the window without help.
+#    A short deadline makes the bound observable.
+AOW_PROJECT=aow-drill REFRESH_WINDOW_MAX_S=30 OPEN_METEO_URL=http://198.51.100.1/forecast \
+  docker compose -f compose.tools.yml run --rm --name drill-kill refresh &
+sleep 5 && docker kill -s KILL drill-kill
+#    then watch, and run nothing else: the network disappears on its own
+docker network inspect aow-drill_refresh_egress
+
 docker compose -p aow-drill down -v          # and take it away again
 ```
 
@@ -1083,15 +1096,19 @@ Stated, not implied:
   the operator refresh. Both are deliberate, explicit invocations and nothing in
   the running stack has the socket, but it is real host access and is named here
   rather than buried.
-* **`SIGKILL` during a refresh leaves the egress window open.** The wrapper
-  closes it from a `trap`, which survives a failed fetch, a `Ctrl-C`, a `SIGTERM`
-  and a crash — and cannot survive `kill -9`, because nothing can. The ingestor
-  is then still attached to `<project>_refresh_egress` until a human acts. What
-  the design does instead is make the next run detect it, say so, and close the
-  window it inherited, whether or not the rest of that run succeeds. There is no
-  watchdog that closes it on its own, so between a `SIGKILL` and the next run one
-  container has a route out. `docker network inspect <project>_refresh_egress`
-  returning "not found" is the check, and it is the one a reviewer should run.
+* **The egress window's lifetime is bounded, not instantaneous.** A `SIGKILL` of
+  the refresh beats its `trap` — nothing survives `kill -9` — so the window does
+  not depend on one. A detached guard closes it after `REFRESH_WINDOW_MAX_S`
+  (default **600 s**) whatever happened to the command, and the next run also
+  detects and closes an inherited window. What remains is the gap itself: after a
+  `kill -9`, the ingestor keeps its route out for up to the deadline. Shorten the
+  deadline and a slow refresh loses its window mid-fetch, which fails safe but
+  fails; 600 s is the trade, and it is a knob. Two smaller residuals: if
+  `REFRESH_GUARD_IMAGE` is not built the guard cannot start, and the run says so
+  and records `deadline_seconds: null` rather than pretending; and a `SIGKILL` of
+  the guard itself puts the window back to "closed by the next run".
+  `docker network inspect <project>_refresh_egress` returning "not found" is the
+  check, and it is the one a reviewer should run.
 * **The last-run report is one file, last write wins.** `GET /refresh/last`
   serves the most recent run and no history, and it lives on a volume: remove the
   volume and the record is gone. It is also written by the wrapper, so a refresh

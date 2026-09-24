@@ -286,6 +286,23 @@ def test_the_last_run_report_states_whether_the_egress_window_closed(app):
     assert window.value == "closed"
 
 
+def test_the_window_deadline_is_stated_either_way(monkeypatch, app):
+    """A bounded window and an unbounded one must not read the same. The fixture
+    run had a guard; a run whose guard could not start has to say so, because
+    then only the trap closed the window and `kill -9` beats a trap."""
+    update = next(tab for tab in app.tabs if "Update data" in tab.label)
+    captions = " ".join(element.value for element in update.caption)
+    assert "600s hard limit" in captions
+    assert "could not have outlived the command" in captions
+
+    unguarded = json.loads(json.dumps(FIXTURES["refresh/last"]))
+    unguarded["report"]["egress_window"]["deadline_seconds"] = None
+    at = _run(monkeypatch, overrides={"refresh/last": unguarded})
+    assert not at.exception, [e.value for e in at.exception]
+    tab = next(t for t in at.tabs if "Update data" in t.label)
+    assert any("no deadline guard on this run" in c.value for c in tab.caption)
+
+
 def test_a_failed_run_is_not_reported_as_a_success(app):
     update = next(tab for tab in app.tabs if "Update data" in tab.label)
     errors = " ".join(element.value for element in update.get("error"))

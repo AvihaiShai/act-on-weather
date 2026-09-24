@@ -914,6 +914,7 @@
    },
    "egress_window": {
     "closed_and_verified": true,
+    "deadline_seconds": 600,
     "held_seconds": 4,
     "inherited_open_window": false,
     "network": "aow_refresh_egress",

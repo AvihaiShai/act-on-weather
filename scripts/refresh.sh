@@ -22,8 +22,14 @@
 #
 # Steps 4 and 7 also run from a trap, so an interrupt (Ctrl-C), a failed fetch
 # or a crash mid-way still ends with the ingestor back on the internal network
-# and with a record of how far the run got. The only thing that can defeat it is
-# SIGKILL, and the next run says so and closes the window it inherited.
+# and with a record of how far the run got.
+#
+# SIGKILL beats any trap, so the window does not rely on one. Before it opens,
+# this starts a detached guard (scripts/refresh_window_guard.sh) that closes the
+# window after REFRESH_WINDOW_MAX_S (default 600) whatever happened to this
+# process. A normal run closes its own window in seconds and the guard exits
+# having done nothing. The next run also detects and closes an inherited window,
+# but the guard is what makes the lifetime bounded rather than merely likely.
 #
 # It acts on the `aow` project by default. AOW_PROJECT picks a different stack
 # and AOW_API a different API address; see compose.tools.yml.
@@ -56,6 +62,12 @@ cd "$(dirname "$0")/.."
 . demos/lib.sh
 
 WAIT_S="${REFRESH_WAIT_S:-180}"
+# The hard lifetime of the egress window, enforced from outside this process by
+# scripts/refresh_window_guard.sh. Generous: the fetch itself is bounded at 20s
+# per city by the provider timeout, so a five-city refresh cannot take more than
+# about two minutes even when every city times out.
+WINDOW_MAX_S="${REFRESH_WINDOW_MAX_S:-600}"
+GUARD_IMAGE="${REFRESH_GUARD_IMAGE:-aow/demos:dev}"
 CHECK=0
 PY_ARGS=()
 CITY_FILTER=()
@@ -83,6 +95,13 @@ Environment:
                   compose.tools.yml, which sets COMPOSE_PROJECT_NAME and picks
                   the stack's backend network from it.
   OPEN_METEO_URL  refresh from an internal mirror instead of the public API.
+  REFRESH_WINDOW_MAX_S
+                  hard lifetime of the egress window in seconds (default 600),
+                  enforced by a detached guard so that even a SIGKILL of this
+                  command cannot leave the window open past it.
+  REFRESH_GUARD_IMAGE
+                  image the guard runs in (default aow/demos:dev, the same image
+                  this command runs in).
 
 Every run but --check files its report at GET /refresh/last, which the UI shows
 under Update data -> Operator refresh.
@@ -107,6 +126,7 @@ CID=""
 CNAME=""
 EGRESS=""
 OPENED_AT=""
+GUARD_ID=""
 
 # What this run will file about itself (step 7). Kept in a temp directory the
 # exit trap reads, so a run that is interrupted halfway still records the half
@@ -136,8 +156,42 @@ network_exists() {
   docker network inspect "$EGRESS" >/dev/null 2>&1
 }
 
+# The bound. Started BEFORE the window opens, detached, so that the window has a
+# hard lifetime no matter what happens to this process -- including SIGKILL,
+# which no trap in here can survive. See scripts/refresh_window_guard.sh.
+#
+# The script is passed to bash as an argument rather than mounted, because this
+# process is itself inside a container and does not know the host path of the
+# working tree it is reading. It stays a reviewable file in the repo either way.
+start_window_guard() {
+  local src
+  src="$(cat "$(dirname "$0")/refresh_window_guard.sh" 2>/dev/null)" || src=""
+  if [ -z "$src" ]; then
+    note "WARNING: refresh_window_guard.sh is missing -- the window has no"
+    note "         deadline on this run. The trap still closes it on every exit"
+    note "         short of SIGKILL."
+    return 0
+  fi
+  GUARD_ID="$(
+    docker run -d --rm \
+      --label "aow.role=operator-refresh-window-guard" \
+      --network none \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      --entrypoint bash "$GUARD_IMAGE" \
+      -c "$src" window-guard "$EGRESS" "$CID" "$WINDOW_MAX_S" 2>/dev/null
+  )" || GUARD_ID=""
+  if [ -z "$GUARD_ID" ]; then
+    note "WARNING: could not start the window guard (image $GUARD_IMAGE) -- the"
+    note "         window has no deadline on this run. Build it with:"
+    note "         docker compose -f compose.tools.yml build demos"
+    return 0
+  fi
+  note "window guard ${GUARD_ID:0:12} will close $EGRESS after ${WINDOW_MAX_S}s if this command cannot"
+}
+
 open_egress() {
   hr "Opening the egress window"
+  start_window_guard
   if ! network_exists; then
     docker network create --label "$EGRESS_LABEL" "$EGRESS" >/dev/null
   fi
@@ -249,6 +303,7 @@ persist_report() {
     AOW_WINDOW_OPENED="$WINDOW_OPENED" \
     AOW_WINDOW_CLOSED="$WINDOW_CLOSED" \
     AOW_WINDOW_INHERITED="$WINDOW_INHERITED" \
+    AOW_WINDOW_DEADLINE="$([ -n "$GUARD_ID" ] && echo "$WINDOW_MAX_S" || echo "")" \
     AOW_HELD="${HELD_SECONDS:-}" \
     AOW_ACCEPTED="${TOTAL_IDS:-0}" \
     AOW_PUBLISHED="${PUBLISHED:-unknown}" \

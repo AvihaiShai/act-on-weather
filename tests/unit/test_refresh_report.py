@@ -136,6 +136,7 @@ def test_a_half_successful_run_keeps_the_two_cities_apart(state):
         AOW_WINDOW_OPENED="1",
         AOW_WINDOW_CLOSED="1",
         AOW_HELD="4",
+        AOW_WINDOW_DEADLINE="600",
     )
 
     assert report["failed_cities"] == ["reykjavik"]
@@ -163,6 +164,7 @@ def test_a_half_successful_run_keeps_the_two_cities_apart(state):
         "closed_and_verified": True,
         "inherited_open_window": False,
         "held_seconds": 4,
+        "deadline_seconds": 600,
     }
 
 
@@ -176,6 +178,13 @@ def test_a_window_that_did_not_close_is_recorded_as_such(state):
 def test_an_inherited_window_is_recorded(state):
     report = run(state, AOW_WINDOW_INHERITED="1")
     assert report["egress_window"]["inherited_open_window"] is True
+
+
+def test_the_window_deadline_is_recorded_when_a_guard_enforced_one(state):
+    """A run whose guard could not start is a run whose window had no bound but
+    the trap. The report must not be silent about which of the two it was."""
+    assert run(state, AOW_WINDOW_DEADLINE="600")["egress_window"]["deadline_seconds"] == 600
+    assert run(state)["egress_window"]["deadline_seconds"] is None
 
 
 def test_an_unknown_published_count_stays_unknown(state):
