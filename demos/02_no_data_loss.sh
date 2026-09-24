@@ -43,8 +43,22 @@ MID1=$(curl -s -X POST "$API/recommendations" -H 'Content-Type: application/json
   -d '{"city":"lisbon","forecast_date":"'"$(psql_q 'SELECT min(forecast_date) FROM weather_daily')"'","activity":"drill one paddleboarding"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["message_id"])')
 note "accepted message_id: $MID1"
-sleep 4
-note "queue depth with no consumer: $(queue_depth aow.ingest)"
+DEPTH1=0
+for _ in $(seq 1 10); do
+  DEPTH1=$(queue_depth aow.ingest) || { fail "broker unavailable during consumer-down drill"; break; }
+  [ "$DEPTH1" -gt 0 ] && break
+  sleep 2
+done
+if [ "$DEPTH1" -gt 0 ]; then
+  pass "the accepted record is waiting in the queue with no consumer (depth $DEPTH1)"
+else
+  fail "no queued record while the consumer was stopped"
+fi
+if [ "$(trace "$MID1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["published_at"])')" != "None" ]; then
+  pass "the traced ID was published before the consumer restarted"
+else
+  fail "the traced ID never reached the broker during the consumer outage"
+fi
 note "trace: $(trace "$MID1")"
 
 dc start consumer >/dev/null 2>&1
@@ -155,6 +169,11 @@ if [ "$(queue_depth aow.dlq)" -gt "$BEFORE_DLQ" ]; then
 else
   fail "the poison message did not reach the dead-letter queue"
 fi
+if dc exec -T consumer python -m services.tools.redrive --list 2>&1 | grep -F "$MID4" >/dev/null; then
+  pass "the traced poison ID is in the dead-letter queue"
+else
+  fail "the traced poison ID is missing from the dead-letter queue"
+fi
 note "main queue depth is still $(queue_depth aow.ingest) -- it did not block the others"
 note "what is quarantined:"
 dc exec -T consumer python -m services.tools.redrive --list 2>&1 | sed 's/^/   /' | tail -5
@@ -166,7 +185,11 @@ note "redriving without fixing the cause: it must come straight back"
 dc exec -T consumer python -m services.tools.redrive 2>&1 | sed 's/^/   /' | tail -3
 sleep 12
 if [ "$(queue_depth aow.dlq)" -gt "$BEFORE_DLQ" ]; then
-  pass "redriven, failed validation again, quarantined again -- no loss, no loop"
+  if dc exec -T consumer python -m services.tools.redrive --list 2>&1 | grep -F "$MID4" >/dev/null; then
+    pass "redriven, failed validation again, quarantined again -- no loss, no loop"
+  else
+    fail "the traced poison ID is missing after redrive"
+  fi
 else
   fail "the message disappeared on redrive"
 fi
