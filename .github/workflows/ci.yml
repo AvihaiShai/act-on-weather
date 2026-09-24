@@ -8,15 +8,35 @@ name: ci
 on:
   push:
     branches: [main]
+  # `types` is listed explicitly, which means the three defaults have to be
+  # listed too -- naming any type replaces the default set rather than adding
+  # to it. `labeled` is the one being added, and without it the
+  # `release-candidate` label path in the RC jobs below can never fire: adding
+  # a label to an open pull request is not a `synchronize`, so nothing re-runs
+  # and the expensive gates stay silently unreachable. Found by adding the
+  # label to this workflow's own pull request and watching nothing happen.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Superseded pushes on a PR branch cancel their in-flight run -- nobody
+# needs three stale runs of the same branch finishing after a fourth push.
+# `main` is excluded: a push there is a release candidate for
+# `publish-images`, and a run GitHub cancelled mid-push would leave that
+# commit's image manifest never published, with no failed run to point at
+# and (once a required check is cancelled) a merge silently unblocked by a
+# check that never finished either way.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -28,6 +48,7 @@ jobs:
 
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Run in the same image the project ships, so a test that passes here
@@ -39,6 +60,7 @@ jobs:
 
   guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -143,6 +165,10 @@ jobs:
               Path("services/ui/Dockerfile"),
               Path("tests/Dockerfile"),
               Path("demos/Dockerfile"),
+              # CI-only (F11): the headless-browser gate. Unpinned here would
+              # be just as real a drift as an unpinned runtime image -- this
+              # step does not distinguish, and neither should the guard.
+              Path("tests/ui/Dockerfile"),
           ]
           for path in files:
               for line in path.read_text().splitlines():
@@ -173,6 +199,13 @@ jobs:
               Path("compose.observability.yml"), Path("Makefile"),
               Path("services/Dockerfile"), Path("services/ui/Dockerfile"),
               Path("tests/Dockerfile"), Path("demos/Dockerfile"),
+              # CI-only (F11). compose.ci.yml itself is deliberately NOT
+              # added here: it carries no `@sha256:` reference of its own
+              # (it names the browser-gate image by tag, via
+              # AOW_CI_UITEST_IMAGE, and the digest lives only in the
+              # Dockerfile below) and it never reaches a reviewer's machine
+              # or the offline bundle -- the property this lock protects.
+              Path("tests/ui/Dockerfile"),
           ]
           for path in sources:
               for reference in re.findall(r"\S+@sha256:[0-9a-f]{64}", path.read_text()):
@@ -209,6 +242,11 @@ jobs:
           # Rendered on its own: it is never combined with compose.yml, and its
           # one external network is not resolved at config time.
           docker compose -f compose.tools.yml --env-file .env.example config --quiet
+          # F11's two gates: the browser gate's own overlay, and the model
+          # grounding probe's overlay (release-candidate only -- see the
+          # model-grounding job -- but still an overlay a maintainer runs by
+          # hand, so it is still rendered here).
+          docker compose -f compose.yml -f compose.model-probe.yml --env-file .env.example config --quiet
           AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.tools.yml -f compose.tools.bundle.yml --env-file .env.example config --quiet
 
       - name: Workflow actions are pinned by commit
@@ -239,12 +277,19 @@ jobs:
       - name: README counts match the committed snapshot
         run: python scripts/snapshot_manifest.py --check
 
+  # Builds, scans, and proves the stack works (scripts/ci-integration.sh:
+  # real Postgres/RabbitMQ, five outage drills, traced-ID recovery). This job
+  # never holds `packages: write` -- nothing in it pushes anywhere. It hands
+  # the two images it built to `ui-gate` and `publish-images` as a build
+  # artifact (`docker save` + upload, not a rebuild), so the images those
+  # jobs act on are byte-for-byte what was scanned and integration-tested
+  # here, not a second build that merely used the same Dockerfile.
   build-and-scan:
     runs-on: ubuntu-latest
     needs: [lint, unit, guard]
+    timeout-minutes: 20
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -285,10 +330,105 @@ jobs:
       - name: Compose integration test
         run: bash scripts/ci-integration.sh
 
-      # Publish only after the exact images above have passed scans and the
-      # running-stack test. Pull requests never receive publication credentials.
+      # Everything downstream of this point -- publishing, the browser gate
+      # -- acts on these exact bytes. Saved only after the scans and the
+      # integration test above have passed, for the same reason the publish
+      # step used to gate on them itself: what leaves this job is what was
+      # actually tested, never a same-Dockerfile rebuild of it.
+      - name: Save the tested images for downstream jobs
+        run: docker save aow/services:ci aow/ui:ci -o aow-ci-images.tar
+
+      - name: Share the tested images with downstream jobs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aow-ci-images-${{ github.sha }}
+          path: aow-ci-images.tar
+          if-no-files-found: error
+          # Short-lived and internal: consumed by ui-gate/publish-images in
+          # this same workflow run, never referenced afterwards. Not the same
+          # artifact as "Keep the release digest manifest" below, which is
+          # the 30-day, human-facing digest record F10's offline release
+          # proof and the CD release workflow both download by name.
+          retention-days: 1
+
+  # The headless-browser gate (F11): a real Chromium against the real stack,
+  # asserting the page loads, its tabs render, it makes zero off-origin
+  # requests, the as-of/coverage timestamp is visible, and the Forecast tab's
+  # highlight cards never name a day before the viewed city's local today
+  # (F6). Per-PR, not release-candidate-only: it reuses the images
+  # build-and-scan already built and scanned, adds no large download, and
+  # measured well under a minute of browser time against the real stack
+  # locally -- see the F11 session report for the measured number.
+  ui-gate:
+    runs-on: ubuntu-latest
+    needs: [build-and-scan]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download the tested images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: aow-ci-images-${{ github.sha }}
+
+      - name: Load the tested images
+        run: docker load -i aow-ci-images.tar
+
+      # AOW_CI_SERVICES_IMAGE/AOW_CI_UI_IMAGE default to exactly the tags
+      # `docker load` just restored (aow/services:ci, aow/ui:ci), so no
+      # override is needed here -- only a worktree building its own
+      # differently-tagged images for local verification needs one.
+      - name: Browser gate (F11)
+        run: bash scripts/ci-ui-gate.sh
+
+  # RC-only: publishes the exact images build-and-scan tested to GHCR, then
+  # keeps the digest manifest F10's offline release proof and the CD release
+  # workflow both download by name. Split out of build-and-scan so that job
+  # never has to hold `packages: write` on an ordinary PR run, where these
+  # steps are skipped anyway; the two are otherwise identical to what used to
+  # run inline, including the artifact name, the release/images.lock format,
+  # `if-no-files-found: error`, and `retention-days: 30`.
+  #
+  # Do NOT add this job as a required status check: it only runs on push to
+  # main, so a required PR check that can never run on a PR deadlocks every
+  # merge under branch protection.
+  publish-images:
+    runs-on: ubuntu-latest
+    needs: [build-and-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download the tested images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: aow-ci-images-${{ github.sha }}
+
+      - name: Load the tested images
+        run: docker load -i aow-ci-images.tar
+
+      # A plain `docker build` + `docker push` from a classic (non-containerd-
+      # store) engine -- which is what this runner is -- publishes a bare
+      # `application/vnd.docker.distribution.manifest.v2+json`: no index, no
+      # platform descriptor. Confirmed against the actual artifact this
+      # workflow already published (services:sha-23600ea...): `docker save`
+      # of it on a containerd-snapshotter engine exits 0 and writes a 10,240
+      # byte archive with 2 of the ~13 blobs the image actually has. That is
+      # what `scripts/package-offline.sh` uses to build the offline bundle,
+      # so an unpatched publish here would ship a silently-empty bundle on
+      # exactly the engine class Docker Desktop defaults to.
+      #
+      # `docker buildx imagetools create --tag <ref> <ref>` wraps the pushed
+      # manifest in an index carrying a linux/amd64 platform descriptor,
+      # re-pointing the tag at the index while leaving the child manifest
+      # digest -- the bytes Trivy scanned and ci-integration.sh tested --
+      # unchanged. No rebuild, no new action, no docker-container buildx
+      # driver.
       - name: Publish tested images by commit SHA
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -302,17 +442,216 @@ jobs:
             image="$image_root/$component:$version"
             docker tag "aow/$component:ci" "$image"
             docker push "$image"
+            docker buildx imagetools create --tag "$image" "$image"
+            # Re-resolved after imagetools create, deliberately: the lock
+            # must record the digest the tag resolves to now (the index),
+            # not the pre-wrap child-manifest digest -- verified directly
+            # against a real public multi-arch tag (alpine:3.20): `docker
+            # pull` + `docker image inspect .RepoDigests` reports the same
+            # digest `docker pull` prints on its own "Digest:" line, i.e.
+            # whatever the tag itself resolves to server-side (the index),
+            # never a per-platform child. `docker manifest inspect -v` is a
+            # different code path and does NOT have this property -- it
+            # returns one entry per child manifest, and naively indexing it
+            # (e.g. `[0]`) hands back an amd64 child digest, not the index.
+            # That is the mistake the "linux/amd64 platform descriptor"
+            # assertion step below exists to catch, for any image, not only
+            # this one -- see its comment.
             docker pull "$image" >/dev/null
             digest_ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" | grep -F -m1 "$image_root/$component@sha256:")"
             test -n "$digest_ref"
             echo "$component $digest_ref" | tee -a release/images.lock "$GITHUB_STEP_SUMMARY"
           done
 
+      # A registry-side format assertion: it checks the shape of what was
+      # published (an index/manifest-list with a linux/amd64 entry), not
+      # `docker save` behaviour directly. The end-to-end proof that this
+      # shape is actually what makes `docker save` work -- a full purge of a
+      # containerd content store, a fresh pull of an imagetools-wrapped tag,
+      # then a blob-completeness check -- lives on F10's separate host as
+      # part of the offline-bundle verification; this step is the cheap
+      # per-publish proxy for that, not a replacement for it. (This session
+      # independently confirmed, read-only against the real published ref
+      # ghcr.io/avihaishai/act-on-weather/services:sha-23600ea..., that this
+      # exact check fails loudly on the un-wrapped bare manifest and passes
+      # on a real index (alpine:3.20) -- see the F11 session report.)
+      #
+      # This also generalises beyond the bug that motivated it: F8 hit a
+      # related mistake resolving a digest via `docker manifest inspect -v`
+      # and indexing into the result, which returns one entry per *child*
+      # manifest -- `[0]` is an amd64 child digest, not the index. A check on
+      # the raw mediaType and platform list, run against whatever ref was
+      # just published, catches that shape of mistake for any image added
+      # here later, not only this one.
+      #
+      # Why this only needs checking here, not on every developer machine:
+      # a GitHub-hosted runner gets a fresh Docker daemon per job, so it is
+      # clean by construction and cannot inherit a stale platform-less record
+      # from a previous pull the way a long-lived host can. That precondition
+      # does NOT hold for a staging/release host that keeps its image store
+      # between runs -- F10 documents it as release-critical on their side.
+      - name: Published images carry a linux/amd64 platform descriptor
+        run: |
+          set -euo pipefail
+          image_root="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="sha-${GITHUB_SHA}"
+          for component in services ui; do
+            ref="$image_root/$component:$version"
+            docker buildx imagetools inspect --raw "$ref" | python3 - "$ref" <<'PY'
+          import json
+          import sys
+
+          ref = sys.argv[1]
+          manifest = json.load(sys.stdin)
+          media_type = manifest.get("mediaType", "")
+          is_index = media_type in (
+              "application/vnd.oci.image.index.v1+json",
+              "application/vnd.docker.distribution.manifest.list.v2+json",
+          )
+          platforms = [
+              (entry.get("platform") or {})
+              for entry in manifest.get("manifests", [])
+          ]
+          has_linux_amd64 = any(
+              p.get("os") == "linux" and p.get("architecture") == "amd64"
+              for p in platforms
+          )
+          if not (is_index and has_linux_amd64):
+              print(
+                  f"::error::{ref} is not published as a platform-described index "
+                  f"(mediaType={media_type!r}, platforms={platforms!r}) -- "
+                  "docker save of this shape can silently export almost nothing"
+              )
+              sys.exit(1)
+          print(f"{ref}: {media_type}, linux/amd64 present -- OK")
+          PY
+          done
+
       - name: Keep the release digest manifest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: aow-images-${{ github.sha }}
           path: release/images.lock
           if-no-files-found: error
           retention-days: 30
+
+  # RC-only: the real llama.cpp + Qwen3-1.7B adversarial grounding probe
+  # (tests/integration/model_grounding.py, 431 lines, run by hand until now).
+  # It needs a ~1.28 GB model download (cached, so paid rarely rather than
+  # never) and a real model server boot, a materially different cost profile
+  # from every other gate in this file, and one this session could not
+  # measure on an actual GitHub-hosted runner -- see the F11 session report
+  # for what was and was not verified, and re-time the first few real runs.
+  # Triggered by workflow_dispatch, a `release-candidate` PR label, or a push
+  # to a `release/*` branch: the three points in this repo's flow where a
+  # maintainer is about to cut a release rather than iterate on a PR.
+  model-grounding:
+    runs-on: ubuntu-latest
+    needs: [lint, unit, guard]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/heads/release/') ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'release-candidate'))
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Keyed on models.lock's content, not a fixed name: the key changes the
+      # moment the pinned model or its hash does, so a stale cache can never
+      # be restored under a key that still matches.
+      - name: Restore the staged model from cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: models/Qwen3-1.7B-Q4_K_M.gguf
+          key: model-weights-${{ hashFiles('models.lock') }}
+
+      # Runs on every invocation, cache hit or miss. scripts/stage_model.py
+      # always re-verifies the sha256 of a file that already exists at the
+      # target path before accepting it (it hard-stops on a mismatch rather
+      # than silently re-fetching) -- exactly the "verify after cache
+      # restore too" property a restored cache needs, because a cache is
+      # restored, not authenticated. MODEL_BASE_URL is a repository
+      # *variable*, not a secret: it names a plain HTTPS mirror URL with no
+      # embedded credential, set by whoever configures this repo's CI
+      # (Settings -> Secrets and variables -> Actions -> Variables). On a
+      # cache hit this step still runs, but touches the network only if the
+      # hash does not already match.
+      - name: Stage and verify the model
+        env:
+          MODEL_BASE_URL: ${{ vars.MODEL_BASE_URL }}
+        run: python scripts/stage_model.py
+
+      - name: Model grounding probe (real llama.cpp + Qwen3-1.7B)
+        run: |
+          started=$(date +%s)
+          bash scripts/ci-model-grounding.sh
+          elapsed=$(( $(date +%s) - started ))
+          echo "model-grounding wall clock: ${elapsed}s" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # The recovery drill (F8/B3/M11). Release-candidate only, on the same
+  # trigger as model-grounding -- not on cost, at ~120s it is cheap next to
+  # build-and-scan, but on blast radius: it destroys its own volumes, and a
+  # stateful full-stack drill is the wrong default for every dependabot bump
+  # and docs typo. One "expensive or stateful" tier, not two conventions.
+  #
+  # What it asserts, and why this job exists rather than a healthcheck: the
+  # drill accepts message IDs, backs up, accepts more, destroys pgdata,
+  # rabbitdata and all three outbox volumes, restores, and then asserts with
+  # a SEPARATE READER (psql, not the API that accepted the writes) that
+  # `SELECT count(*) FROM ingest_log WHERE message_id = '<id>'` is exactly 1
+  # for every pre-backup ID. Exactly once, not at least once. The post-backup
+  # IDs are asserted absent AND asserted to have been committed before the
+  # disruption, so a regression where the API quietly stops accepting writes
+  # cannot make "all of them are gone" trivially true and pass proving
+  # nothing. M11's guarantee is about accepted records, not process liveness.
+  restore-drill:
+    runs-on: ubuntu-latest
+    needs: [lint, unit, guard]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/heads/release/') ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'release-candidate'))
+    # Measured by F8 at 116s on a branch and 120s on the merged tree. The
+    # headroom is deliberate and goes here rather than in the script: a
+    # `docker compose exec` hangs indefinitely if the daemon disappears
+    # mid-call, and there is no portable `timeout` across Git Bash and macOS,
+    # so the job-level bound is the only place that reliably stops it.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # `aow/services:ci` is local-only and nothing in the drill builds it.
+      # Inside build-and-scan it already exists; this is a separate job, so it
+      # starts with an empty image store and the drill would die on a missing
+      # image. That is exactly the failure this repo's browser gate hit on its
+      # first real runner run ("No such image: nginx:alpine@sha256:..."), which
+      # passed locally only because the image happened to be in the store.
+      # Everything else the drill starts is digest-pinned and it uses
+      # --no-build without --pull never, so those resolve normally.
+      - name: Build the service image the drill runs against
+        run: docker build -f services/Dockerfile -t aow/services:ci .
+
+      - name: Backup and restore drill (accepted IDs must survive)
+        env:
+          AOW_COMPOSE_OVERLAY: compose.ci.yml
+          # Both, and they are not redundant. AOW_CI_SERVICES_IMAGE is what
+          # compose.ci.yml substitutes for the stack's own services;
+          # AOW_SERVICES_IMAGE is what the drill passes to the `docker run`
+          # helper containers it starts outside Compose, and it defaults to
+          # aow/services:dev. Setting only the first got
+          # "pull access denied for aow/services" on the first real run --
+          # the stack came up correctly and the helpers went looking for a
+          # tag that exists on nobody's registry.
+          AOW_CI_SERVICES_IMAGE: aow/services:ci
+          AOW_SERVICES_IMAGE: aow/services:ci
+        run: |
+          started=$(date +%s)
+          bash demos/06_backup_restore.sh
+          elapsed=$(( $(date +%s) - started ))
+          echo "restore-drill wall clock: ${elapsed}s" | tee -a "$GITHUB_STEP_SUMMARY"
