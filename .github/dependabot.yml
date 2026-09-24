@@ -1,0 +1,59 @@
+version: 2
+
+# Why this file exists.
+#
+# The `guard` job refuses any workflow action that is not pinned to a 40-character
+# commit SHA, and refuses any container image that is not pinned by digest. That
+# makes a build reproducible, which is the whole point of the air-gapped release
+# path -- but a pin is also a thing that silently stops being current. Pinning
+# without a way to learn that a pin is stale is how a repository ends up shipping
+# a two-year-old base image with a clean scan history.
+#
+# So: pins stay immutable, and Dependabot is the mechanism that tells us when one
+# has moved. It preserves SHA pins and updates the trailing version comment, so
+# its pull requests satisfy the `guard` job rather than fighting it. Every one of
+# them still has to pass the four required checks before it can merge.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      # One pull request for the low-risk first-party actions. The two that
+      # change the behaviour of a security gate -- gitleaks-action and
+      # trivy-action -- are deliberately left ungrouped so each arrives on its
+      # own commit and a new scan finding is attributable to it. See issue #4.
+      actions-minor:
+        patterns:
+          - "actions/*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pip
+    directories:
+      - /services
+      - /services/common
+      - /services/ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
+  # Deliberately NOT configured: package-ecosystem: docker.
+  #
+  # IMAGES.lock is the single source of truth for every pulled image, and the
+  # `guard` job asserts in both directions -- every pinned digest must appear in
+  # the lock, and every lock entry must still be pinned by something. Dependabot
+  # would bump a digest in a Dockerfile or compose file without touching the
+  # lock, producing a pull request that can never pass its own required checks.
+  # Image bumps are therefore a deliberate operation: update IMAGES.lock and the
+  # references together, then re-run the offline bundle verification, because the
+  # same digests are what `scripts/package-offline.sh` ships to the air-gapped
+  # host. Trivy already scans the images on every run, so a vulnerable pinned
+  # image fails the build rather than going unnoticed while it waits for a bot.
