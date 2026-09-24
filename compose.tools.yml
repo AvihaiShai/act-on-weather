@@ -17,7 +17,7 @@ networks:
   # networks, it only attaches to the one `docker compose up -d` made.
   backend:
     external: true
-    name: aow_backend
+    name: ${AOW_STACK_PROJECT:-aow}_backend
 
 services:
   # ------------------------------------------------------------- staging --
@@ -74,7 +74,7 @@ services:
       # /work/compose.yml, whose `name: aow` already selects the right project,
       # but COMPOSE_PROJECT_NAME outranks that key -- so it is set explicitly
       # rather than left to whatever the environment happens to hold.
-      COMPOSE_PROJECT_NAME: aow
+      COMPOSE_PROJECT_NAME: ${AOW_STACK_PROJECT:-aow}
     volumes:
       # The working tree, so the scripts, compose files and .env come from the
       # checkout rather than from a stale image layer.
@@ -102,7 +102,7 @@ services:
     entrypoint: ["bash", "/work/scripts/refresh.sh"]
     environment:
       API: http://edge:8000
-      COMPOSE_PROJECT_NAME: aow
+      COMPOSE_PROJECT_NAME: ${AOW_STACK_PROJECT:-aow}
       # Seconds to wait for the refreshed days to reach Postgres before the
       # command reports what is still in flight.
       REFRESH_WAIT_S: ${REFRESH_WAIT_S:-180}

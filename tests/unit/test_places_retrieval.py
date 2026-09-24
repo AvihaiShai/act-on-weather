@@ -443,3 +443,39 @@ def test_the_osm_path_does_not_copy_schedule_tags():
     collected_keys = {key for key, _value, _category in fetch_content.OSM_CATEGORIES}
     assert "opening_hours" not in collected_keys
     assert collected_keys <= {"amenity", "tourism", "historic", "leisure", "shop", "natural"}
+
+
+def test_osm_query_groups_do_not_duplicate_a_place_or_consume_its_cap(monkeypatch):
+    shared = {
+        "type": "node",
+        "id": 42,
+        "lat": 10.0,
+        "lon": 20.0,
+        "tags": {"name": "Shared", "amenity": "theatre", "natural": "beach"},
+    }
+    distinct = {
+        "type": "node",
+        "id": 43,
+        "lat": 10.1,
+        "lon": 20.1,
+        "tags": {"name": "Distinct", "amenity": "theatre"},
+    }
+    monkeypatch.setattr(
+        fetch_content,
+        "OSM_CATEGORIES",
+        [
+            ("amenity", "theatre", "theatre"),
+            ("amenity", "cafe", "cafe"),
+            ("tourism", "museum", "museum"),
+            ("leisure", "park", "park"),
+            ("natural", "beach", "beach"),
+        ],
+    )
+    batches = iter([[shared], [shared, distinct]])
+    monkeypatch.setattr(fetch_content, "overpass_fetch", lambda _query: next(batches))
+    monkeypatch.setattr(fetch_content.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(fetch_content, "PER_CATEGORY_LIMIT", 2)
+
+    rows = fetch_content.fetch_places([CITY], 4000, "osm")
+
+    assert [row["id"] for row in rows] == ["osm:node/42", "osm:node/43"]

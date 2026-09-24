@@ -368,11 +368,13 @@ deliberately not the assertion: a loss and a duplicate cancel out in a count.
 
 **The same guarantee is a CI gate.** `scripts/ci-integration.sh` runs against a
 real broker and database in a throwaway Compose project, and no image is
-published unless it passes. It accepts one record per failure mode — consumer
-stopped, broker stopped, database stopped — each with its own `message_id`,
-then restarts every service in the path and asks a **separate reader
-connection** for all of them at once. Any single missing ID fails the job, and
-so does any duplicate.
+published unless it passes. It accepts one record per failure mode, each with
+its own `message_id`: through the API with the consumer stopped, the broker
+stopped and the database stopped, and through the **ingestor** with the broker
+stopped and the database stopped. The API and ingestor outboxes are therefore
+driven through an outage, not just audited. It then restarts every service in the path
+and asks a **separate reader connection** for all of them at once. Any single
+missing ID fails the job, and so does any duplicate.
 
 The database drill waits for the consumer to log a failed delivery before
 restoring Postgres. That wait is the drill: if the database comes back before
@@ -381,6 +383,12 @@ reconnect path, and the drill passes against a broken build. Verified by
 rebuilding the service image with the reconnect fix removed — the gate then
 fails naming the lost ID, while the consumer-down and broker-down drills still
 pass, because neither touches that path.
+
+The ingestor drills are checked the same way, against the producer-side bug
+they exist for: an `ingestor.main.drain` that marks an outbox row published
+before the broker has confirmed it. Every other check in this script passes
+against that build — the API drills included — and the ingestor broker-outage
+drill fails naming the lost ID.
 
 ### Reconcile accepted records after an incident
 
@@ -892,11 +900,11 @@ docker compose -f compose.tools.yml --env-file .env.example run --rm stage
 bash scripts/package-offline.sh release/images.lock
 ```
 
-`dist/aow-<commit>/` contains the exact CI images (plus the digest-pinned
-upstream images) in `images.tar`, the verified model, the Compose files, code,
-migrations, snapshot, an installer, and two files that say what the rest is
+`dist/aow-<commit>/` contains the exact CI images, the digest-pinned upstream
+images and the locally built proof runner in `images.tar`, plus the verified
+model, Compose files, code, migrations, snapshot, an installer, and two files that say what the rest is
 supposed to be: `SHA256SUMS` over **every** file in the folder, and
-`images.bundle.lock`, which records the registry digest each bundled image was
+`images.bundle.lock`, which records the manifest digest each bundled image was
 tagged from. Copy the folder to the on-prem **Linux/amd64 Docker host**. There,
 fill in a new `.env` and run:
 
@@ -913,7 +921,9 @@ The installer checks the bundle before it changes anything on the host:
 different questions. `SHA256SUMS` answers *did these bytes arrive intact*; it
 cannot answer *are these the bytes CI built*, because anyone replacing the
 archive would replace the checksum file with it. The digest check answers the
-second question, against digests that came out of the CI run artifact.
+second question for the two application images, against digests from the CI
+run artifact. The proof runner is built from this release's Dockerfile during
+packaging; its archive digest is recorded in `images.bundle.lock` at that point.
 
 Then it loads the images, starts Compose with `--no-build --pull never`, and
 runs `scripts/release-smoke.py`: API health, stored weather and scores, the
@@ -946,46 +956,43 @@ in, which is why it lives in the failed release's folder. The outbox volumes
 are deliberately left alone: they hold records that were accepted but not yet
 published, and replaying them after the restore is the point.
 
-**Two different offline claims, kept apart.** A machine that has completed
-[staging](#2-stage-it--once-with-internet) runs the whole system *and* every
-proof with the network off, because staging built the proof runner too. The
-transport folder is narrower: `images.tar` holds the six runtime images only.
-The `stage` and `demos` tool images are **not** in it. The demo scripts
-themselves travel with the folder, so on a bundle-installed host they run if
-that host has `bash`, `curl` and `python3` — which is the per-OS dependency
-this whole section exists to avoid. Putting those two images in the release
-would fix it; that is a change to `scripts/package-offline.sh` which has not
-been made or verified here.
+The transport folder includes the `stage` and `demos` tool images too. After
+installing, run a packaged proof without pulling or building another image:
 
-**What was actually run, and where.** The release path was exercised end to end
-from the digest manifest of a green `main` run, on a Windows Docker Desktop
-host with a Linux/amd64 engine. Packaging took 3m15s and produced a 1.8 GB
-folder (539 MB `images.tar`, 1.2 GB model, 129 checksummed files). The install
-ran in its own Compose project against fresh volumes
-(`COMPOSE_PROJECT_NAME=aow-rel`, `AOW_BIND_ADDR=127.0.0.2` in that folder's
-`.env`, which is also how you stand a release test beside a running stack), and
-these are the results:
+```sh
+bash scripts/prove-offline.sh offline
+```
+
+The script uses `COMPOSE_PROJECT_NAME` when an install is isolated under a
+different project, and otherwise targets `aow`. It reaches that project's
+internal backend network. The proof runner contains `curl` and Python; the
+offline host only needs Docker and bash to launch it.
+
+**Last release drill.** Commit `a129bb6` was packaged from its own green
+`main` workflow and digest manifest on a Windows Docker Desktop host with a
+Linux/amd64 engine. The 1.8 GB folder was installed in a second Compose
+project against fresh volumes (`COMPOSE_PROJECT_NAME=aow-rel2`,
+`AOW_BIND_ADDR=127.0.0.3` in that folder's `.env`). This drill predates the
+addition of tool images above; its archive held the six runtime images.
 
 | Exercise | Result |
 |---|---|
-| First install, empty volumes | 61 s to `PASS`, all 11 services up |
-| Upgrade over the running install | 49 s; pre-upgrade dump written first, 4012 lines, all nine tables |
-| `SHA256SUMS`, all 129 files | verified; appending one line to a migration failed the check |
-| `images.bundle.lock` vs `images.tar` | 6/6 digests matched; a wrong digest and a missing entry both failed |
-| `--pull never` with an image deleted | Compose refused — "No such image" — and reached no registry |
-| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel_backend` reports `Internal=true` |
+| First install, empty volumes | 60 s to `PASS`; weather 80, places 620, events 26, facts 81 |
+| Upgrade over the running install | pre-upgrade dump written first (628 KB); `PASS` |
+| `SHA256SUMS` | all 142 files verified, including after the rollback drill |
+| `images.bundle.lock` vs `images.tar` | all six image digests matched |
+| `--pull never` | installer smoke passed with fresh volumes |
+| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel2_backend` reports `Internal=true` |
 | E1 through the installed release | answered from stored data, with source and as-of |
 | Failed upgrade (a migration that deletes and then errors) | install aborted; forecast rows 80 → 0 |
 | Rollback: previous folder's installer | images and migrations reverted; smoke **failed**, correctly, on the still-empty forecast |
-| `scripts/restore-offline.sh` with the failed release's dump | 11 s; every row back (80 forecast, 620 place and 81 fact rows, as that bundle's own snapshot holds); smoke passed |
+| `scripts/restore-offline.sh` with the failed release's dump | 12 s; weather 80, places 620, events 26 and facts 81 restored; smoke passed |
 
-Two limits on that. The isolation is a **second Compose project on the same
-machine**, not a physically disconnected host: the Docker network is
-`internal: true` and the containers cannot route out, but the host NIC stayed
-up and the folder was never transferred anywhere. And the bundle was built from
-the last published `main` commit, so the release tooling in it is this branch's
-copy laid over that bundle rather than a bundle that commit produced — the next
-bundle cut from `main` produces `images.bundle.lock` itself.
+The isolation was a **second Compose project on the same machine**. Its backend
+network was `internal: true`, and agent, API, consumer and ingestor got
+`errno 101` when they tried to reach `1.1.1.1:443`. The host NIC stayed up and
+the folder was not transferred to another machine, so this is not a physical
+air-gap certification.
 
 ---
 
@@ -1084,18 +1091,19 @@ Docker socket, for the reason given there.
 Stated, not implied:
 
 * **Single-replica broker and database.** Fine for this; not an HA design.
-* **Per-message accounting covers the producer outboxes, not the whole
-  system.** `services.common.reconcile` audits every confirmed outbox envelope
-  against `ingest_log` and can replay a missing one, so an accepted record can
-  always be accounted for. There is still no equivalent reconciler proving
-  every *enrichment* was delivered.
-* **The outage gate drives the API outbox, not the ingestor's.** The three
-  drills accept through the API, so it is the API's outbox that is proven
-  across a broker and a database outage. The ingestor's outbox is audited on
-  every CI run -- every confirmed envelope reconciled against `ingest_log` --
-  but this gate never stops a dependency underneath the ingestor and replays
-  through it. Same code path on both sides, so the risk is small; it is still
-  audited rather than exercised, and the claim stops there.
+* **Per-message accounting starts at an accepted outbox envelope.**
+  `services.common.reconcile` audits confirmed envelopes from the API,
+  ingestor, and enricher against `ingest_log` and can replay a missing one.
+  Enrichment results created before the enricher had an outbox have no durable
+  producer envelope to reconcile.
+* **The ingestor drills accept through a test fixture, not through a real
+  fetch.** The ingestor's real outbox volume, `drain()` loop, and confirm path
+  take part in broker and database outage drills. The fixture calls the
+  ingestor's own `envelopes_from` and `accept_many` inside its container; the
+  connected `live` fetch path is not exercised because CI has no egress.
+* **The consumer-stopped drill is run against the API outbox only.** It tests
+  a downstream failure common to the API and ingestor; the broker and database
+  outages are exercised against each producer separately.
 * **The enricher polls** rather than binding to the weather stream. That is a
   deliberate trade: no second delivery branch means no silent partial fan-out.
 * **A user-entered activity is scored against general outdoor comfort**, not a

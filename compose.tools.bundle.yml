@@ -1,0 +1,9 @@
+# Run the already packaged one-shot tools without building or pulling images.
+# Combine with compose.tools.yml from the release folder.
+services:
+  stage:
+    image: aow-bundle/stage:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  demos:
+    image: aow-bundle/demos:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  refresh:
+    image: aow-bundle/demos:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
