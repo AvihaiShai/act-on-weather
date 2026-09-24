@@ -590,7 +590,8 @@ stage the pinned model, and build the transport folder:
 RUN_ID=123456789  # replace with the successful main workflow run ID
 COMMIT=$(git rev-parse HEAD)
 gh run download "$RUN_ID" -n "aow-images-$COMMIT" -D release
-make stage-fetch COMPOSE="docker compose --env-file .env.example"
+docker compose --env-file .env.example pull postgres rabbitmq llm edge
+docker compose -f compose.tools.yml --env-file .env.example run --rm stage
 bash scripts/package-offline.sh release/images.lock
 ```
 
@@ -623,8 +624,13 @@ themselves travel with the folder, so on a bundle-installed host they run if
 that host has `bash`, `curl` and `python3` — which is the per-OS dependency
 this whole section exists to avoid. Putting those two images in the release
 would fix it; that is a change to `scripts/package-offline.sh` which has not
-been made or verified here, and the release path itself has not yet been run
-end to end.
+been made or verified here.
+
+The release path was run end to end from a green CI digest manifest on a
+Windows Docker Desktop host with a Linux/amd64 engine: package, checksum
+verification, image load, fresh isolated Compose volumes, `--pull never`, and
+the installer smoke check all passed. The folder has not been transferred to a
+separate offline host.
 
 ---
 
@@ -728,12 +734,13 @@ Stated, not implied:
 * **`edge` is the one container on a routable network**, by necessity.
 * **The CSP carries `'unsafe-inline'` and `'unsafe-eval'`** because Streamlit's
   bundle requires them. Noted rather than quietly included.
-* **The offline release scripts are Linux/amd64 only.**
+* **The offline release scripts need a Linux/amd64 Docker engine.**
   `scripts/package-offline.sh` and `scripts/install-offline.sh` refuse to run
-  on any other architecture and need `bash` and `sha256sum` on the host, so
-  they are unavailable on Windows and on Apple Silicon. They have also not been
-  run end to end. The quick start and the proofs have no such restriction; this
-  applies only to building and installing the transport folder, and the
+  on any other engine architecture and need `bash` and `sha256sum` on the host.
+  Git Bash supplied those tools for the Windows Docker Desktop test; Apple
+  Silicon's native arm64 engine is not supported by this bundle. The quick
+  start and the proofs have no such restriction. This applies only to building
+  and installing the transport folder, and the
   [production path](#production-path-kubernetes--openshift) below is the answer
   for a real on-prem install.
 * **The proof runner holds the Docker socket** while a drill runs. It is a
