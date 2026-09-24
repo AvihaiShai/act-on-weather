@@ -1,0 +1,379 @@
+name: release
+
+# This workflow does NOT deploy anything. The target is air-gapped: the last
+# hop is a deliberate manual, physical transfer of a bundle to an offline
+# host. What this workflow automates is everything before that hop --
+# binding to a commit CI already tested and scanned, independently
+# re-verifying the images that commit published, building the exact offline
+# bundle `scripts/package-offline.sh` produces, verifying it, and recording
+# the promotion decision as evidence. The transfer and the install are
+# operator steps, documented in docs/RELEASE.md, not automated here. See that
+# file for why, and for the command-exact operator procedure.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: >-
+          Full 40-character commit SHA to release. It must already be merged
+          to main (ci.yml publishes images only on push to main -- see
+          .github/workflows/ci.yml) and have a completed, successful ci.yml
+          run recorded against it. A feature-branch SHA, or a main commit
+          whose CI run has not finished, is rejected.
+        required: true
+        type: string
+      release_tag:
+        description: >-
+          Optional human-readable label for this release (e.g.
+          release/2026-09-24). Recorded verbatim in the promotion record.
+          This workflow does not create, verify, or push a git tag -- it is a
+          label, not a ref.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Only one release build per commit at a time. package-offline.sh refuses to
+# run a second time into an existing dist/aow-<sha>/ (see its `test ! -e
+# "$out"` guard), so two concurrent dispatches for the same sha would collide
+# on that directory rather than producing two independent results. A dispatch
+# for a DIFFERENT sha gets its own group and runs in parallel normally.
+# cancel-in-progress is false on purpose: a queued second run should wait its
+# turn, not cancel a build that might be minutes from a verified bundle.
+concurrency:
+  group: release-${{ inputs.sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Sized from the estimate in docs/RELEASE.md (build+verify ~8-15 min,
+    # install+smoke up to ~15 min more -- release-smoke.py itself budgets 8
+    # min for a cold CPU model load) plus real headroom, so a genuine hang
+    # (e.g. the smoke poll never becoming healthy) fails in a bounded time
+    # instead of consuming the runner minutes budget silently.
+    timeout-minutes: 40
+    # contents:read   -- checkout the release commit.
+    # actions:read    -- query the Actions API for ci.yml's run on that
+    #                    commit, and download its aow-images-<sha> artifact
+    #                    (cross-run artifact download requires this scope).
+    # packages:read   -- authenticate to ghcr.io to independently resolve the
+    #                    services/ui image digests and to let
+    #                    scripts/package-offline.sh pull them.
+    # Nothing here writes: no packages:write (no image is re-pushed -- the
+    # ones CI already published are reused as-is), no contents:write (no tag,
+    # no commit, no release object), no deployment permission of any kind.
+    # That absence is the honest statement of what this workflow is allowed
+    # to do to the outside world: read, verify, and package.
+    #
+    # Deliberately NOT requested: `administration: read`, to live-read branch
+    # protection on main. It is not one of the permission scopes GITHUB_TOKEN
+    # can be granted at all -- GitHub's own workflow-syntax schema enumerates
+    # the valid `permissions:` keys and rejects any other, and
+    # "administration" is not among them (checked against
+    # https://www.schemastore.org/github-workflow.json and the Actions docs
+    # before writing this). Requesting it would not "fail closed" the way an
+    # insufficient real scope would; it risks the whole workflow being
+    # rejected as invalid rather than degrading gracefully. The live branch
+    # protection read below runs under this job's existing token instead, and
+    # is expected to come back 403 -- see the "verified: false" handling in
+    # that step and in scripts/cd-promotion-record.py.
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    steps:
+      - name: Validate the sha input
+        run: |
+          sha="${{ inputs.sha }}"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character lowercase hex commit SHA, got: $sha"
+            exit 1
+          fi
+          echo "requested release commit: $sha"
+
+      - name: Checkout the release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 1
+
+      - name: Assert the checkout landed on the requested commit
+        run: |
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "${{ inputs.sha }}" || {
+            echo "::error::checked out $actual, expected ${{ inputs.sha }} (the ref may not exist on this remote)"
+            exit 1
+          }
+
+      - name: Report starting runner disk headroom
+        run: df -h .
+
+      # Gate 1: this commit was merged to main and CI passed there. ci.yml
+      # publishes images and the images.lock artifact ONLY on `push` to
+      # `main` (see the "Publish tested images by commit SHA" step, gated on
+      # github.event_name == 'push' && github.ref == 'refs/heads/main').
+      # A run matching that filter for this exact sha is therefore proof both
+      # that the commit is on main and that CI's build-and-scan job (Trivy,
+      # the compose integration test, the guard job) passed against it.
+      # Nothing here re-publishes images: this only reads what that run
+      # already produced.
+      - name: Find the ci.yml run that tested this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha="${{ inputs.sha }}"
+          runs="$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&branch=main&status=completed" --jq '.workflow_runs')"
+          run_id="$(jq -r 'sort_by(.run_started_at) | reverse | .[0].id // empty' <<<"$runs")"
+          if [ -z "$run_id" ]; then
+            echo "::error::no completed push-to-main ci.yml run found for commit $sha."
+            echo "::error::releases can only be cut from a commit already merged to main with a green CI run -- see docs/RELEASE.md."
+            exit 1
+          fi
+          conclusion="$(jq -r 'sort_by(.run_started_at) | reverse | .[0].conclusion' <<<"$runs")"
+          run_url="$(jq -r 'sort_by(.run_started_at) | reverse | .[0].html_url' <<<"$runs")"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::ci.yml run $run_id for commit $sha concluded '$conclusion', not 'success'."
+            exit 1
+          fi
+          echo "ci_run_id=$run_id" >> "$GITHUB_ENV"
+          echo "ci_run_url=$run_url" >> "$GITHUB_ENV"
+          echo "green CI run for $sha: $run_url"
+
+      # Live read, not an assertion. A promotion record is the one place a
+      # stale claim about repository settings does the most damage, so this
+      # reads GitHub's actual current branch-protection state for main right
+      # now rather than recording a constant. It is expected to fail: this
+      # job's token has no permission scope that grants branch-protection
+      # reads (see the permissions comment above), and that is fine --
+      # `verified: false` with the reason is a true statement, and
+      # scripts/cd-promotion-record.py refuses to fall back to a guess.
+      # `gh api` prints the response body to stdout even on a non-2xx status
+      # (confirmed locally against a real 404), so $body is valid JSON on
+      # both the success and the failure path.
+      - name: Read live branch-protection status for main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          mkdir -p release
+          out="release/branch-protection.json"
+          if body="$(gh api "repos/${{ github.repository }}/branches/main/protection" 2>/dev/null)"; then
+            jq -c '{
+              verified: true,
+              required_status_checks: (.required_status_checks.contexts // []),
+              enforce_admins: (.enforce_admins.enabled // false)
+            }' <<<"$body" > "$out"
+            echo "live branch-protection read succeeded:"
+            cat "$out"
+          else
+            status="$(jq -r '.status // "unknown"' <<<"$body" 2>/dev/null || echo unknown)"
+            reason="$(jq -r '.message // "unknown error"' <<<"$body" 2>/dev/null || echo "no response body")"
+            jq -n --arg reason "$reason" --arg status "$status" \
+              '{verified: false, reason: $reason, http_status: $status}' > "$out"
+            echo "live branch-protection read failed, as expected without a repo-admin token: $reason (HTTP $status)"
+            cat "$out"
+          fi
+
+      # Gate 2: retrieve what that CI run published. This is provenance, not
+      # trust -- the next step independently re-checks it against the
+      # registry rather than taking this file at face value.
+      - name: Download the CI run's image-digest artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: aow-images-${{ inputs.sha }}
+          path: release
+          run-id: ${{ env.ci_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate images.lock shape and commit
+        run: |
+          set -euo pipefail
+          test -f release/images.lock || { echo "::error::release/images.lock missing from the downloaded artifact"; exit 1; }
+          commit="$(awk '$1=="commit"{print $2}' release/images.lock)"
+          test "$commit" = "${{ inputs.sha }}" || {
+            echo "::error::release/images.lock records commit $commit, expected ${{ inputs.sha }}"
+            exit 1
+          }
+          for component in services ui; do
+            grep -qE "^$component ghcr\.io/.+@sha256:[0-9a-f]{64}\$" release/images.lock || {
+              echo "::error::release/images.lock has no valid $component digest line"
+              exit 1
+            }
+          done
+          echo "images.lock is well-formed and matches commit $commit"
+
+      # Gate 3: do not trust the artifact alone. Re-resolve each tag from the
+      # registry right now and require it still matches what CI recorded.
+      # `docker buildx imagetools inspect` (not `docker manifest inspect`) is
+      # used deliberately: buildx is a standard, always-enabled Docker CLI
+      # plugin, where `docker manifest` has a history of sitting behind an
+      # "experimental" CLI flag on some Docker versions -- and this gate is
+      # too important to leave depending on the runner's default for that.
+      - name: Independently re-resolve each published image digest
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image_root="ghcr.io/${GITHUB_REPOSITORY,,}"
+          sha="${{ inputs.sha }}"
+          status=0
+          for component in services ui; do
+            locked="$(awk -v c="$component" '$1==c{print $2}' release/images.lock)"
+            tag_ref="$image_root/$component:sha-$sha"
+            resolved_digest="$(docker buildx imagetools inspect "$tag_ref" | awk '/^Digest:/{print $2}')"
+            resolved="$image_root/$component@$resolved_digest"
+            if [ -z "$resolved_digest" ] || [ "$resolved" != "$locked" ]; then
+              echo "::error::$component: registry resolves $tag_ref to '${resolved_digest:-<nothing>}', but the CI artifact says $locked"
+              status=1
+            else
+              echo "$component: registry independently confirms $locked"
+            fi
+          done
+          exit "$status"
+
+      # Connected staging step (this runner has internet; the runtime it
+      # produces a bundle for does not). The exact command `make stage-fetch`
+      # runs for the model half: same pinned python:3.12-slim image, same
+      # script, same models.lock, run as an operator would run it, not
+      # reimplemented against the runner's own ambient Python. MODEL_BASE_URL
+      # defaults to the same public URL compose.tools.yml falls back to; set
+      # the repository variable MODEL_BASE_URL to stage from an internal
+      # mirror instead.
+      - name: Fetch the model weights and verify against models.lock
+        env:
+          MODEL_BASE_URL: ${{ vars.MODEL_BASE_URL || 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main' }}
+        run: |
+          mkdir -p models
+          docker compose -f compose.tools.yml run --rm stage
+
+      # Gate 4 + the bundle itself. scripts/package-offline.sh is F10's,
+      # called here unmodified: it re-checks the commit and a clean tree,
+      # pulls the two published digests plus the pinned postgres/rabbitmq/
+      # llama.cpp/nginx/stage images, builds+tags the demos proof image,
+      # docker-saves everything into images.tar, and already calls
+      # scripts/verify-bundle-images.sh on itself before returning. It writes
+      # dist/aow-<sha>/{images.tar,images.bundle.lock,SHA256SUMS,...}.
+      - name: Build the offline bundle (scripts/package-offline.sh)
+        run: bash scripts/package-offline.sh release/images.lock
+
+      # Gate 5, explicit and separate from the internal check above: same
+      # script, same interface, run again here as a visible, independently
+      # inspectable proof step in this job's log -- not because
+      # package-offline.sh is untrusted, but because a reviewer should not
+      # have to take "it calls verify internally" on faith.
+      - name: Verify the bundle's images (scripts/verify-bundle-images.sh)
+        run: bash scripts/verify-bundle-images.sh "dist/aow-${{ inputs.sha }}"
+
+      - name: Report disk usage after building the bundle
+        run: |
+          df -h .
+          du -sh "dist/aow-${{ inputs.sha }}" "dist/aow-${{ inputs.sha }}"/* 2>/dev/null || true
+
+      # Proves the bundle installs from its own bytes, with no pulls, on
+      # every release -- not just that it was built and verified. This does
+      # NOT duplicate F10's air-gap rig: that is a physically separate
+      # docker-ce host with nftables dropping DNS, raw-IP and ICMP, a real
+      # network-isolation certification a hosted GitHub runner cannot
+      # reproduce. This is the repeatable, cheaper check that runs on every
+      # release: the tar this exact job just built actually boots the stack
+      # and the stack actually holds data, using scripts/install-offline.sh
+      # unmodified. See docs/RELEASE.md, "What the install exercise proves
+      # and what it does not", for how the two relate.
+      #
+      # install-offline.sh's own `dc up -d --no-build --pull never` (see that
+      # script) is what makes a missing image a hard failure rather than a
+      # silent pull -- nothing here duplicates that with a second mechanism.
+      # Its own last step already runs `dc exec -T api python - <
+      # scripts/release-smoke.py`, so that is not invoked a second time here.
+      - name: Install the bundle and prove it serves data (no pulls)
+        env:
+          COMPOSE_PROJECT_NAME: aow-release-${{ github.run_id }}
+          AOW_IMAGE_VERSION: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          bundle="dist/aow-${{ inputs.sha }}"
+          dc() { docker compose -f "$bundle/compose.yml" -f "$bundle/compose.bundle.yml" --env-file "$bundle/.env" "$@"; }
+
+          cp .env.example "$bundle/.env"
+          for key in POSTGRES_PASSWORD POSTGRES_WRITER_PASSWORD POSTGRES_READER_PASSWORD RABBITMQ_PASSWORD; do
+            value="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+            sed -i "s/^${key}=.*/${key}=${value}/" "$bundle/.env"
+          done
+
+          # Same shape as scripts/ci-integration.sh's own cleanup trap: dump
+          # logs only on failure, always tear down, and do not call `exit`
+          # explicitly -- bash preserves the triggering exit status as the
+          # step's own once the EXIT trap returns, exactly as that script
+          # relies on.
+          cleanup() {
+            local status=$?
+            if [ "$status" -ne 0 ]; then
+              dc logs --tail=120 migrate ingestor consumer api llm agent enricher ui edge || true
+            fi
+            dc down --volumes --remove-orphans || true
+            rm -f "$bundle/.env"
+          }
+          trap cleanup EXIT
+
+          bash "$bundle/scripts/install-offline.sh"
+          echo "post-install disk usage (docker load + running stack's fresh volumes):"
+          df -h .
+
+      # Written INTO the bundle (not alongside it), so it travels with the
+      # bundle to the offline host and the SHA256SUMS reseal below covers it
+      # for free. See scripts/cd-promotion-record.py's docstring for the full
+      # schema and the per-image provenance tiers it records.
+      - name: Write the promotion record into the bundle
+        env:
+          RELEASE_SHA: ${{ inputs.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CI_RUN_ID: ${{ env.ci_run_id }}
+          CI_RUN_URL: ${{ env.ci_run_url }}
+          RELEASE_LOCK: release/images.lock
+          BUNDLE_LOCK: dist/aow-${{ inputs.sha }}/images.bundle.lock
+          BUNDLE_CHECKSUMS: dist/aow-${{ inputs.sha }}/SHA256SUMS
+          MODELS_LOCK: models.lock
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH_PROTECTION_FILE: release/branch-protection.json
+          OUTPUT: dist/aow-${{ inputs.sha }}/promotion-record.json
+        run: |
+          export SUMMARY_OUTPUT="$GITHUB_STEP_SUMMARY"
+          python3 scripts/cd-promotion-record.py
+
+      # scripts/package-offline.sh already sealed SHA256SUMS before the
+      # promotion record existed. Reseal it now that the record has been
+      # added, with the exact recipe package-offline.sh itself uses (same
+      # find/sort/sha256sum pipeline, applied again from here rather than by
+      # editing that script) so `sha256sum -c SHA256SUMS` on the offline host
+      # covers the promotion record too, not just the code and the images.
+      - name: Reseal SHA256SUMS to cover the promotion record
+        run: |
+          cd "dist/aow-${{ inputs.sha }}"
+          find . -type f ! -name SHA256SUMS ! -name .env -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+
+      # Deliberately NOT uploaded: dist/aow-<sha>/images.tar (multi-GB
+      # docker-save archive) and dist/aow-<sha>/models/*.gguf (~1.2 GB). See
+      # docs/RELEASE.md "Why the bundle itself is not a workflow artifact".
+      # What is uploaded is the entire proof trail: the promotion record
+      # (with its per-image provenance tiers), the CI-provenance lock file,
+      # the bundle's own manifest lock, and the resealed checksums -- small
+      # enough to review inline and enough for an operator to rebuild and
+      # verify the identical bundle from scratch.
+      - name: Upload the promotion record and bundle manifests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aow-promotion-${{ inputs.sha }}
+          path: |
+            dist/aow-${{ inputs.sha }}/promotion-record.json
+            release/images.lock
+            dist/aow-${{ inputs.sha }}/images.bundle.lock
+            dist/aow-${{ inputs.sha }}/SHA256SUMS
+            dist/aow-${{ inputs.sha }}/release-version.txt
+          if-no-files-found: error
+          # Outlives ci.yml's 30-day image-digest artifact on purpose: this
+          # is the audit trail for a release decision, which should be
+          # checkable well after the CI artifact it was built from expires.
+          retention-days: 90

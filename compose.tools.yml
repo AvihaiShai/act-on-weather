@@ -52,7 +52,17 @@ services:
     environment:
       # The one place the artefact location is configured. Override it in .env
       # to stage from an internal mirror instead of the public internet.
-      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main}
+      #
+      # ggml-org, not Qwen. The default used to point at Qwen/Qwen3-1.7B-GGUF,
+      # which publishes only Q8_0 -- so staging the Q4_K_M this project pins
+      # returned HTTP 404 for anyone who did not already have the file, and
+      # the documented staging path could not actually stage. Confirmed
+      # against the HuggingFace API: ggml-org/Qwen3-1.7B-GGUF carries
+      # Qwen3-1.7B-Q4_K_M.gguf at sha256 d2387ca2... and 1282439264 bytes,
+      # which is exactly what models.lock records. stage_model.py verifies
+      # that hash after download, so a wrong mirror fails loudly rather than
+      # staging the wrong weights.
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main}
     volumes:
       # Only models/ is writable. The lock file and the script are read-only,
       # and the rest of the working tree is not mounted at all.
