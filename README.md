@@ -152,7 +152,7 @@ images and the model, a normal run needs no internet. A fresh clone alone is
 
 | | |
 |---|---|
-| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 620 places, 81 background articles, and **26 verified events** (+ 45 labelled samples in demo mode) |
+| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 620 places, 81 background articles, and **39 verified events** (+ 45 labelled samples in demo mode) |
 | **Decides** | a deterministic suitability score per (city, day, activity) across **18 activities**, from rules in `data/activities.yml` |
 | **Words** | a local Qwen3-1.7B writes one or two sentences about each score |
 | **Answers** | an agent resolves the question in code and answers from stored rows only |
@@ -513,7 +513,7 @@ carries the as-of stamp that says how old it is.
 | Map backdrop | OpenStreetMap via Overpass | ODbL © OpenStreetMap contributors | a 20 km extract per city — streets, water, coastline, parks — staged by `services/ingestor/fetch_basemap.py` into `data/map/<city>.basemap.geojson.gz`; 1.2 MB for all five |
 | Map fallback shoreline | [Natural Earth 1:10m](https://www.naturalearthdata.com/downloads/10m-physical-vectors/) | public domain | bundled in `data/map/`; drawn only for a city with no staged extract. Source revision and checksum in `data/map/SOURCE.md` |
 | Background | Wikipedia REST summaries | CC BY-SA 4.0 | same script; the city article plus one article per venue, resolved through its Wikidata sitelink |
-| Events (verified) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. 26 rows across all five cities (london 11, reykjavik 6, rome 4, lisbon 4, tel-aviv 1). **The only events a default run stores.** |
+| Events (verified) | venue and organiser listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. 39 rows across all five cities (london 10, rome 10, tel-aviv 9, reykjavik 6, lisbon 4), each recording when its listing page was last opened and expiring after `AOW_EVENT_RECHECK_DAYS`. **The only events a default run stores.** |
 | Events (generated samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …*. **Demo mode only** (`make up-demo`). |
 
 **Which day an event is on.** Instants are stored as `timestamptz` and never
@@ -588,11 +588,38 @@ by its Wikidata P31 class rather than by its distance from a point.
 offline-stageable feed of concerts and fixtures for five cities, and fabricating
 them was not an option. So there are two event files, kept apart at every layer:
 
-* `data/events.seed.jsonl` — 26 **real** listings, each checked by hand
+* `data/events.seed.jsonl` — 39 **real** listings, each checked by hand
   against its own source URL. `is_sample: false`. These are the only events the
   system claims are real. Every city has at least one, but the depth is uneven
-  (london 11, reykjavik 6, rome 4, lisbon 4, tel-aviv 1), because that is how
+  (london 10, rome 10, tel-aviv 9, reykjavik 6, lisbon 4), because that is how
   far hand-verification got. **They are what a default run stores.**
+
+  **Every row also records when it was last checked, and stops counting when
+  that reading gets old.** A row here is not an observation; it is somebody's
+  note of a web page, taken on a particular day. Nothing in an air-gapped run
+  can discover that the venue cancelled the show the following week. So each
+  row carries `checked_at`, the day its listing page was last opened, and
+  `valid_until`, derived from it once by the ingestor as `checked_at +
+  AOW_EVENT_RECHECK_DAYS` (default 21). Past that instant the row is **still
+  stored, still counted and still shows its source** — it simply stops being
+  returned as a currently scheduled event. `GET /events` filters on it by
+  default; `?include_expired=true` is the operator's view, and every row
+  carries `is_current` so the two can never be confused.
+
+  That distinction matters more than it sounds. "No concert is on record in
+  Lisbon this week" invites a reader to conclude the city is quiet. "The
+  listings on record for those dates were last checked on 24 September and are
+  past their recheck date" says the system is the limit and what would fix it,
+  and that is the sentence the agent actually emits. The coverage tab reports
+  current against expired per city for the same reason: a feed that went stale
+  and a city nobody ever checked are different problems, and only the first is
+  fixed by a connected refresh.
+
+  Re-checking a listing is an ordinary correction: `PATCH
+  /records/events/<id>` with a new `checked_at` travels through the outbox, the
+  broker and the consumer like any other edit, and the expiry moves with it.
+  `valid_until` is deliberately **not** patchable on its own — a hand-set
+  expiry would let one row outlive the check that justifies it.
 * `data/events.samples.jsonl` — 45 rows generated by
   `services/ingestor/make_samples.py`. Every row is `is_sample: true`, its title
   begins with **"Sample:"**, and its `source` says in words that it is not a
@@ -624,8 +651,8 @@ saying which rows are real.
 The loader drops any row in the sample file that does not admit to being a
 sample, so the labelling is checked at the boundary rather than assumed. In demo
 mode the samples are marked in the UI, in the agent's prompt, in its footer, and
-counted separately in the coverage tab — which reports **"26 verified + 45
-samples"**, never a single total of 71.
+counted separately in the coverage tab — which reports **"39 verified + 45
+samples"**, never a single total of 84.
 
 A city with no events on record produces "none on record", never a
 plausible-sounding invention.
@@ -1307,22 +1334,56 @@ Stated, not implied:
   deliberate trade: no second delivery branch means no silent partial fan-out.
 * **A user-entered activity is scored against general outdoor comfort**, not a
   rule tuned for it, and the answer says so. It is not a new data fetch.
-* **No marine data.** Surfing is scored, in coastal cities only, from wind,
-  temperature and precipitation — never from wave height, swell or sea state.
-  The score says whether the day is pleasant to be on the water, not whether
-  the surf is any good, and no wave source was staged to say otherwise.
+* **No marine data, and the scores are capped because of it.** Surfing,
+  swimming, fishing and a boat ride are scored, in coastal cities only, from
+  wind, temperature and precipitation — never from wave height, swell period or
+  water temperature. Since the score measures only part of what those
+  activities need, it is capped at **69**, one point below the `good` band
+  floor, so none of them can ever be reported as a confident recommendation;
+  the capped reason is carried in the row and the wording says what is not
+  measured. A day at the beach is exempt: that is a judgement about shore
+  weather, which is exactly what is measured. Staging a marine provider —
+  Open-Meteo publishes one — would lift the cap, and it was cut deliberately:
+  it means a second source in the offline bundle and in the connected refresh
+  path, which is more surface than the claim is worth here.
+* **A coastal city's forecast point is not necessarily its coast.** Each
+  coastal city names a real point on its coast in `data/cities.yml`, and the
+  consumer stores the great-circle distance from the forecast point to it, so
+  `coastal: true` is a claim that can be checked rather than one that is
+  asserted: Tel Aviv 1.4 km, Reykjavík 2.6 km, Lisbon 17.8 km, Rome 24.7 km.
+  Rome's `coastal: true` rests on Lido di Ostia, which is inside Roma Capitale
+  and on the metro but is not the city centre the forecast describes; Lisbon's
+  own waterfront is the Tagus estuary and its ocean beaches are in Cascais.
+  Every answer carrying one of those scores names the point and the distance.
+  What would close this is a second forecast point per coastal city, not a
+  different caption.
 * **No surf spots, dive sites or boat hire on record.** The places snapshot
   names beaches and marinas, which is not the same claim, so “where can I surf
   in Tel Aviv?” is answered with an explicit “I do not have a verified surf
   spot,” never with a beach. A sourced surf-spot layer, carrying the same
   `source` and `as_of` as every other row, is what would close this.
-* **The verified event set is 26 rows, and it is thin and uneven.** Every
-  city has at least one listing (london 11, reykjavik 6, rome 4, lisbon 4,
-  tel-aviv 1), but it is a hand-checked snapshot of a few venues per city over
-  a few weeks, not a feed. A default run answers "none on record" for most
+* **The verified event set is 39 rows, and it is still thin and uneven.**
+  Every city has at least four listings (london 10, rome 10, tel-aviv 9,
+  reykjavik 6, lisbon 4), but it is a hand-checked snapshot of a few venues per
+  city over a few weeks, not a feed. **Lisbon is the thin one**: the Coliseu
+  dos Recreios and the MEO Arena publish first-party listing pages that can be
+  read and re-read, and most other Lisbon venues do not, so that is where
+  hand-verification stopped. A default run answers "none on record" for many
   dates and categories, and the trip planner has few events to place.
   `make up-demo` fills the gap with labelled generated rows for
   demonstration; it does not close it.
+* **The feed goes out of date on a timer, and that is the intended
+  behaviour.** Every listing expires `AOW_EVENT_RECHECK_DAYS` (default 21)
+  after it was last checked, so a snapshot left alone eventually reports zero
+  current events and says why. That is the same bargain the 16-day weather
+  window already makes; what closes it is a connected re-check, not a longer
+  window. Raising `AOW_EVENT_RECHECK_DAYS` moves every row's expiry together
+  and is an explicit decision to trust older readings.
+* **No automated re-check.** Extending a listing's life means opening its page
+  and patching `checked_at`, one row at a time. There is no scheduled job that
+  re-reads the source pages and no diff of what changed, because the sources
+  are ordinary venue websites with no common format — which is the same reason
+  the feed is hand-checked in the first place.
 * **The places map is a bundled extract, not a map service.** Stored places are
   drawn as points on a local equirectangular projection over a 20 km
   OpenStreetMap extract per city — main and secondary streets, rivers,

@@ -297,6 +297,11 @@ class Retrieval:
     # either because no source it holds records a venue for that activity or
     # because this city has no such row. Rendered as an explicit gap.
     unlocated_activities: list[str] = field(default_factory=list)
+    # Filled only when an event retrieval came back empty: how many listings
+    # for the same city, window and categories the freshness filter removed,
+    # and when the newest of them was last checked. It turns a bare "nothing on
+    # record" into a statement about the feed rather than about the city.
+    expired_events: dict[str, Any] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
         return not any(
@@ -516,6 +521,20 @@ class Router:
                 categories=resolution.event_categories or None,
                 limit=12,
             )
+            if not result.events:
+                # Only when the retrieval came back empty, so the ordinary path
+                # still costs one query. What this buys is the difference
+                # between "no concert is on record" and "the concert listings
+                # on record for these dates have not been re-checked since 24
+                # September", which is the same distinction the coverage window
+                # already makes for weather and is the one a reader can act on.
+                result.expired_events = queries.expired_events(
+                    self.conn,
+                    city_id,
+                    start=window.start,
+                    end=window.end,
+                    categories=resolution.event_categories or None,
+                )
         if "facts" in resolution.intents:
             result.facts = self._facts(city_id, text)
 

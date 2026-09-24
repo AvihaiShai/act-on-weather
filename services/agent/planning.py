@@ -20,6 +20,14 @@ request rebuilds the same plan.
 `venue_places` fixes the other half of that sentence. Interests filtered the
 places list, but the day's chosen activity did not, so a beach day and a museum
 day in the same city were handed the same three rows.
+
+Nothing here words anything, which is why the sea-state caveat is not applied
+in this module. A day that recommends surfing, swimming, fishing or a boat ride
+has to say that nothing in the stored data measures the water; that sentence is
+attached by `agent.main.build_itinerary`, next to the score it qualifies, from
+`common.coast.sea_state_caveat`. What this module contributes to the same
+problem is the ordering: those four activities are capped at 69 by the rule
+engine, so they cannot outrank a land activity that scored on evidence.
 """
 
 from __future__ import annotations

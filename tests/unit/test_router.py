@@ -242,6 +242,11 @@ def test_named_activity_keeps_all_seven_days_and_fallback_verdicts(monkeypatch):
 
     monkeypatch.setattr(router.queries, "recommendations", recommendations)
     monkeypatch.setattr(router.queries, "events", lambda *_args, **_kwargs: [])
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        router.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
 
     result = router.Router(object()).retrieve("Is it a good week to go running in Rome?")
 
@@ -324,6 +329,11 @@ def test_itinerary_title_uses_correct_day_count(monkeypatch, length, expected):
     monkeypatch.setattr(main.queries, "recommendations", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(main.queries, "places", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(main.queries, "events", lambda *_args, **_kwargs: [])
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        main.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
     result = main.build_itinerary(
         main.ItineraryIn(city="rome", start_date=today, end_date=today + timedelta(days=length - 1))
     )

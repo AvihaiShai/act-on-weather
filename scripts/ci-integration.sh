@@ -35,6 +35,12 @@ dc exec -T consumer python - < tests/integration/reconnect.py
 # tzdata can prove it. Asserted against the committed snapshot, whose dates are
 # fixed, so this keeps holding after the staged forecast has expired.
 dc exec -T api python - < tests/integration/event_local_days.py
+# F9: the freshness filter is a SQL predicate over now(), and a re-check is a
+# correction that travels through the outbox, the broker and the consumer. Both
+# halves need a real stack, so the drill patches a listing's check date into the
+# past, watches it leave the default read while staying counted, and re-checks
+# it. It runs before the M11 drills below so it shares their fresh project.
+dc exec -T api python - < tests/integration/event_freshness.py
 ingestor_audit="$(dc exec -T ingestor python -m services.common.reconcile)"
 python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert r["mode"] == "audit" and r["scanned"] > 0, r' "$ingestor_audit"
 echo "ingestor reconciliation audit: $ingestor_audit"

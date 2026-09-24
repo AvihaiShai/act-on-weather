@@ -78,6 +78,21 @@ class Fact(_Payload):
 
 
 class Event(_Payload):
+    """A dated listing, and the two timestamps that say how far to trust it.
+
+    `checked_at` is when somebody last opened this row's `source_url` and read
+    the title, the date and the hall back off it. `valid_until` is when that
+    reading stops counting: a listing can be cancelled, moved or rescheduled
+    after it was checked, and nothing in an air-gapped run can notice. Past
+    `valid_until` the row is still stored and still shown in the coverage
+    panel, but it is no longer offered as a currently scheduled event -- see
+    `queries.events`, which filters on it by default.
+
+    Both are required rather than optional. A row with no checked-at date is
+    asserted rather than verified, and a row with no expiry is a claim about a
+    schedule that nobody has undertaken to re-check.
+    """
+
     id: str
     city_id: str
     title: str
@@ -89,6 +104,8 @@ class Event(_Payload):
     source_url: str | None = None
     is_sample: bool = False
     as_of: datetime
+    checked_at: datetime
+    valid_until: datetime
 
 
 class RecommendationRequest(_Payload):

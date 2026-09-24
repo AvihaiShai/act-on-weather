@@ -20,7 +20,7 @@ help:
 	@echo "  make stage          pull the pinned images, stage the model, build the services"
 	@echo ""
 	@echo "Running (no internet needed):"
-	@echo "  make up             start everything (26 verified events, no generated rows)"
+	@echo "  make up             start everything (39 verified events, no generated rows)"
 	@echo "  make up-demo        same, plus 45 labelled sample events in all five cities"
 	@echo "  make ps / logs      status / follow the logs"
 	@echo "  make down           stop"
@@ -83,7 +83,7 @@ up:
 
 # Demo mode. Adds data/snapshot/events.samples.jsonl -- 45 generated rows,
 # every one is_sample and titled "Sample: ..." -- so the planner and the agent
-# can be shown on days the 26 verified events do not cover.
+# can be shown on days the 39 verified events do not cover.
 # Going back to "make up" restarts the consumer, which deletes them.
 up-demo:
 	$(COMPOSE) $(DEMO) up -d

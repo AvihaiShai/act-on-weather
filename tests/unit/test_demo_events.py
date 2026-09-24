@@ -42,6 +42,13 @@ def event_row(event_id: str, *, is_sample: bool) -> dict:
         "source_url": "https://example.invalid/whatever",
         "is_sample": is_sample,
         "as_of": "2026-09-23T18:00:00+00:00",
+        # Both are required by the payload model (migration 006): a row with no
+        # checked-at date is asserted rather than verified, and a row with no
+        # expiry is a claim about a schedule nobody has undertaken to re-check.
+        # The fixture carries them so these tests exercise the same shape the
+        # consumer actually receives.
+        "checked_at": "2026-09-23T18:00:00+00:00",
+        "valid_until": "2026-10-14T18:00:00+00:00",
     }
 
 

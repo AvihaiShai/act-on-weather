@@ -229,15 +229,29 @@ it has no separate architectural role.
   not move the window forward. A question outside stored weather coverage is
   refused; refresh needs an operator and temporary internet access.
 - **Coverage:** The app supports five configured cities and an 18-activity
-  catalogue. Default event data has seven verified London listings; the 45
-  generated events are opt-in demo samples and are labelled as such. Other
-  cities may honestly show no event on record.
+  catalogue. Default event data is 39 hand-verified listings across all five
+  cities, unevenly spread (london 10, rome 10, tel-aviv 9, reykjavik 6,
+  lisbon 4); the 45 generated events are opt-in demo samples and are labelled
+  as such. Cities and date ranges outside that set honestly show no event on
+  record.
+- **Event freshness:** A stored event is a reading of a listing page taken on a
+  particular day, not an observation. Each row carries `checked_at` and a
+  `valid_until` derived from it, and stops being returned as a currently
+  scheduled event once that expires — it is still stored and still counted, so
+  the coverage panel can distinguish a feed that went stale from a city nobody
+  checked. Re-checking a row is a patch through the queue like any other
+  correction.
 - **Meaning of a score:** A weather score is an estimate from rules. It does
   not establish that a beach is safe to swim at, a venue is open, or an event
   still has tickets. Plans only name places and events present in stored rows.
-- **Event dates:** The planner currently groups events using the date of the
-  database timestamp. An event near midnight can therefore land on a
-  different day from the city's local calendar date; verify its source time.
+- **Sea state:** Nothing in this system measures waves, swell or water
+  temperature. Surfing, swimming, fishing and a boat ride are therefore capped
+  one point below the `good` band, and every answer carrying one of those
+  scores names the city's forecast point and its distance from the coast
+  reference in `data/cities.yml`.
+- **Event dates:** Derived in SQL from the city's own IANA zone, so an event
+  starting at local midnight lands on its local day rather than the UTC one,
+  and a multi-day run matches every day it is active on.
 - **AI answers:** Named activity verdicts come directly from rows. Open-ended
   replies are prompted with retrieved data, but the wording is not checked
   claim by claim; inspect the rows and source links for important claims.

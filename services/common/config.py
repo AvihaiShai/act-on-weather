@@ -7,6 +7,7 @@ import time with a clear message rather than half-starting.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("AOW_DATA_DIR", "/app/data"))
@@ -63,6 +64,40 @@ SCHEMA_VERSION = 1
 # place that writes to the database -- so turning demo mode back off removes
 # the sample rows rather than leaving them behind.
 DEMO_EVENTS = os.environ.get("AOW_DEMO_EVENTS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+# --------------------------------------------------- event freshness --
+# How long a checked event listing stays trustworthy.
+#
+# Every row in data/events.seed.jsonl was read off a venue's or an organiser's
+# own listing page by hand, and it records the moment that happened in
+# `checked_at`. What it cannot record is what the venue did afterwards: a
+# concert is cancelled, a fixture is moved, a run adds a matinee. An air-gapped
+# run has no way to find out, so the only honest thing it can do is say how old
+# its reading is and stop presenting it as current once it is too old.
+#
+# `valid_until` is therefore `checked_at + AOW_EVENT_RECHECK_DAYS`, computed
+# once by services.ingestor.fetch_content.load_events and carried on the row so
+# that the database, the API, the agent and the UI all read the same instant
+# rather than each recomputing it from a window that might differ between
+# containers.
+#
+# 21 days is chosen to match the shape of the rest of the snapshot rather than
+# to be generous: the weather snapshot is a 16-day forecast, and a system that
+# already answers "no data for that date" outside that window should not be
+# answering "the Laver Cup is on" from a listing nobody has looked at since.
+EVENT_RECHECK_DAYS = int(os.environ.get("AOW_EVENT_RECHECK_DAYS", "21"))
+
+
+def event_valid_until(checked_at: datetime) -> datetime:
+    """When a reading of an event listing stops counting as current.
+
+    The whole freshness policy, in one line, in the module that already owns
+    the window. Both producers call it -- the ingestor when it loads the seed,
+    and the consumer when an operator patches a row's `checked_at` after
+    re-opening its listing page -- so a re-checked row and a freshly ingested
+    one expire by the same rule rather than by two implementations of it.
+    """
+    return checked_at + timedelta(days=EVENT_RECHECK_DAYS)
 
 
 def _require(name: str) -> str:

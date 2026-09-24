@@ -205,6 +205,11 @@ def test_the_router_filters_events_by_the_requested_kind(monkeypatch):
     monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
     monkeypatch.setattr(router.queries, "coverage", lambda _conn: COVERAGE)
     monkeypatch.setattr(router.queries, "events", events)
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        router.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
     monkeypatch.setattr(router.queries, "places", lambda *_a, **_k: [])
     monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
 
@@ -1027,6 +1032,11 @@ def test_a_multi_interest_question_spreads_its_place_budget(monkeypatch):
     monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
     monkeypatch.setattr(router.queries, "recommendations", lambda *_a, **_k: [])
     monkeypatch.setattr(router.queries, "events", lambda *_a, **_k: [])
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        router.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
     monkeypatch.setattr(router.queries, "facts", lambda *_a, **_k: [])
     monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
 
@@ -1055,6 +1065,11 @@ def test_an_open_places_question_keeps_the_flat_limit(monkeypatch):
     monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
     monkeypatch.setattr(router.queries, "recommendations", lambda *_a, **_k: [])
     monkeypatch.setattr(router.queries, "events", lambda *_a, **_k: [])
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        router.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
     monkeypatch.setattr(router.queries, "facts", lambda *_a, **_k: [])
     monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
 
