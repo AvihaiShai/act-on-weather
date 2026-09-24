@@ -22,15 +22,14 @@ on:
 permissions:
   contents: read
 
-# Superseded pushes on a PR branch cancel their in-flight run -- nobody
-# needs three stale runs of the same branch finishing after a fourth push.
-# `main` is excluded: a push there is a release candidate for
-# `publish-images`, and a run GitHub cancelled mid-push would leave that
-# commit's image manifest never published, with no failed run to point at
-# and (once a required check is cancelled) a merge silently unblocked by a
-# check that never finished either way.
+# Superseded pushes on a PR branch cancel their in-flight run. Give each
+# `main` run its own group: cancel-in-progress: false alone is insufficient,
+# because GitHub replaces an older *pending* run in the same group when a new
+# one is queued. A workflow_dispatch while a push-to-main run was pending
+# cancelled that push before publish-images could create its image manifest.
+# Every main push must get its own CI and publish result for release gating.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
