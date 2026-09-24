@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, date, datetime, timedelta
 from html import escape
+from pathlib import Path
 
 import forecast
 import pandas as pd
@@ -32,6 +33,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 import theme
+import yaml
 
 API = os.environ.get("API_BASE", "http://api:8000")
 TIMEOUT = float(os.environ.get("API_TIMEOUT_S", "180"))
@@ -287,6 +289,88 @@ def page_forecast(cov) -> None:
 
 # -------------------------------------------------------- 2. suitability ----
 
+# The sea-state caveat, as the UI's own copy.
+#
+# The UI deliberately shares no code with the services -- it talks to the API
+# and nothing else, and its image carries `services/ui/` and `data/` and not
+# `services/common/`. So the sentence below is written twice, here and in
+# `services/common/coast.sea_state_caveat`, and
+# `tests/unit/test_coastal_evidence.py` asserts the two produce the same string
+# for the same city row. A caveat that drifts between the chat tab and the
+# heatmap would be worse than one written once badly.
+
+
+def _activities_file() -> Path:
+    # The source tree and the UI image put data in different relative places,
+    # the same split `places_map._map_file` deals with.
+    here = Path(__file__).resolve()
+    candidates = (
+        here.parent / "data" / "activities.yml",
+        here.parent.parent.parent / "data" / "activities.yml",
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def sea_state_activities() -> set[str]:
+    """The activities whose quality depends on water nothing here measures.
+
+    Read from the same data/activities.yml the rule engine scores from, rather
+    than listed again in this file: the flag and the score ceiling it goes with
+    are one decision, and a second hand-maintained list of surfing, swimming,
+    fishing and boat rides would be the thing that falls out of date.
+    """
+    with open(_activities_file(), encoding="utf-8") as handle:
+        catalogue = yaml.safe_load(handle)["activities"]
+    return {key for key, cfg in catalogue.items() if cfg.get("sea_state_unmeasured")}
+
+
+def format_km(distance: float) -> str:
+    """Matches `common.coast.format_km`: a decimal under ten kilometres, where
+    it is the difference between "on the beach" and "a bus ride", and none
+    above, where it would only pretend to a precision nobody has."""
+    return f"{distance:.1f} km" if distance < 10 else f"{distance:.0f} km"
+
+
+def sea_state_caption(city: dict) -> str:
+    """The UI's copy of `common.coast.sea_state_caveat`; see the note above."""
+    name = city.get("name") or city.get("id") or "this city"
+    coast_name = city.get("coast_name")
+    distance = city.get("coast_distance_km")
+    if coast_name and distance is not None:
+        where = f"the {name} forecast point, {format_km(float(distance))} from {coast_name}"
+    else:
+        where = f"the {name} forecast point"
+    return (
+        f"These scores rate the stored forecast for {where} -- nothing in the data "
+        "measures the waves, the swell or the water temperature."
+    )
+
+
+def coastal_points_caption(cities: list[dict]) -> str:
+    """The same point made about several cities at once.
+
+    One activity across five cities cannot use the per-city sentence without
+    saying "these scores rate" five times over, so the distances are listed
+    instead. The claim is identical: the forecast point is not the water, and
+    the water is not measured.
+    """
+    located = [c for c in cities if c.get("coast_name") and c.get("coast_distance_km") is not None]
+    if not located:
+        return (
+            "Nothing in the data measures the waves, the swell or the water "
+            "temperature, so these scores rate the land forecast alone."
+        )
+    distances = "; ".join(
+        f"{c['name']} is {format_km(float(c['coast_distance_km']))} from {c['coast_name']}"
+        for c in sorted(located, key=lambda c: -float(c["coast_distance_km"]))
+    )
+    return (
+        "Each city is scored at its own forecast point, which is not the water: "
+        f"{distances}. Nothing in the data measures the waves, the swell or the "
+        "water temperature."
+    )
+
 
 def page_heatmap(cov) -> None:
     st.caption(
@@ -302,20 +386,27 @@ def page_heatmap(cov) -> None:
         city = city_picker(cov, "heat_city")
         rows = cached_get("/scores", city=city)
         index, columns = "activity_label", "forecast_date"
-        coastal = next(c["coastal"] for c in cov["cities"] if c["id"] == city)
-        if not coastal:
+        city_row = next(c for c in cov["cities"] if c["id"] == city)
+        if not city_row["coastal"]:
             st.caption(
                 "This city is marked inland, so surfing, swimming, the beach, "
                 "fishing and a boat ride are not scored for it at all. A score "
                 "for surf, derived from an inland forecast, would be a number "
                 "the system cannot stand behind."
             )
+        elif any(row["activity"] in sea_state_activities() for row in rows or []):
+            # Having a coast is not knowing what the sea is doing, and the
+            # table below is where a reader would otherwise assume it is.
+            st.caption(sea_state_caption(city_row))
     else:
         activities = cached_get("/activities") or []
         labels = {a["label"]: a["activity"] for a in activities}
         chosen = st.selectbox("Activity", list(labels))
         rows = cached_get("/scores", activity=labels[chosen])
         index, columns = "city_id", "forecast_date"
+        if labels[chosen] in sea_state_activities():
+            shown = {row["city_id"] for row in rows or []}
+            st.caption(coastal_points_caption([c for c in cov["cities"] if c["id"] in shown]))
 
     if not rows:
         st.warning("No scores on record for that selection.")
@@ -715,6 +806,11 @@ def render_day(day: dict) -> None:
         )
         if day.get("why"):
             st.caption(day["why"])
+        # Written by the agent, next to the score it qualifies, and shown here
+        # for the same reason it appears under the heatmap: a plan is where a
+        # coastal score stops being data and starts being advice.
+        if day.get("activity_caveat"):
+            st.caption(day["activity_caveat"])
 
         alternatives = day.get("alternatives") or []
         if alternatives:
@@ -1526,6 +1622,8 @@ def page_coverage(cov) -> None:
                 "coastal": "has a coast",
                 "verified_events_current": "verified events, current",
                 "verified_events_expired": "verified events, expired",
+                "coast_name": "coast reference",
+                "coast_distance_km": "km to the coast",
             }
         ).drop(columns=["city_id"]),
         hide_index=True,
@@ -1534,7 +1632,10 @@ def page_coverage(cov) -> None:
     st.caption(
         "`has a coast` gates surfing, swimming, the beach, fishing and a boat ride. "
         "An inland city gets no row for them, rather than a score derived from a "
-        "forecast that says nothing about surf."
+        "forecast that says nothing about surf. The two columns beside it are what "
+        "make that flag checkable: the named point the claim rests on, and how far "
+        "the city's forecast point is from it. Rome's is about 25 km inland of the "
+        "sea, so a score it carries for a sea activity is capped and says so."
     )
 
     st.markdown("**The activity catalogue**")

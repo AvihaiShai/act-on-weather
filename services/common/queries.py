@@ -137,6 +137,10 @@ SELECT 'itineraries', 'saved by users', MAX(updated_at), COUNT(*),
 # all in one city.
 BY_CITY_SQL = """
 SELECT c.id AS city_id, c.name, c.coastal,
+       -- The coast reference point, so a coastal city's row reads as a claim
+       -- somebody can check rather than a boolean somebody asserted. Null for
+       -- an inland city; see migration 007.
+       c.coast_name, c.coast_distance_km,
        (SELECT COUNT(*) FROM weather_daily w WHERE w.city_id = c.id)   AS weather,
        (SELECT COUNT(*) FROM recommendations r WHERE r.city_id = c.id) AS recommendations,
        (SELECT COUNT(*) FROM places p WHERE p.city_id = c.id)          AS places,
@@ -195,8 +199,14 @@ def coverage(conn: psycopg.Connection) -> dict[str, Any]:
         # because it answers a different question: not "what does the system
         # hold" but "how much of it is still worth quoting".
         "event_freshness": conn.execute(EVENT_FRESHNESS_SQL).fetchone(),
+        # `lat`/`lon` are the forecast point. `coast_*` is where the coast
+        # actually is and how far the forecast point is from it, which is what
+        # lets the UI caption a coastal score honestly rather than leaving the
+        # reader to assume the forecast was taken on the beach.
         "cities": conn.execute(
-            "SELECT id, name, country, lat, lon, timezone, coastal FROM cities ORDER BY name"
+            "SELECT id, name, country, lat, lon, timezone, coastal,"
+            "       coast_name, coast_lat, coast_lon, coast_distance_km"
+            "  FROM cities ORDER BY name"
         ).fetchall(),
     }
 
@@ -520,7 +530,17 @@ def history(conn: psycopg.Connection, entity: str, entity_id: str) -> list[dict[
 
 
 def cities(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """Every city, with the coast reference that makes `coastal` checkable.
+
+    `lat`/`lon` are the forecast point -- the coordinate the weather provider
+    was asked about -- and `coast_*` is the named point on that city's coast
+    together with the distance derived between the two at seed time. The agent
+    reads both, because a coastal suitability score has to be able to say what
+    it is a score of: the weather at a point 25 km from the sea, in Rome's
+    case, and never the sea itself.
+    """
     return conn.execute(
-        "SELECT id, name, country, lat, lon, timezone, aliases, coastal"
+        "SELECT id, name, country, lat, lon, timezone, aliases, coastal,"
+        "       coast_name, coast_lat, coast_lon, coast_distance_km"
         "  FROM cities ORDER BY name"
     ).fetchall()

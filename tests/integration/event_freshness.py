@@ -38,6 +38,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import pathlib
 import sys
 import time
 import urllib.error
@@ -108,7 +109,21 @@ def wait_until(predicate, what: str, timeout: int = 180):
 
 # ------------------------------------------- 1. the shipped row is current ----
 
-wait_until(lambda: EVENT_ID in ids(current()), f"{EVENT_ID} to reach the database")
+# The check date this row ships with, read from the snapshot rather than from
+# the live row. That makes the restore at the end deterministic, and it makes
+# the drill safe to re-run against a database a previous run left dirty: if the
+# row is already stale, it is re-checked back to its shipped value first.
+SHIPPED = pathlib.Path("/app/data/snapshot/events.jsonl").read_text(encoding="utf-8")
+SHIPPED_CHECKED_AT = next(
+    json.loads(line)["checked_at"]
+    for line in SHIPPED.splitlines()
+    if line.strip() and json.loads(line)["id"] == EVENT_ID
+)
+
+wait_until(lambda: EVENT_ID in ids(everything()), f"{EVENT_ID} to reach the database")
+if EVENT_ID not in ids(current()):
+    patch(EVENT_ID, {"checked_at": SHIPPED_CHECKED_AT})
+    wait_until(lambda: EVENT_ID in ids(current()), "a previous run's stale row to be re-checked")
 
 [row] = [r for r in current() if r["id"] == EVENT_ID]
 assert row["is_current"] is True, row
@@ -147,9 +162,15 @@ assert stale["checked_at"].startswith("2020-01-01"), stale["checked_at"]
 coverage = get("/coverage")
 freshness = coverage["event_freshness"]
 assert freshness["expired"] >= 1, freshness
-assert freshness["current"] == before - 1, freshness
 by_city = {c["city_id"]: c for c in coverage["by_city"]}
+# `before` counted this city's rows, so it is the per-city figure that has to
+# have moved by one -- and the per-city split is the whole point of reporting
+# it that way, since a global total is what hid the shape of this feed in the
+# first place.
+assert by_city[CITY]["verified_events_current"] == before - 1, by_city[CITY]
 assert by_city[CITY]["verified_events_expired"] >= 1, by_city[CITY]
+# Nothing else went stale as a side effect: every other city is untouched.
+assert sum(c["verified_events_expired"] for c in coverage["by_city"]) == freshness["expired"]
 # The advertised event window is measured over current rows only, so it cannot
 # promise dates nothing will be returned for.
 events_entity = next(e for e in coverage["entities"] if e["entity"] == "events")
@@ -166,8 +187,7 @@ with contextlib.suppress(urllib.error.HTTPError):
     patch(EVENT_ID, {"valid_until": "2099-01-01T00:00:00+00:00"})
 assert EVENT_ID not in ids(current()), "a hand-set expiry revived a stale row"
 
-recheck = row["checked_at"]
-patch(EVENT_ID, {"checked_at": recheck})
+patch(EVENT_ID, {"checked_at": SHIPPED_CHECKED_AT})
 wait_until(lambda: EVENT_ID in ids(current()), "the re-checked row to come back")
 
 [restored] = [r for r in current() if r["id"] == EVENT_ID]

@@ -94,6 +94,7 @@ services:
            -f /db/migrations/002_activities.sql
            -f /db/migrations/003_demo_events.sql
            -f /db/migrations/006_event_validity.sql
+           -f /db/migrations/007_city_coast.sql
     networks: [backend]
 
   llm:

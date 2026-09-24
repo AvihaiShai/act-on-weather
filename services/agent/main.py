@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from ..common import config, queries, rules
+from ..common import coast, config, queries, rules
 from ..common.db import Pool
 from ..common.llm import LlmClient, LlmInvalidOutput, LlmUnavailable
 from . import dates, grounding
@@ -280,19 +280,53 @@ def where_answer(result: Retrieval) -> str:
     return "\n\n".join(blocks)
 
 
+def sea_state_caveat(result: Retrieval, *, lead: str = "These scores") -> str | None:
+    """The sea-state caveat for this question, or None if it does not apply.
+
+    It applies whenever the question named an activity carrying
+    `sea_state_unmeasured` in data/activities.yml -- surfing, swimming,
+    fishing, a boat ride. Those four are decided by the water, and this system
+    ingests a land forecast and nothing else, so a score for them has to say
+    what it is a score of. `coast.sea_state_caveat` names the city's forecast
+    point and how far it sits from the coast reference in data/cities.yml,
+    which for Rome is about 25 km.
+
+    A beach day is deliberately not flagged and gets no caveat here: sun, heat,
+    rain and wind are what make a day on the sand, and those are measured.
+    """
+    meta = _activity_meta()
+    if not any(
+        (meta.get(activity) or {}).get("sea_state_unmeasured")
+        for activity in result.resolution.activities
+    ):
+        return None
+    return coast.sea_state_caveat(result.resolution.city, lead=lead)
+
+
 def score_caveat(result: Retrieval) -> str:
     """What a suitability score is, stated wherever one appears next to a
     location. The score is computed from the stored forecast -- temperature,
-    rain, wind, sun -- so for a coastal activity it says nothing at all about
-    the sea, and a reader comparing surf spots must not take it for a swell
-    report."""
-    meta = _activity_meta()
-    coastal = any((meta.get(a) or {}).get("requires_coast") for a in result.resolution.activities)
-    tail = " -- nothing in the data measures the waves or the sea state" if coastal else ""
-    return f"These scores rate the stored weather, not the place{tail}."
+    rain, wind, sun -- so it rates the weather and not the venue, and for a
+    sea-dependent activity it says nothing at all about the water. A reader
+    comparing surf spots must not take it for a swell report.
+
+    The sea half is asked for with the lead "They", because by then the first
+    sentence has already named the scores and "These scores" twice over reads
+    like two separate caveats."""
+    base = "These scores rate the stored weather, not the place."
+    sea = sea_state_caveat(result, lead="They")
+    return f"{base} {sea}" if sea else base
 
 
 def named_activity_answer(result: Retrieval) -> str:
+    """The answer to "is it good for surfing in Tel Aviv tomorrow?".
+
+    Rendered in code, not by the model, so every date keeps its own band and
+    score. The caveat at the end is the half this route used to be missing:
+    `where_answer` said what a coastal score does not cover and this one said
+    nothing, so the question that asks for a verdict most directly -- naming
+    the activity outright -- was the one answered with a bare number.
+    """
     city = result.resolution.city["name"]
     lines = [f"Stored suitability for the activities you asked about in {city}:"]
     for row in result.recommendations:
@@ -307,6 +341,16 @@ def named_activity_answer(result: Retrieval) -> str:
         ) and not result.resolution.city.get("coastal"):
             reason = f"; {city} has no coast on record"
         lines.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+    # Only when there is actually a score to qualify. An inland city has no
+    # coastal row at all, and its answer is already the stronger statement --
+    # "London has no coast on record" -- so following it with a note about what
+    # its scores do not measure would be qualifying scores that do not exist.
+    sea = sea_state_caveat(result, lead="They") if result.recommendations else ""
+    if sea:
+        # A blank line, because the UI renders this as markdown and a caveat on
+        # the line after a list item would be read as part of the list.
+        lines.append("")
+        lines.append(sea)
     return "\n".join(lines)
 
 
@@ -422,6 +466,19 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
         # and the UI renders that gap rather than papering over it.
         venues = venue_places(top["activity"] if top else None, meta, city_places, used_venues)
         used_venues.update(p["id"] for p in venues)
+        # The same caveat the agent puts under a named-activity answer, carried
+        # on the day that needs it. A plan is the one place a coastal score is
+        # read as advice rather than as data, so a day whose recommendation --
+        # or whose runners-up, which are rendered with their scores too --
+        # depends on the sea says what the score behind it did not measure.
+        # Computed here rather than in the UI because the wording belongs with
+        # the data it qualifies.
+        on_show = [s["activity"] for s in suggestions[:4]]
+        caveat = (
+            coast.sea_state_caveat(city)
+            if any((meta.get(a) or {}).get("sea_state_unmeasured") for a in on_show)
+            else None
+        )
         # Rotate through the places so a five-day trip is not the same museum
         # five times. Deterministic, so the same request rebuilds the same plan.
         shown = used_places | {p["id"] for p in venues}
@@ -439,6 +496,8 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
                 "activity_band": top["band"] if top else None,
                 "activity_score": top["score"] if top else None,
                 "why": top["why"] if top else None,
+                # Null unless a sea-dependent activity is on show for this day.
+                "activity_caveat": caveat,
                 # The runners-up, so a day is a choice rather than a verdict.
                 "alternatives": suggestions[1:4],
                 # Venues for the day's activity, and what was looked for. The
