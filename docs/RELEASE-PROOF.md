@@ -156,7 +156,7 @@ images.tar cannot load ui as linux/amd64:
 
 ---
 
-## 2. The two machines
+## 2. Staging and offline environments
 
 **Staging (connected).** Windows 11, Docker Desktop 29.8.0, containerd image
 store, `linux/amd64`. This is where `scripts/package-offline.sh` ran.
@@ -336,8 +336,6 @@ adding if this is ever run often.
   changed layer breaks `SHA256SUMS`; an internally inconsistent archive is
   refused at load, because `install-offline.sh` no longer trusts `docker load`
   to exit non-zero.
-- **Monitoring's air-gap behaviour** is verified as part of the final release
-  proof, not this rehearsal.
 
 ---
 
