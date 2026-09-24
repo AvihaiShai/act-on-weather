@@ -806,3 +806,300 @@ def test_a_landmark_question_is_not_forced_onto_the_history_row(monkeypatch):
     result = router.Router(object()).retrieve("Tell me about Lisbon")
 
     assert [row["title"] for row in result.facts] == ["Atelier-Museu", "Lisbon"]
+
+
+# ------------------------------------------- absence: the record, not the city ----
+#
+# The system holds a hand-checked feed of a few venues per city over a few
+# weeks. Its silence is a gap in that feed, and saying so is the whole of what
+# it knows. The live model wrote "the stored data indicates that no scheduled
+# events are taking place in Rome during this period", which names the store
+# and still makes a claim about Rome.
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "There are no concerts scheduled in London for 2026-09-24 to 2026-09-30.",
+        "The stored data indicates that no scheduled events are taking place in London.",
+        "No events are happening in London this week.",
+        "Nothing is on in London during those dates.",
+        "There are no concerts available in London this week.",
+    ],
+)
+def test_an_absence_claimed_about_the_city_is_rejected(answer):
+    result = retrieval("Which concerts are scheduled in London this week?")
+    brief = grounding.build(result)
+    broken = grounding.violations(answer, brief)
+    assert any("rather than nothing being on record" in v for v in broken), broken
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "No concert is on record in London for that week.",
+        "I hold no scheduled concert for London in that week.",
+        "I have no concert recorded for London between those dates.",
+        "No sports event is on record for London, and none is listed in the feed.",
+        "I do not have a concert on file for London this week.",
+    ],
+)
+def test_an_absence_scoped_to_the_record_is_allowed(answer):
+    """The other half, and the one that matters: a validator that rejected
+    these would leave the agent unable to say the only true thing it knows."""
+    result = retrieval("Which concerts are scheduled in London this week?")
+    brief = grounding.build(result)
+    assert grounding.violations(answer, brief) == []
+
+
+def test_the_code_written_gap_sentences_pass_their_own_check():
+    """`render` and `gap_block` are the fallback. If the absence check rejected
+    their wording, a rejected model answer would be replaced by another
+    rejected answer."""
+    result = retrieval("Which concerts or sports events are on in London this week?")
+    brief = grounding.build(result)
+    assert grounding.violations(grounding.render(brief), brief) == []
+    assert grounding.violations(grounding.gap_block(brief), brief) == []
+
+
+def test_the_absence_check_leaves_non_event_prose_alone():
+    """Narrow on purpose: it reads clauses that are already about scheduled
+    things, and nothing else."""
+    result = retrieval("What is the weather in London this week?", forecast=[forecast_row(DAY1)])
+    brief = grounding.build(result)
+    assert grounding.violations("There is no rain on 2026-09-24.", brief) == []
+
+
+def test_an_event_on_record_is_still_stated_as_scheduled():
+    """The check is about absence. A row in hand may be described as on."""
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("lso:free-friday", "Free Friday Lunchtime Concert", "concert", DAY2)],
+    )
+    brief = grounding.build(result)
+    answer = "Free Friday Lunchtime Concert is scheduled at The O2 arena on 2026-09-25."
+    assert grounding.violations(answer, brief) == []
+
+
+# --------------------------------------------- the F3 x `where` integration ----
+#
+# `where_answer` and the grounding layer landed on separate branches and met
+# here. Both render in code; the risk is the order they run in and the wiring
+# between them, which is what these pin.
+
+
+def _where_result(question, activities, venues=None, unlocated=None, **rows):
+    result = retrieval(question, **rows)
+    result.resolution.asks_where = True
+    result.resolution.activities = list(activities)
+    result.venues = venues or {}
+    result.unlocated_activities = list(unlocated or [])
+    return result
+
+
+def test_a_where_question_is_answered_in_code_before_the_model(monkeypatch):
+    """The `where` route returns above `grounding.build`. If the merge had put
+    it below, a location question would reach the model with an empty brief."""
+    result = _where_result(
+        "Where can I see a museum in London?",
+        ["museums"],
+        venues={"museums": [place("British Museum", "museum")]},
+    )
+    main = _stub_agent(monkeypatch, result)
+    monkeypatch.setattr(
+        main.client,
+        "chat_json",
+        lambda *_a, **_k: pytest.fail("the where route called the model"),
+    )
+
+    out = main.ask(main.AskIn(question=result.resolution.question))
+
+    assert out["llm_called"] is False
+    assert "British Museum" in out["answer"]
+
+
+def test_an_unlocatable_activity_is_refused_rather_than_substituted(monkeypatch):
+    """Tel Aviv has beaches on record and no surf spot. The honest answer names
+    neither a beach nor a verdict."""
+    result = _where_result(
+        "Where can I surf in Tel Aviv?",
+        ["surfing"],
+        unlocated=["surfing"],
+        places=[place("Gordon Beach", "beach")],
+    )
+    main = _stub_agent(monkeypatch, result)
+    monkeypatch.setattr(
+        main.client,
+        "chat_json",
+        lambda *_a, **_k: pytest.fail("the where route called the model"),
+    )
+
+    answer = main.ask(main.AskIn(question=result.resolution.question))["answer"]
+
+    assert "verified" in answer
+    assert "Gordon Beach" not in answer
+
+
+def test_a_where_answer_carries_no_forecast_window_it_never_read():
+    """`footer` stamps the weather only when the answer used it, and the
+    assumed-window note follows the same rule: a location question named no
+    dates and assumed none."""
+    result = _where_result("Where can I surf in Tel Aviv?", ["surfing"], unlocated=["surfing"])
+    stamp = router.footer(result)
+    assert "forecast covers" not in stamp
+    assert "no dates in the question" not in stamp
+
+
+def test_an_event_question_still_states_the_window_it_assumed():
+    """The other side of that gate: an undated event question does get told
+    which week it was answered for."""
+    result = retrieval(
+        "Which concerts are on in London?",
+        events=[event("lso:free-friday", "Free Friday Lunchtime Concert", "concert", DAY2)],
+    )
+    assert "no dates in the question" in router.footer(result)
+
+
+def test_context_block_is_the_grounded_prompt_after_the_merge():
+    """Main rebuilt `context_block` by hand while F3 reduced it to a wrapper.
+    The wrapper is what survived, so the typed sections are what the model
+    sees -- a place labelled as a building, not as something that is on."""
+    result = retrieval(
+        "What is on in London this week?",
+        places=[place("Wigmore Hall", "concert_hall")],
+    )
+    block = router.context_block(result)
+    assert block == grounding.prompt_block(grounding.build(result))
+    assert "NOT scheduled events" in block
+
+
+# ---------------------------------------------- quantities from nowhere ----
+
+
+def test_a_figure_no_row_carries_is_rejected():
+    """Asked about the history of Lisbon the model wrote "a history dating back
+    over 2,000 years" from a summary giving a population and a river."""
+    result = retrieval("Tell me about the history of Lisbon", city=LISBON)
+    result.facts = [
+        {
+            "title": "Lisbon",
+            "summary": "Lisbon is the capital of Portugal, on the River Tagus, "
+            "with a population of 658,236 as of 2025.",
+        }
+    ]
+    brief = grounding.build(result)
+
+    answer = "Lisbon has a history dating back over 2,000 years."
+    assert any("2000" in v for v in grounding.violations(answer, brief))
+
+    # The figures the summary does carry are fine, however they are spelled.
+    assert grounding.violations("Lisbon had 658236 people in 2025.", brief) == []
+    assert grounding.violations("Lisbon had 658,236 people in 2025.", brief) == []
+
+
+def test_scores_and_temperatures_are_not_read_as_invented_figures():
+    """A false positive here costs every answer its wording, so the numbers the
+    system states about itself have to pass."""
+    result = retrieval(
+        "What can I do in London this week?",
+        forecast=[forecast_row(DAY1, high=22.0, low=14.0)],
+        recommendations=[verdict_row(DAY1, "museums", "A museum day", 80)],
+    )
+    brief = grounding.build(result)
+    answer = "On 2026-09-24 the high is 22C and the low is 14C, and a museum day " "scores 80/100."
+    assert grounding.violations(answer, brief) == []
+
+
+def test_a_multi_interest_question_spreads_its_place_budget(monkeypatch):
+    """E2 names three interests. London holds more than eighteen concert halls,
+    and `ORDER BY category, name LIMIT 18` gave the traveller all concert halls
+    and no restaurant. The cap is per category now."""
+    seen = {}
+
+    def places(_conn, _city, *, categories=None, limit=50, per_category=None):
+        seen.update(categories=categories, limit=limit, per_category=per_category)
+        return []
+
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
+    monkeypatch.setattr(router.queries, "coverage", lambda _conn: COVERAGE)
+    monkeypatch.setattr(router.queries, "places", places)
+    monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "recommendations", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "events", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "facts", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
+
+    router.Router(object()).retrieve(
+        "What activities can I do with my wife this week in London? "
+        "We like concerts, shopping and fine dining."
+    )
+
+    assert len(seen["categories"]) > 1, seen["categories"]
+    assert seen["per_category"] == 6
+    assert seen["limit"] == 18
+
+
+def test_an_open_places_question_keeps_the_flat_limit(monkeypatch):
+    """No category was named, so there is nothing to spread a budget across
+    and the extra SQL is not paid for."""
+    seen = {}
+
+    def places(_conn, _city, *, categories=None, limit=50, per_category=None):
+        seen.update(categories=categories, per_category=per_category)
+        return []
+
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
+    monkeypatch.setattr(router.queries, "coverage", lambda _conn: COVERAGE)
+    monkeypatch.setattr(router.queries, "places", places)
+    monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "recommendations", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "events", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.queries, "facts", lambda *_a, **_k: [])
+    monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
+
+    router.Router(object()).retrieve("What is there to visit in London?")
+
+    assert seen["categories"] is None, "no interest was named, so nothing is filtered"
+    assert seen["per_category"] is None
+
+
+# ------------------------------- an unscored activity gets one sentence ----
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # The live model's wording, which the verdict-word list did not hold.
+        "The weather forecast for 2026-09-25 shows a low of 12C and rain, "
+        "which is not favorable for surfing.",
+        "There is no surfing score on record. The wind is light, so surfing is fine.",
+        "Surfing is not on record, but the mild temperatures would suit surfing.",
+        "No surfing score is stored; conditions for surfing look dry.",
+    ],
+)
+def test_reasoning_from_the_weather_about_an_unscored_activity_is_rejected(answer):
+    result = retrieval(
+        "Is it a good day for surfing in London tomorrow?",
+        forecast=[forecast_row(DAY2, high=19.0, low=12.0)],
+    )
+    result.resolution.activities = ["surfing"]
+    result.unscored_activities = ["surfing"]
+    brief = grounding.build(result)
+    assert any("surfing" in v for v in grounding.violations(answer, brief))
+
+
+def test_stating_the_absence_and_the_forecast_separately_is_allowed():
+    """The traveller still gets the forecast. It just does not get attached to
+    an activity the system never scored."""
+    result = retrieval(
+        "Is it a good day for surfing in London tomorrow?",
+        forecast=[forecast_row(DAY2, high=19.0, low=12.0)],
+    )
+    result.resolution.activities = ["surfing"]
+    result.unscored_activities = ["surfing"]
+    brief = grounding.build(result)
+    answer = (
+        "There is no surfing score on record for London. On 2026-09-25 the "
+        "stored forecast is a high of 19C and a low of 12C."
+    )
+    assert grounding.violations(answer, brief) == []
