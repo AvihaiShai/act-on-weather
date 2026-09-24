@@ -115,6 +115,10 @@ INTENT_WORDS: dict[str, tuple[str, ...]] = {
 # `landmark` ones, and ordering by title buries it.
 HISTORY_WORDS = ("history", "historical", "historic", "founded", "heritage", "past")
 
+# A category can also name a scored activity (comedy, markets). These words
+# make it a question about a dated listing instead of activity suitability.
+EVENT_SCHEDULE_WORDS = ("on", "scheduled", "happening", "show", "shows", "playing")
+
 
 # Deliberately not a synonym list the model can extend: these are the only
 # categories the database actually holds.
@@ -223,8 +227,6 @@ class Router:
         for intent, words in INTENT_WORDS.items():
             if any(_mentions(text, word) for word in words):
                 resolution.intents.append(intent)
-        if not resolution.intents:
-            resolution.intents = ["weather", "activities"]
 
         for interest, categories in self.interests.items():
             spaced = interest.replace("_", " ")
@@ -234,20 +236,28 @@ class Router:
         # "fine dining" and "restaurants" are the same rows; do not ask twice.
         resolution.categories = sorted(set(resolution.categories))
 
+        # Resolve the event kind before matching activity names: "any comedy
+        # on?" and "what markets are on?" name both an event category and a
+        # scored activity, but ask for a scheduled listing.
+        resolution.event_categories = grounding.requested_event_categories(text)
+        scheduled_events = bool(resolution.event_categories) and any(
+            _mentions(text, word) for word in EVENT_SCHEDULE_WORDS
+        )
+        if scheduled_events and "events" not in resolution.intents:
+            resolution.intents.append("events")
+
         for activity, keywords in self.activity_keywords.items():
             if any(_mentions(text, word) for word in keywords):
                 resolution.activities.append(activity)
         # Naming an activity is asking whether to do it, whatever else the
         # sentence looks like. Without this, "can I surf tomorrow?" carries no
         # activity intent and never retrieves the verdict it is asking for.
-        if resolution.activities and "activities" not in resolution.intents:
+        if scheduled_events and "activities" not in resolution.intents:
+            resolution.activities.clear()
+        elif resolution.activities and "activities" not in resolution.intents:
             resolution.intents.append("activities")
-
-        # Which KIND of event was asked for. Without this the query returns
-        # every event in the window and the model is left to sort them, which
-        # it does by picking whichever row is in front of it: "which concerts
-        # are on in London this week?" was answered with a tennis tournament.
-        resolution.event_categories = grounding.requested_event_categories(text)
+        if not resolution.intents:
+            resolution.intents = ["weather", "activities"]
         return resolution
 
     def _facts(self, city_id: str, text: str, limit: int = 3) -> list[dict[str, Any]]:

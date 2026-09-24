@@ -153,6 +153,36 @@ def test_the_second_example_question_asks_for_concerts_only():
     assert grounding.requested_event_categories(text) == ["concert"]
 
 
+@pytest.mark.parametrize(
+    "question, category",
+    [
+        ("Any comedy on in London this week?", "comedy"),
+        ("What markets are on in London this week?", "market"),
+    ],
+)
+def test_scheduled_category_does_not_turn_into_an_activity_verdict(monkeypatch, question, category):
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
+    monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
+
+    resolution = router.Router(object()).resolve(question)
+
+    assert "events" in resolution.intents
+    assert "activities" not in resolution.intents
+    assert resolution.event_categories == [category]
+    assert resolution.activities == []
+
+
+def test_comedy_suitability_still_asks_for_an_activity_verdict(monkeypatch):
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
+    monkeypatch.setattr(router.dates, "today_in", lambda _tz: DAY1)
+
+    resolution = router.Router(object()).resolve("Is comedy suitable in London tomorrow?")
+
+    assert "activities" in resolution.intents
+    assert "events" not in resolution.intents
+    assert resolution.activities == ["standup_comedy"]
+
+
 def test_the_router_filters_events_by_the_requested_kind(monkeypatch):
     """The reproduced failure: 'which concerts are scheduled in London this
     week?' returned the Laver Cup, a tennis tournament stored as `sport`,
