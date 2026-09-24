@@ -35,6 +35,14 @@ TEL_AVIV = {
     "timezone": "Asia/Jerusalem",
     "aliases": ["tel aviv", "tlv"],
     "coastal": True,
+    # The coast reference `queries.cities` returns since migration 007: the
+    # named point that makes `coastal` checkable, and how far the forecast
+    # point sits from it. Tel Aviv is the near case at 1.4 km; the caveat is
+    # emitted anyway, because standing on the shore is not measuring the water.
+    "coast_name": "Gordon Beach",
+    "coast_lat": 32.0836,
+    "coast_lon": 34.7669,
+    "coast_distance_km": 1.416,
 }
 LONDON = {
     "id": "london",
@@ -118,7 +126,11 @@ def stub(monkeypatch):
         if city_id != "tel-aviv":
             return []
         days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-        rows = [recommendation(d, "surfing", "Surfing", 100, "good") for d in days]
+        # 69/fair, not 100/good: surfing carries `score_ceiling` in
+        # data/activities.yml, so no stored surfing row can say `good`. A
+        # fixture that still did would be testing a row the system cannot
+        # produce.
+        rows = [recommendation(d, "surfing", "Surfing", 69, "fair") for d in days]
         if activity:
             rows = [r for r in rows if r["activity"] == activity]
         return rows
@@ -333,10 +345,13 @@ def test_a_where_and_when_answer_leads_with_the_place_then_labels_the_scores(stu
     lines = [line for line in answer.splitlines() if line.strip()]
     assert lines[0].startswith("I do not have a verified surf spot")
     assert "Stored suitability" in answer
-    assert f"{TODAY}: Surfing is good (100/100)." in answer
-    # The caveat the scores must never appear without.
+    assert f"{TODAY}: Surfing is fair (69/100)." in answer
+    # The caveat the scores must never appear without. It says two things: a
+    # score is not a verdict on the place, and for surfing it is not a verdict
+    # on the water either -- naming where the forecast was actually taken.
     assert "rate the stored weather, not the place" in answer
-    assert "waves or the sea state" in answer
+    assert "the Tel Aviv forecast point, 1.4 km from Gordon Beach" in answer
+    assert "nothing in the data measures the waves, the swell or the water temperature" in answer
 
 
 def test_an_unscored_and_unlocated_activity_says_both(stub, monkeypatch):

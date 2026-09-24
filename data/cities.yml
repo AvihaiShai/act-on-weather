@@ -1,12 +1,30 @@
 # The five cities. Coordinates are committed, never geocoded at runtime.
 # Rome and London make the brief's two example questions work as written.
 #
+# `lat`/`lon` on the city itself are the FORECAST POINT -- the coordinate the
+# weather provider is asked about. That is the city centre, not its shoreline.
+#
 # `coastal` gates the activities that carry `requires_coast` in
 # data/activities.yml -- surfing, swimming, the beach, fishing, a boat ride.
 # A city marked false gets no row for them at all, which is the honest answer:
 # the forecast for an inland city says nothing about surf.
-# Rome is true because Lido di Ostia is inside Roma Capitale and on the metro;
-# London is false -- the Thames is tidal, but it is not a coast.
+#
+# `coast` is what turns `coastal: true` from an assertion into a checkable
+# claim. It names one real, verifiable point on that city's coast, and the
+# distance from the forecast point to it is derived at seed time by
+# services/common/coast.haversine_km -- never written down here, so moving a
+# coordinate cannot leave a stale number behind it. The distances quoted in
+# the notes below are what that derivation currently produces.
+#
+# The claim is worth checking because two of these cities fail the naive
+# reading of "coastal", which is exactly what the review caught. Rome's
+# forecast point is about 25 km from the sea and Lisbon's about 18 km, so a
+# suitability score for either describes weather measured well inland of the
+# water. The score ceiling in data/activities.yml and the caveat in
+# services/common/coast.py exist because of that gap.
+#
+# London stays false and carries no coast block. The Thames is tidal, but it
+# is not a coast, and there is no reference point that would make it one.
 cities:
   - slug: rome
     name: Rome
@@ -16,6 +34,14 @@ cities:
     timezone: Europe/Rome
     aliases: [rome, roma]
     coastal: true
+    coast:
+      name: Lido di Ostia
+      lat: 41.7325
+      lon: 12.2777
+      # About 24.7 km from the forecast point. It is inside Roma Capitale and
+      # on the metro, which is why the city is scored as coastal at all -- but
+      # the forecast that scores it is taken in the centre, not here.
+      note: The sea front of Rome itself, a municipio of the city at the end of the Lido line.
   - slug: london
     name: London
     country: United Kingdom
@@ -32,6 +58,12 @@ cities:
     timezone: Europe/Lisbon
     aliases: [lisbon, lisboa]
     coastal: true
+    coast:
+      name: Praia de Carcavelos
+      lat: 38.6797
+      lon: -9.3372
+      # About 17.8 km from the forecast point, and in a different municipality.
+      note: The waterfront of Lisbon is the Tagus estuary; the ocean beaches are in Cascais.
   - slug: tel-aviv
     name: Tel Aviv
     country: Israel
@@ -40,6 +72,14 @@ cities:
     timezone: Asia/Jerusalem
     aliases: ["tel aviv", "tel-aviv", telaviv]
     coastal: true
+    coast:
+      name: Gordon Beach
+      lat: 32.0836
+      lon: 34.7669
+      # About 1.4 km: the one city here whose forecast point is effectively on
+      # the beach. The sea-state caveat still applies, because standing on the
+      # shore is not the same as measuring the water.
+      note: A city beach on the Mediterranean, a few streets from the forecast point.
   - slug: reykjavik
     name: Reykjavik
     country: Iceland
@@ -48,3 +88,9 @@ cities:
     timezone: Atlantic/Reykjavik
     aliases: [reykjavik, "reykjavík"]
     coastal: true
+    coast:
+      name: Nautholsvik beach
+      lat: 64.1236
+      lon: -21.9350
+      # About 2.6 km from the forecast point, on Faxafloi bay.
+      note: The geothermally warmed bathing beach of the city, inside Reykjavik itself.

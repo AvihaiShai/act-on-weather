@@ -155,14 +155,31 @@ def test_coastal_activities_are_dropped_inland(activities):
 
 
 def test_surfing_wants_wind_and_a_flat_day_is_penalised(activities):
-    """`min_wind_kmh` is the one rule that penalises too *little* of something."""
+    """`min_wind_kmh` is the one rule that penalises too *little* of something.
+
+    Read below the ceiling. Surfing is capped at 69 because nothing here
+    measures the sea (`test_coastal_evidence.py`), and on a warm dry day both a
+    flat sea and a blowing one land on that cap, so the wind rule is invisible
+    in the final number. It still decides the day the moment anything else
+    costs a point, and it still says so in the reasons -- so the comparison is
+    made against the same config with the ceiling lifted, and the reason is
+    asserted on the shipped one.
+    """
     flat = {**HOT_BEACH_DAY, "wind_kmh": 2.0}
     blowing = {**HOT_BEACH_DAY, "wind_kmh": 22.0}
+    uncapped = {k: v for k, v in activities["surfing"].items() if k != "score_ceiling"}
 
-    assert score(activities, "surfing", flat).score < score(activities, "surfing", blowing).score
+    assert (
+        rules.score_activity("surfing", uncapped, flat).score
+        < rules.score_activity("surfing", uncapped, blowing).score
+    )
     assert any("flat" in r for r in score(activities, "surfing", flat).reasons)
-    # The same flat day must not be penalised for a boat ride, which wants calm.
-    assert score(activities, "boat_ride", flat).score == 100
+    # The same flat day must not be penalised for a boat ride, which wants
+    # calm: its score is held down by the sea-state cap and by nothing else.
+    boat = score(activities, "boat_ride", flat)
+    assert boat.score == 69
+    assert boat.reasons[0] == "no rule was violated"
+    assert "capped at 69" in boat.reasons[1]
 
 
 def test_indoor_activities_do_not_all_score_alike(activities):

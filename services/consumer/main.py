@@ -27,7 +27,7 @@ import os
 import psycopg
 import yaml
 
-from ..common import config, rules, schemas
+from ..common import coast, config, rules, schemas
 from ..common.db import Pool
 from ..common.envelope import Envelope
 from ..common.rabbit import Poison, consume
@@ -68,34 +68,86 @@ PATCHABLE = {
 # ---------------------------------------------------------------- cities ----
 
 
+def coast_columns(city: dict) -> dict[str, object]:
+    """The four `cities.coast_*` values for one entry of data/cities.yml.
+
+    The distance is derived, never read: data/cities.yml holds the two
+    coordinates and nothing else, so there is no committed number that can
+    survive somebody correcting one of them. A city with no `coast` block --
+    every inland one -- gets four nulls, which is how the reading code tells
+    "no coast on record" from "a coast 25 km away".
+
+    Nothing here asserts anything about the water. The distance says where the
+    forecast that scores surfing was actually taken, which for Rome is about
+    25 km from the sea; what the sea is doing is not measured anywhere in this
+    system, and data/activities.yml caps the affected scores because of it.
+    """
+    block = city.get("coast") or {}
+    if not block:
+        return {
+            "coast_name": None,
+            "coast_lat": None,
+            "coast_lon": None,
+            "coast_distance_km": None,
+        }
+    return {
+        "coast_name": block["name"],
+        "coast_lat": float(block["lat"]),
+        "coast_lon": float(block["lon"]),
+        "coast_distance_km": round(
+            coast.haversine_km(
+                float(city["lat"]), float(city["lon"]), float(block["lat"]), float(block["lon"])
+            ),
+            3,
+        ),
+    }
+
+
 def seed_cities(conn: psycopg.Connection) -> None:
     """The city list is configuration, not collected data, so it does not go
     through the queue. It is seeded here because the consumer is the only role
     that may write, and because every collected record has a foreign key to it.
     This is the one documented exception to M4.
+
+    A coastal city also carries a `coast` block naming a real point on its
+    coast. Its distance from the city's forecast point is computed here rather
+    than read from the file, so the stored number cannot fall out of step with
+    the two coordinates it comes from -- see `coast_columns`.
     """
     with open(config.DATA_DIR / "cities.yml", encoding="utf-8") as fh:
         cities = yaml.safe_load(fh)["cities"]
     with conn.cursor() as cur:
         for city in cities:
             cur.execute(
-                "INSERT INTO cities (id, name, country, lat, lon, timezone, aliases, coastal)"
+                "INSERT INTO cities (id, name, country, lat, lon, timezone, aliases, coastal,"
+                "                    coast_name, coast_lat, coast_lon, coast_distance_km)"
                 " VALUES (%(slug)s, %(name)s, %(country)s, %(lat)s, %(lon)s,"
-                "         %(timezone)s, %(aliases)s, %(coastal)s)"
+                "         %(timezone)s, %(aliases)s, %(coastal)s,"
+                "         %(coast_name)s, %(coast_lat)s, %(coast_lon)s, %(coast_distance_km)s)"
                 " ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name,"
                 "   country = EXCLUDED.country, lat = EXCLUDED.lat, lon = EXCLUDED.lon,"
                 "   timezone = EXCLUDED.timezone, aliases = EXCLUDED.aliases,"
-                "   coastal = EXCLUDED.coastal",
+                "   coastal = EXCLUDED.coastal, coast_name = EXCLUDED.coast_name,"
+                "   coast_lat = EXCLUDED.coast_lat, coast_lon = EXCLUDED.coast_lon,"
+                "   coast_distance_km = EXCLUDED.coast_distance_km",
                 {
                     **city,
                     "aliases": city.get("aliases", []),
                     "coastal": bool(city.get("coastal", False)),
+                    **coast_columns(city),
                 },
             )
     conn.commit()
     COASTAL.clear()
     COASTAL.update({c["slug"]: bool(c.get("coastal", False)) for c in cities})
-    log.info("seeded %d cities (%d coastal)", len(cities), sum(COASTAL.values()))
+    # The third number is the one worth reading: a city marked coastal with no
+    # coast reference point is a claim nothing can check.
+    log.info(
+        "seeded %d cities (%d coastal, %d with a coast reference point)",
+        len(cities),
+        sum(COASTAL.values()),
+        sum(1 for c in cities if c.get("coast")),
+    )
 
 
 def enforce_event_mode(conn: psycopg.Connection) -> int:
