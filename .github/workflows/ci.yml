@@ -128,6 +128,18 @@ jobs:
           fi
           echo "gitleaks detected the generated canary"
 
+      - name: Secret scan of committed tree
+        run: |
+          set -o pipefail
+          # On a merge push, gitleaks-action excludes the merge commit and can
+          # report success after scanning zero commits. Scan the exact committed
+          # tree as well, using the same pinned binary proved by the canary.
+          scan_dir="$(mktemp -d)"
+          trap 'rm -rf "$scan_dir"' EXIT
+          git archive HEAD | tar -xf - -C "$scan_dir"
+          test -s "$scan_dir/.github/workflows/ci.yml"
+          gitleaks detect --no-git --source "$scan_dir" --redact
+
       - name: Images are pinned by digest
         run: |
           # Locally built images use :dev labels. Images pulled from a registry
