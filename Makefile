@@ -6,17 +6,20 @@ COMPOSE        ?= docker compose
 CONNECTED      := -f compose.yml -f compose.connected.yml
 DEMO           := -f compose.yml -f compose.demo.yml
 TOOLS          := -f compose.tools.yml
+PROBE          := -p aow-f3 -f compose.yml -f compose.model-probe.yml
+# Pinned in IMAGES.lock like every other image, and checked against it in CI.
+PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
 .PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
-        offline no-data-loss update reenrich questions refresh snapshot \
-        samples redrive dlq clean
+        grounding offline no-data-loss update reenrich questions refresh \
+        refresh-check snapshot samples manifest redrive dlq clean
 
 help:
 	@echo "Staging (needs the internet, once):"
 	@echo "  make stage          pull the pinned images, stage the model, build the services"
 	@echo ""
 	@echo "Running (no internet needed):"
-	@echo "  make up             start everything (7 verified events, no generated rows)"
+	@echo "  make up             start everything (26 verified events, no generated rows)"
 	@echo "  make up-demo        same, plus 45 labelled sample events in all five cities"
 	@echo "  make ps / logs      status / follow the logs"
 	@echo "  make down           stop"
@@ -28,12 +31,15 @@ help:
 	@echo "  make update         M12 -- an edit through the queue, with history"
 	@echo "  make reenrich       the local model is not on the critical path"
 	@echo "  make questions      M7/M8 -- agent breadth, including what it refuses"
+	@echo "  make grounding      M7 -- adversarial grounding against the local model"
 	@echo "  make demo           all of the above, in order"
 	@echo ""
 	@echo "Connected maintenance:"
-	@echo "  make refresh        re-fetch the forecast (extends the coverage window)"
+	@echo "  make refresh        re-fetch the forecast through a temporary egress window"
+	@echo "  make refresh-check  prove that window opens and closes (no internet needed)"
 	@echo "  make snapshot       rebuild data/snapshot/ from source"
 	@echo "  make samples        regenerate the labelled sample events (no network)"
+	@echo "  make manifest       re-derive the snapshot counts the docs quote"
 	@echo ""
 	@echo "Operations:"
 	@echo "  make dlq            list what is quarantined"
@@ -71,7 +77,7 @@ up:
 
 # Demo mode. Adds data/snapshot/events.samples.jsonl -- 45 generated rows,
 # every one is_sample and titled "Sample: ..." -- so the planner and the agent
-# can be shown outside London, where the only seven verified events are.
+# can be shown on days the 26 verified events do not cover.
 # Going back to "make up" restarts the consumer, which deletes them.
 up-demo:
 	$(COMPOSE) $(DEMO) up -d
@@ -97,6 +103,17 @@ test:
 	docker build -q -f tests/Dockerfile -t aow/tests:dev .
 	docker run --rm aow/tests:dev
 
+# The grounding gate (F3). Its own Compose project, so it never touches a
+# running stack: it starts a second llm on an isolated network, replays the
+# questions that produced ungrounded answers, and fails if anything the agent
+# would deliver is not supported by the rows it retrieved. Kept out of CI
+# because CI has no model and no network to fetch one; run it before a release.
+grounding:
+	docker build -q -f tests/Dockerfile -t aow/tests:probe .
+	$(COMPOSE) $(PROBE) up -d --no-build --pull never llm
+	@$(COMPOSE) $(PROBE) run --rm --no-deps probe; status=$$?; \
+	  $(COMPOSE) $(PROBE) down; exit $$status
+
 # ------------------------------------------------------------------ demos --
 # A convenience for hosts that have bash. The portable form -- what the README
 # documents, and what a Windows reviewer runs -- is
@@ -111,10 +128,22 @@ questions:     ; bash demos/05_questions.sh
 demo: offline questions no-data-loss update reenrich
 
 # ------------------------------------------------------ connected updates --
+# The operator refresh. One command, because the dangerous part of a refresh is
+# not the fetch -- it is the step afterwards that puts the ingestor back on the
+# internal network, and a step an operator has to remember is a step that gets
+# skipped. scripts/refresh.sh closes that window from a trap and asserts it
+# closed, so an interrupt or a failed fetch cannot leave a route out.
+#
+# The portable form -- what the README documents, and what a Windows reviewer
+# runs -- is the compose line below, executing this same script from this same
+# working tree.
 refresh:
-	$(COMPOSE) $(CONNECTED) up -d ingestor
-	$(COMPOSE) exec ingestor python -m services.ingestor.refresh
-	@echo "Accepted. It publishes within a few seconds; check GET /coverage."
+	$(COMPOSE) $(TOOLS) run --rm refresh
+
+# Opens and closes the egress window without fetching anything: the drill for
+# "does this always put the ingestor back?". Needs no internet.
+refresh-check:
+	$(COMPOSE) $(TOOLS) run --rm refresh --check
 
 snapshot:
 	$(COMPOSE) $(CONNECTED) run --rm --no-deps ingestor \
@@ -132,6 +161,14 @@ samples:
 	$(COMPOSE) run --rm --no-deps ingestor \
 	  python -m services.ingestor.make_samples
 	@echo "data/events.samples.jsonl rebuilt -- run 'make snapshot' to fold it in."
+
+# The numbers the README and this file quote about the snapshot, re-derived
+# from the snapshot itself. Run it after `make snapshot`; CI fails the build if
+# the committed manifest, or any count in the documentation, has drifted from
+# the data. In the pinned Python image, so this stays a Docker-only repository.
+manifest:
+	docker run --rm -v "$(CURDIR):/work" -w /work $(PYIMAGE) \
+	  python scripts/snapshot_manifest.py
 
 # -------------------------------------------------------------- operations --
 dlq:

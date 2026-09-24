@@ -51,9 +51,11 @@ SCHEMA_VERSION = 1
 
 # ------------------------------------------------------------ demo mode --
 # Generated sample events (data/events.samples.jsonl) exist so the planner and
-# the agent can be exercised in all five cities; only seven events in the whole
-# snapshot are real, and they are all in London. They are off by default: a
-# default run stores the seven verified rows and nothing else.
+# the agent can be exercised on dates the verified seed does not reach: every
+# real row in data/events.seed.jsonl was read off a venue's own listing page by
+# hand, so it covers the days around the snapshot rather than a whole season.
+# They are off by default: a default run stores the verified rows and nothing
+# else.
 #
 # `docker compose -f compose.yml -f compose.demo.yml up -d` (make demo) turns
 # them on. The flag is read by the ingestor, which decides whether the sample

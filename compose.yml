@@ -150,6 +150,8 @@ services:
     command: ["python", "-m", "services.ingestor.main"]
     environment:
       <<: *queue_env
+      # The read-only role lets an operator reconcile this producer's outbox
+      # against committed ingest_log IDs without granting it write access.
       POSTGRES_READER_PASSWORD: ${POSTGRES_READER_PASSWORD:?set POSTGRES_READER_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-aow}
     volumes:

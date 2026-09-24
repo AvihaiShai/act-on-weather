@@ -3,11 +3,12 @@
 #
 #   docker compose -f compose.yml -f compose.demo.yml up -d      (make demo)
 #
-# Only seven events in this system are real, and all seven are in London --
-# there is no free, licensable, offline-stageable feed of concerts and fixtures
-# for five cities, and inventing them is out of the question. So a default run
-# stores those seven and answers "no events on record" everywhere else, which
-# is honest but demonstrates nothing outside London.
+# Every real event in this system was checked by hand against the venue's or
+# the organiser's own listing page -- there is no free, licensable,
+# offline-stageable feed of concerts and fixtures for five cities, and
+# inventing them is out of the question. Hand-checking covers the days around
+# the snapshot, not a whole season, so a default run answers "no events on
+# record" for any date nobody went and checked.
 #
 # This overlay turns on `data/events.samples.jsonl`: 45 generated rows, each
 # `is_sample: true`, titled "Sample: ...", anchored to a real venue from the

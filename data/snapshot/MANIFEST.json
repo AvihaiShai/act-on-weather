@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "events": {
+      "cities": 5,
+      "file": "data/snapshot/events.jsonl",
+      "lines": 26,
+      "sha256": "79083a52dedd678b27adb9098609b65c796ec47cc8024f14d3cdba70bfa693e3",
+      "stored": 26
+    },
+    "events.samples": {
+      "cities": 5,
+      "file": "data/snapshot/events.samples.jsonl",
+      "lines": 45,
+      "sha256": "a4999b7c8ee75eee5ed06e52b0c280348aa7cd901b0e8939a3280fb67b8e53e2",
+      "stored": 45
+    },
+    "facts": {
+      "cities": 5,
+      "file": "data/snapshot/facts.jsonl",
+      "lines": 81,
+      "sha256": "d8ff02821c577ca0405ce25439f9456f7c79fc7ae7aaff9c2f343bb677477fbf",
+      "stored": 81
+    },
+    "places": {
+      "cities": 5,
+      "file": "data/snapshot/places.jsonl",
+      "lines": 620,
+      "sha256": "b23c985a01ac3684a5ce3d6c9d5b60a036905c10ee7fa8275d2c604052f966b6",
+      "stored": 620
+    },
+    "weather": {
+      "cities": 5,
+      "days": 16,
+      "file": "data/snapshot/weather.jsonl",
+      "first_date": "2026-09-23",
+      "last_date": "2026-10-08",
+      "lines": 80,
+      "sha256": "bf2c44083a9b1220aeab9bb5868af2bc58666ad1baef8191e25debd8f8f234db",
+      "stored": 80
+    }
+  }
+}

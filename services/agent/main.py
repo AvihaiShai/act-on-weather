@@ -1,7 +1,11 @@
 """The agent service (M7-M9).
 
-One endpoint, `POST /ask`. It routes in code, retrieves from stored data, makes
-at most one LLM call, and appends a footer written in code.
+One endpoint, `POST /ask`. It routes in code, retrieves from stored data, turns
+the rows into typed facts (`grounding`), makes at most one LLM call, checks the
+model's wording back against those facts, and appends a footer written in code.
+A wording that claims more than the rows carry is discarded and the facts are
+rendered directly instead -- the model phrases the answer, it does not decide
+what is true.
 
 The itinerary builder (`POST /itinerary`) is the same machinery with a
 different renderer: it picks, per day in range, the best-scoring outdoor or
@@ -23,9 +27,9 @@ from pydantic import BaseModel, Field
 from ..common import config, queries, rules
 from ..common.db import Pool
 from ..common.llm import LlmClient, LlmInvalidOutput, LlmUnavailable
-from . import dates
+from . import dates, grounding
 from .planning import plan_day, venue_places
-from .router import Retrieval, Router, context_block, footer, where_gap
+from .router import Retrieval, Router, footer, where_gap
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -38,17 +42,21 @@ app = FastAPI(title="act-on-weather agent", version="1.0")
 pool = Pool(config.reader_dsn(), autocommit=True)
 client = LlmClient()
 
+# The prompt is the first line of defence and not the last one: whatever it
+# says, `grounding.violations` re-checks the answer against the same rows and
+# throws the wording away if it does not hold up.
 SYSTEM = (
     "You answer travel and weather questions for a traveller, using ONLY the stored "
     "data you are given below the question. "
     "Hard rules: never state a fact, a place, an event or a number that is not in that "
     "data. If one specific thing that was asked for is missing, say so about that thing "
     "only -- never open with a blanket 'no record' when you have rows in front of you. "
-    "Each event and place is listed with its category in brackets -- keep it in that "
-    "category and do not repurpose it: a tennis tournament is not a concert, and a "
-    "concert hall is not a place to watch a sunset. "
-    "You know a place's name and its category and nothing else, so never describe "
-    "what it is like, what it is known for, or what it is good for. "
+    "The data is grouped by what kind of row it is, and the groups are not "
+    "interchangeable. A PLACE is a building: you know its name and its category and "
+    "nothing else, so never say a performance, a match, a meal or an exhibition is "
+    "happening at one, and never describe what it is like, houses, serves or is known "
+    "for. A SCHEDULED EVENT is the only thing that is on: keep it in its own category, "
+    "because a tennis tournament is not a concert. "
     "When the data contains a suitability verdict for what was asked, state it: do not "
     "claim there is no record when a verdict is sitting in front of you. "
     "The reverse is just as strict: when the data says an activity is NOT ON RECORD, "
@@ -57,8 +65,9 @@ SYSTEM = (
     "Never contradict a suitability verdict you are given. If a named activity "
     "has several days of scores, report every date, its band and its score out of "
     "100; do not give a single verdict for the whole range. Do not mention "
-    "databases, rules or yourself. Do not add a data-freshness note -- one is "
-    "appended for you. Answer in at most six sentences of plain English."
+    "databases, rules or yourself. Do not add a data-freshness note and do not "
+    "repeat the listed coverage gaps -- both are appended for you. "
+    "Answer in at most six sentences of plain English."
 )
 
 SCHEMA = {
@@ -131,12 +140,14 @@ def ask(body: AskIn) -> dict[str, Any]:
     if result.resolution.asks_where and result.resolution.activities:
         return respond(result, where_answer(result), llm_called=False)
 
+    brief = grounding.build(result)
+
     if result.is_empty():
-        return respond(
-            result,
-            f"I have no stored records matching that for {result.resolution.city['name']}.",
-            llm_called=False,
-        )
+        # Nothing matched, but the question still said what it was looking for,
+        # so name the gap rather than shrugging at it.
+        missing = grounding.gap_block(brief)
+        base = f"I have no stored records matching that for {result.resolution.city['name']}."
+        return respond(result, f"{base} {missing}".strip(), llm_called=False)
 
     if result.resolution.activities:
         # The small CPU model repeatedly turns seven "fair" daily scores into
@@ -147,7 +158,7 @@ def ask(body: AskIn) -> dict[str, Any]:
     try:
         parsed = client.chat_json(
             SYSTEM,
-            f"Question: {body.question}\n\nStored data:\n{context_block(result)}",
+            f"Question: {body.question}\n\nStored data:\n{grounding.prompt_block(brief)}",
             SCHEMA,
             max_tokens=700,
         )
@@ -160,7 +171,7 @@ def ask(body: AskIn) -> dict[str, Any]:
         log.warning("llm unavailable: %s", exc)
         return respond(
             result,
-            plain_answer(result),
+            grounding.render(brief),
             llm_called=False,
             note="The local model is unavailable, so this answer is "
             "rendered directly from the stored rows.",
@@ -169,51 +180,41 @@ def ask(body: AskIn) -> dict[str, Any]:
         log.warning("llm output unusable: %s", exc)
         return respond(
             result,
-            plain_answer(result),
+            grounding.render(brief),
             llm_called=True,
             note="The local model returned unusable output, so this answer "
             "is rendered directly from the stored rows.",
         )
 
-    return respond(result, answer, llm_called=True)
+    # The wording is checked against the same typed facts it was written from.
+    # This is the part a system prompt cannot do: the model does not get to
+    # decide whether it stayed inside the data.
+    broken = grounding.violations(answer, brief)
+    if broken:
+        log.warning("ungrounded answer rejected: %s", "; ".join(broken))
+        return respond(
+            result,
+            grounding.render(brief),
+            llm_called=True,
+            note="The model's wording made a claim the stored rows do not support "
+            f"({broken[0]}), so this answer is rendered directly from those rows.",
+        )
+
+    # Gaps are appended in code, after the model, for the same reason the as-of
+    # footer is: a sentence the model cannot reword is the only kind that is
+    # guaranteed to survive.
+    missing = grounding.gap_block(brief, answer)
+    return respond(result, f"{answer}\n\n{missing}" if missing else answer, llm_called=True)
 
 
 def plain_answer(result: Retrieval) -> str:
-    """The fallback renderer: the same rows, formatted by code.
+    """The grounded answer: the same rows, formatted by code.
 
     It is deliberately plain. Its job is to prove that every fact in the pretty
-    answer came from a row, and to keep the system useful when `llm` is down.
+    answer came from a row, to keep the system useful when `llm` is down, and
+    to be what the traveller gets when the model's wording fails validation.
     """
-    lines = [f"{result.resolution.city['name']}, {result.resolution.window}:"]
-    for row in result.forecast[:8]:
-        lines.append(
-            f"- {row['forecast_date']}: high {row['temp_max_c']:.0f}C, "
-            f"low {row['temp_min_c']:.0f}C, rain {row['precip_mm']:.1f}mm "
-            f"({row['precip_prob']}%), wind {row['wind_kmh']:.0f}km/h"
-        )
-    if result.resolution.activities:
-        for row in result.recommendations:
-            lines.append(
-                f"- {row['forecast_date']}: {row['activity_label']} is "
-                f"{row['band']} ({row['score']}/100)"
-            )
-        for activity in result.unscored_activities:
-            lines.append(f"- {activity.replace('_', ' ')}: no suitability score on record")
-    else:
-        best: dict[str, tuple[str, int]] = {}
-        for row in result.recommendations:
-            day = str(row["forecast_date"])
-            if row["score"] is not None and row["score"] > best.get(day, ("", -1))[1]:
-                best[day] = (row["activity_label"], row["score"])
-        for day, (activity, score) in sorted(best.items())[:8]:
-            lines.append(f"- {day}: best rated activity is {activity} ({score}/100)")
-    for row in result.places[:10]:
-        lines.append(f"- {row['name']} ({row['category']})")
-    for row in result.events[:10]:
-        lines.append(f"- {row['starts_at'].date()} {row['title']} ({row['category']})")
-    for row in result.facts[:2]:
-        lines.append(f"- {row['title']}: {row['summary'][:300]}")
-    return "\n".join(lines)
+    return grounding.render(grounding.build(result))
 
 
 def where_answer(result: Retrieval) -> str:
@@ -374,9 +375,14 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
         places if not categories else queries.places(conn, body.city, categories=None, limit=200)
     )
     events = queries.events(conn, body.city, start=covered[0], end=covered[-1], limit=40)
+    # Keyed by the city's local date, and a multi-day event is filed under
+    # every day it runs (queries.event_days). Keying by `starts_at.date()` put
+    # the Laver Cup, which opens at local midnight on the 25th, on the 24th and
+    # showed it on none of its other two days -- F2.
     events_by_day: dict[str, list[dict[str, Any]]] = {}
     for row in events:
-        events_by_day.setdefault(str(row["starts_at"].date()), []).append(row)
+        for day in queries.event_days(row):
+            events_by_day.setdefault(day.isoformat(), []).append(row)
 
     meta = _activity_meta()
     wanted_interests = {i.lower().replace(" ", "_") for i in body.interests}
@@ -464,6 +470,10 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
                     }
                     for p in picks
                 ],
+                # `starts_on`/`ends_on` travel with the row so the UI can say
+                # "day 2 of 3" instead of repeating an undated line three
+                # times, and so nothing downstream re-derives the day from the
+                # UTC instant.
                 "events": [
                     {
                         "id": e["id"],
@@ -471,6 +481,10 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
                         "category": e["category"],
                         "venue": e["venue"],
                         "starts_at": e["starts_at"].isoformat(),
+                        "starts_on": e["starts_on"].isoformat(),
+                        "ends_on": e["ends_on"].isoformat(),
+                        "day_index": (day - e["starts_on"]).days + 1,
+                        "day_count": (e["ends_on"] - e["starts_on"]).days + 1,
                         "source_url": e["source_url"],
                         "is_sample": e["is_sample"],
                     }

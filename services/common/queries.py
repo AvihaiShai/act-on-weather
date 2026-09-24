@@ -9,10 +9,66 @@ All of these run as `aow_reader`, which holds SELECT and nothing else.
 
 from __future__ import annotations
 
-from datetime import date
+from collections.abc import Mapping
+from datetime import date, timedelta
 from typing import Any
 
 import psycopg
+
+# ------------------------------------------------------- event local day ----
+
+# An event's calendar day is the day it falls on *in the city*, not in UTC and
+# not in whatever timezone the database session happens to run in. The Laver
+# Cup starts at 2026-09-25T00:00+01:00, which is 2026-09-24T23:00Z; a traveller
+# in London asking about "tomorrow" on the 24th means the 25th, and a filter
+# that compared the raw timestamptz against a date answered "nothing on" (F2).
+#
+# So every read of `events` joins `cities` and derives two local dates:
+#
+#   starts_on  the local date the event begins
+#   ends_on    the local date it is still running on
+#
+# The active window is half-open, [starts_at, ends_at): an event billed as
+# ending at local midnight ends on the previous day rather than opening the
+# next one. Subtracting a microsecond before the cast is what makes that true,
+# and GREATEST stops a row whose `ends_at` is null, equal to or earlier than
+# its start from ending before it began.
+#
+# These expressions are not sargable -- `AT TIME ZONE <column>` is STABLE, not
+# IMMUTABLE, so no index can cover them -- and `events_city_start_idx` is left
+# serving the ordering alone. A deliberate trade: this table holds tens of
+# rows, and the right day matters more here than the scan does.
+EVENTS_LOCALISED_SQL = """
+WITH localised AS (
+  SELECT e.id, e.city_id, e.title, e.category, e.venue, e.starts_at, e.ends_at,
+         e.source, e.source_url, e.is_sample, e.as_of, e.revision,
+         c.timezone,
+         (e.starts_at AT TIME ZONE c.timezone)::date AS starts_on,
+         GREATEST(
+           (e.starts_at AT TIME ZONE c.timezone)::date,
+           ((COALESCE(e.ends_at, e.starts_at) - INTERVAL '1 microsecond')
+              AT TIME ZONE c.timezone)::date
+         ) AS ends_on
+    FROM events e JOIN cities c ON c.id = e.city_id
+)
+"""
+
+
+def event_days(row: Mapping[str, Any]) -> list[date]:
+    """Every local date a stored event row is active on.
+
+    A multi-day event appears on *each* of its days -- the Laver Cup runs the
+    25th to the 27th, and a traveller planning the 26th has to see it. That is
+    this system's definition of "on that day", and the API filter, the
+    itinerary grouping and the agent's rendering all take it from here so they
+    cannot drift apart.
+    """
+    start = row["starts_on"]
+    end = row.get("ends_on") or start
+    if end < start:
+        end = start
+    return [start + timedelta(days=i) for i in range((end - start).days + 1)]
+
 
 # ------------------------------------------------------------- coverage ----
 
@@ -33,10 +89,17 @@ SELECT 'recommendations', 'forecast window', MAX(updated_at), COUNT(*),
        MIN(forecast_date)::text, MAX(forecast_date)::text
   FROM recommendations
 UNION ALL
-SELECT 'events', 'event window', MAX(as_of), COUNT(*),
-       COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample),
-       MIN(starts_at)::date::text, MAX(starts_at)::date::text
-  FROM events
+-- Local dates, and the window closes on the last day an event is still
+-- running rather than on the last day one starts (see EVENTS_LOCALISED_SQL).
+SELECT 'events', 'event window', MAX(e.as_of), COUNT(*),
+       COUNT(DISTINCT e.city_id), COUNT(*) FILTER (WHERE e.is_sample),
+       MIN((e.starts_at AT TIME ZONE c.timezone)::date)::text,
+       MAX(GREATEST(
+             (e.starts_at AT TIME ZONE c.timezone)::date,
+             ((COALESCE(e.ends_at, e.starts_at) - INTERVAL '1 microsecond')
+                AT TIME ZONE c.timezone)::date
+           ))::text
+  FROM events e JOIN cities c ON c.id = e.city_id
 UNION ALL
 SELECT 'places', 'not date-scoped', MAX(as_of), COUNT(*),
        COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample), NULL, NULL
@@ -224,27 +287,44 @@ def events(
     start: date | None = None,
     end: date | None = None,
     category: str | None = None,
+    categories: list[str] | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    """`category` is the API's single-value filter; `categories` is the agent's.
+
+    They exist side by side because a question can ask about more than one kind
+    at once ("concerts or theatre this weekend"), and because answering a
+    question about concerts with a tennis tournament is the exact defect this
+    argument was added to close.
+
+    `start`/`end` are local calendar dates in the city's own timezone, and they
+    match on overlap: a row comes back if any day it is active on falls inside
+    the range, not only if it *begins* inside it. Every row carries `timezone`,
+    `starts_on` and `ends_on` so no caller has to re-derive the day.
+    """
     sql = [
-        "SELECT id, city_id, title, category, venue, starts_at, ends_at, source,",
-        "       source_url, is_sample, as_of, revision",
-        "  FROM events WHERE true",
+        EVENTS_LOCALISED_SQL,
+        "SELECT * FROM localised WHERE true",
     ]
     params: dict[str, Any] = {"limit": limit}
     if city_id:
         sql.append("AND city_id = %(city)s")
         params["city"] = city_id
     if start:
-        sql.append("AND starts_at >= %(start)s::date")
+        sql.append("AND ends_on >= %(start)s::date")
         params["start"] = start
     if end:
-        sql.append("AND starts_at < (%(end)s::date + 1)")
+        sql.append("AND starts_on <= %(end)s::date")
         params["end"] = end
     if category:
         sql.append("AND category = %(category)s")
         params["category"] = category
-    sql.append("ORDER BY starts_at LIMIT %(limit)s")
+    if categories:
+        sql.append("AND category = ANY(%(categories)s)")
+        params["categories"] = list(categories)
+    # By local day first: two events on the same local calendar day in
+    # different cities belong together, whatever their UTC instants are.
+    sql.append("ORDER BY starts_on, starts_at LIMIT %(limit)s")
     return conn.execute("\n".join(sql), params).fetchall()
 
 

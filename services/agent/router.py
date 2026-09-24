@@ -27,7 +27,7 @@ from typing import Any
 import yaml
 
 from ..common import config, queries
-from . import dates
+from . import dates, grounding
 
 log = logging.getLogger("agent.router")
 
@@ -158,6 +158,16 @@ WHEN_WORDS: tuple[str, ...] = (
 MAX_WHERE_PLACES = 6
 
 
+# Words that make a question about the city itself rather than about one of its
+# buildings. `facts` holds one `history` row per city among dozens of
+# `landmark` ones, and ordering by title buries it.
+HISTORY_WORDS = ("history", "historical", "historic", "founded", "heritage", "past")
+
+# A category can also name a scored activity (comedy, markets). These words
+# make it a question about a dated listing instead of activity suitability.
+EVENT_SCHEDULE_WORDS = ("on", "scheduled", "happening", "show", "shows", "playing")
+
+
 # Deliberately not a synonym list the model can extend: these are the only
 # categories the database actually holds.
 def load_interests(path) -> dict[str, list[str]]:
@@ -240,6 +250,11 @@ class Resolution:
     # Activity slugs the question actually named, e.g. {"surfing"} for
     # "can I surf in London?". Used to notice when the answer is missing.
     activities: list[str] = field(default_factory=list)
+    # `events.category` values the question asked about, e.g. ["concert"] for
+    # "which concerts are on this week?". Empty means no particular kind, which
+    # is why the retrieval below filters only when this is non-empty: an open
+    # question should still see everything that is on.
+    event_categories: list[str] = field(default_factory=list)
     # "where can I surf?" asks for a place, not a verdict.
     asks_where: bool = False
     # True when the question named a date, or asked about timing or conditions.
@@ -343,8 +358,10 @@ class Router:
         # Asking about the weather is asking about conditions, so it counts as
         # the `when` half even when no date was named.
         resolution.asks_when = resolution.asks_when or "weather" in resolution.intents
-        if not resolution.intents:
-            resolution.intents = ["weather", "activities"]
+        # The weather+activities default is NOT applied here. It moved below,
+        # after the event kind and the named activities have been resolved, so
+        # that "any comedy on this week?" resolves to events rather than being
+        # defaulted into a forecast before the question has been read out.
 
         for interest, categories in self.interests.items():
             spaced = interest.replace("_", " ")
@@ -354,19 +371,55 @@ class Router:
         # "fine dining" and "restaurants" are the same rows; do not ask twice.
         resolution.categories = sorted(set(resolution.categories))
 
+        # Resolve the event kind before matching activity names: "any comedy
+        # on?" and "what markets are on?" name both an event category and a
+        # scored activity, but ask for a scheduled listing.
+        resolution.event_categories = grounding.requested_event_categories(text)
+        scheduled_events = bool(resolution.event_categories) and any(
+            _mentions(text, word) for word in EVENT_SCHEDULE_WORDS
+        )
+        if scheduled_events and "events" not in resolution.intents:
+            resolution.intents.append("events")
+
         for activity, keywords in self.activity_keywords.items():
             if any(_mentions(text, word) for word in keywords):
                 resolution.activities.append(activity)
         # Naming an activity is asking whether to do it, whatever else the
         # sentence looks like. Without this, "can I surf tomorrow?" carries no
         # activity intent and never retrieves the verdict it is asking for.
-        if resolution.activities and "activities" not in resolution.intents:
+        if scheduled_events and "activities" not in resolution.intents:
+            resolution.activities.clear()
+        elif resolution.activities and "activities" not in resolution.intents:
             resolution.intents.append("activities")
+        if not resolution.intents:
+            resolution.intents = ["weather", "activities"]
         return resolution
+
+    def _facts(self, city_id: str, text: str, limit: int = 3) -> list[dict[str, Any]]:
+        """Background rows, with the city's own history first when that is what
+        was asked.
+
+        `facts` are ordered by title, and a city holds one `history` row among
+        dozens of `landmark` ones. Asked about the history of Lisbon, the agent
+        used to be handed three alphabetically-first museum descriptions and
+        nothing about the city -- which is how the model ended up writing the
+        history itself.
+        """
+        rows: list[dict[str, Any]] = []
+        if any(_mentions(text, word) for word in HISTORY_WORDS):
+            rows = queries.facts(self.conn, city_id, topic="history", limit=limit)
+        seen = {row["id"] for row in rows}
+        for row in queries.facts(self.conn, city_id, limit=limit):
+            if len(rows) >= limit:
+                break
+            if row["id"] not in seen:
+                rows.append(row)
+        return rows
 
     # -- retrieving --------------------------------------------------------
     def retrieve(self, question: str) -> Retrieval:
         resolution = self.resolve(question)
+        text = question.lower()
         coverage = queries.coverage(self.conn)
         window = resolution.window
 
@@ -449,10 +502,15 @@ class Router:
             "activities" in resolution.intents and not resolution.where_only
         ):
             result.events = queries.events(
-                self.conn, city_id, start=window.start, end=window.end, limit=12
+                self.conn,
+                city_id,
+                start=window.start,
+                end=window.end,
+                categories=resolution.event_categories or None,
+                limit=12,
             )
         if "facts" in resolution.intents:
-            result.facts = queries.facts(self.conn, city_id, limit=3)
+            result.facts = self._facts(city_id, text)
 
         # The activity coverage gate, and the sibling of the date gate above.
         # An activity the question named but this city holds no row for is
@@ -507,105 +565,15 @@ class Router:
 
 
 def context_block(result: Retrieval) -> str:
-    """The rows, flattened into text. This is the ONLY source of fact the model
-    is given -- there is no retrieval inside the prompt and no general knowledge
-    it is invited to add."""
-    city = result.resolution.city
-    lines = [
-        f"City: {city['name']}, {city['country']}",
-        f"Dates asked about: {result.resolution.window}",
-    ]
+    """The rows, flattened into text for the model.
 
-    if result.forecast:
-        lines.append("\nStored daily forecast:")
-        for row in result.forecast:
-            parts = [f"  {row['forecast_date']}:"]
-            if row["temp_max_c"] is not None:
-                parts.append(f"high {row['temp_max_c']:.0f}C")
-            if row["temp_min_c"] is not None:
-                parts.append(f"low {row['temp_min_c']:.0f}C")
-            if row["precip_mm"] is not None:
-                parts.append(f"rain {row['precip_mm']:.1f}mm")
-            if row["precip_prob"] is not None:
-                parts.append(f"({row['precip_prob']}% chance)")
-            if row["wind_kmh"] is not None:
-                parts.append(f"wind {row['wind_kmh']:.0f}km/h")
-            if row["sunshine_hours"] is not None:
-                parts.append(f"sun {row['sunshine_hours']:.1f}h")
-            lines.append(" ".join(parts))
-
-    if result.unscored_activities:
-        # Stated before the scores, and in the blunt language the model is
-        # least able to soften. This is the line that stops "is it good for
-        # surfing in London?" being answered with an invented weather reason.
-        meta = activity_meta()
-        lines.append("\nASKED ABOUT BUT NOT ON RECORD -- say this plainly and explain nothing:")
-        for key in result.unscored_activities:
-            cfg = meta.get(key) or {}
-            label = cfg.get("label", key.replace("_", " "))
-            if cfg.get("requires_coast") and not city.get("coastal"):
-                why = f"{city['name']} has no coast on record, so this is never scored there"
-            else:
-                why = "no suitability score is stored for it in this city"
-            lines.append(f"  {label}: NO DATA -- {why}.")
-        lines.append(
-            "  Do not give a verdict on these, and do not reason from the weather "
-            "to one. State that there is no record and move on."
-        )
-
-    if result.recommendations:
-        lines.append("\nSuitability scores from the rule engine (these are the verdicts):")
-        for row in context_recommendations(result):
-            text = f" -- {row['text']}" if row.get("text") else ""
-            lines.append(
-                f"  {row['forecast_date']} {row['activity_label']}: "
-                f"{row['band']} ({row['score']}/100){text}"
-            )
-
-    if result.venues:
-        meta = activity_meta()
-        lines.append("\nWhere these activities happen, on record (use only these names):")
-        for activity, rows in result.venues.items():
-            label = (meta.get(activity) or {}).get("label", activity.replace("_", " "))
-            for row in rows:
-                sample = " [sample data]" if row.get("is_sample") else ""
-                lines.append(f"  {label}: {row['name']} ({row['category']}){sample}")
-
-    if result.unlocated_activities:
-        # The `where` half of the honest-gap pair, and the twin of the block
-        # above: asked where to surf with a list of beaches in front of it, the
-        # model will offer one as a surf spot unless told in as many words.
-        lines.append("\nASKED WHERE BUT NO LOCATION ON RECORD -- say this plainly:")
-        for activity in result.unlocated_activities:
-            lines.append(f"  {where_gap(activity, city)}")
-        lines.append("  Do not offer a nearby or similar place as an answer to these.")
-
-    if result.places:
-        lines.append("\nPlaces on record (use only these names):")
-        for row in result.places:
-            sample = " [sample data]" if row.get("is_sample") else ""
-            lines.append(f"  {row['name']} ({row['category']}){sample}")
-
-    if result.events:
-        lines.append("\nEvents on record (use only these; invent nothing):")
-        for row in result.events:
-            sample = " [sample data]" if row.get("is_sample") else ""
-            venue = f" at {row['venue']}" if row.get("venue") else ""
-            lines.append(
-                f"  {row['starts_at'].date()} {row['title']} " f"({row['category']}){venue}{sample}"
-            )
-    elif "events" in result.resolution.intents:
-        lines.append("\nEvents on record: none for that city and date range.")
-
-    if result.places == [] and result.resolution.categories:
-        lines.append("\nPlaces on record for those interests: none.")
-
-    if result.facts:
-        lines.append("\nBackground on record:")
-        for row in result.facts:
-            lines.append(f"  {row['title']}: {row['summary'][:400]}")
-
-    return "\n".join(lines)
+    Assembled by `grounding.build` into typed facts first, so a place and a
+    scheduled event are different things here and not two paragraphs the model
+    is asked to keep apart. This is the ONLY source of fact the model is given:
+    there is no retrieval inside the prompt and no general knowledge it is
+    invited to add.
+    """
+    return grounding.prompt_block(grounding.build(result))
 
 
 def context_recommendations(result: Retrieval) -> list[dict[str, Any]]:
@@ -636,6 +604,13 @@ def footer(result: Retrieval) -> str:
     reworded, rounded or dropped."""
     coverage = result.coverage
     parts = []
+    # `dates.parse` promises the assumed range is stated rather than left for
+    # the reader to guess, and it was not: str(window) drops the label. Asked
+    # "are there any sports events in London in October?", the parser falls
+    # back to the coming week and the answer used to talk about October.
+    window = result.resolution.window
+    if window is not None and "assumed" in window.label:
+        parts.append(f"no dates in the question, so this covers {window}")
     # Stamp the weather only when the answer used it. A pure location answer
     # does not, and footing it with a forecast window implies the answer
     # depended on a snapshot it never read -- which is the same mistake in

@@ -104,8 +104,10 @@ everywhere:
 | `make update` | `… run --rm demos update` |
 | `make reenrich` | `… run --rm demos reenrich` |
 | `make demo` | `… run --rm demos all` |
-| `make refresh` | `docker compose -f compose.yml -f compose.connected.yml up -d ingestor` then `docker compose exec ingestor python -m services.ingestor.refresh` |
+| `make refresh` | `docker compose -f compose.tools.yml run --rm refresh` |
+| `make refresh-check` | `docker compose -f compose.tools.yml run --rm refresh --check` |
 | `make snapshot` | `docker compose -f compose.yml -f compose.connected.yml run --rm --no-deps ingestor python -m services.ingestor.fetch_content` |
+| `make manifest` | `docker run --rm -v "$PWD:/work" -w /work python:3.12-slim@sha256:… python scripts/snapshot_manifest.py` |
 
 Both forms run the same scripts from this same working tree — `demos/*.sh` is
 one implementation, and the container is only a shell to run it in. The stack
@@ -123,9 +125,10 @@ on a host with bash: `bash demos/01_offline.sh`.
 
 ### Demo mode
 
-A default run stores the **seven hand-verified events**, all of them in London,
-and answers "none on record" for the other four cities. To see the trip planner
-and the agent working with events in all five cities, switch to **demo mode**:
+A default run stores the **26 hand-verified events** — 11 London, 6 Reykjavík,
+4 Rome, 4 Lisbon, 1 Tel Aviv — and answers "none on record" for any city, date
+or category the feed does not cover. To see the trip planner and the agent
+working with a denser event calendar, switch to **demo mode**:
 
 ```sh
 docker compose -f compose.yml -f compose.demo.yml up -d
@@ -148,7 +151,7 @@ images and the model, a normal run needs no internet. A fresh clone alone is
 
 | | |
 |---|---|
-| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 289 places, 81 background articles, and **7 verified events** (+ 45 labelled samples in demo mode) |
+| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 620 places, 81 background articles, and **26 verified events** (+ 45 labelled samples in demo mode) |
 | **Decides** | a deterministic suitability score per (city, day, activity) across **18 activities**, from rules in `data/activities.yml` |
 | **Words** | a local Qwen3-1.7B writes one or two sentences about each score |
 | **Answers** | an agent resolves the question in code and answers from stored rows only |
@@ -173,8 +176,10 @@ header, which carries the as-of stamp and the forecast window.
   Streets, water and parks are staged with the coastline and bundled locally,
   so pan and zoom work without map tiles.
 * **Ask the agent** — chat, with a panel showing exactly which rows the answer used.
-* **Update data** — all three M12 update paths in one place: connected refresh,
-  correcting a stored record, and re-wording with the local model.
+* **Update data** — all three M12 update paths in one place: the operator
+  refresh (per-city freshness and the command that changes it; the page
+  states that it does not fetch), correcting a stored record, and re-wording
+  with the local model.
 * **Data coverage** — what is held, per record type and per city, which rows are
   labelled samples, and how far the wording queue has got.
 
@@ -305,7 +310,7 @@ Eleven containers. `postgres`, `rabbitmq`, `migrate` (one-shot), `llm`,
 |---|---|---|
 | `backend` | everything | `internal: true` — Docker itself gives it no gateway |
 | `frontend` | `edge` only | Docker cannot publish a port from an internal network, so exactly one container straddles the boundary |
-| `egress` | nobody, by default | `compose.connected.yml` attaches the ingestor for a refresh |
+| `egress` | nobody, by default | the operator refresh attaches the ingestor to it for the length of one fetch, then detaches it again and asserts it detached |
 
 Only 8080 and 8000 are published, and both only on `127.0.0.1`. Not the
 database, not the broker, not the management UI, not the model server.
@@ -360,7 +365,27 @@ Four drills — consumer down, database down, broker down and poison message. Ea
 **single accepted `message_id`** to its terminal state. Row counts are
 deliberately not the assertion: a loss and a duplicate cancel out in a count.
 
+**The same guarantee is a CI gate.** `scripts/ci-integration.sh` runs against a
+real broker and database in a throwaway Compose project, and no image is
+published unless it passes. It accepts one record per failure mode — consumer
+stopped, broker stopped, database stopped — each with its own `message_id`,
+then restarts every service in the path and asks a **separate reader
+connection** for all of them at once. Any single missing ID fails the job, and
+so does any duplicate.
+
+The database drill waits for the consumer to log a failed delivery before
+restoring Postgres. That wait is the drill: if the database comes back before
+the delivery arrives, the consumer never drops its connection, never takes the
+reconnect path, and the drill passes against a broken build. Verified by
+rebuilding the service image with the reconnect fix removed — the gate then
+fails naming the lost ID, while the consumer-down and broker-down drills still
+pass, because neither touches that path.
+
 ### Reconcile accepted records after an incident
+
+Run this after an outage, and also after upgrading from a build that had the
+database reconnect defect — a record acknowledged by that build could be absent
+from Postgres with nothing to show for it, and this audit is what finds it.
 
 Keep the Postgres, RabbitMQ, and all three outbox volumes. After the services
 recover, run this read-only audit in **each** producer container:
@@ -477,8 +502,22 @@ carries the as-of stamp that says how old it is.
 | Map backdrop | OpenStreetMap via Overpass | ODbL © OpenStreetMap contributors | a 20 km extract per city — streets, water, coastline, parks — staged by `services/ingestor/fetch_basemap.py` into `data/map/<city>.basemap.geojson.gz`; 1.2 MB for all five |
 | Map fallback shoreline | [Natural Earth 1:10m](https://www.naturalearthdata.com/downloads/10m-physical-vectors/) | public domain | bundled in `data/map/`; drawn only for a city with no staged extract. Source revision and checksum in `data/map/SOURCE.md` |
 | Background | Wikipedia REST summaries | CC BY-SA 4.0 | same script; the city article plus one article per venue, resolved through its Wikidata sitelink |
-| Events (verified) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. Seven rows, all London. **The only events a default run stores.** |
+| Events (verified) | venue listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. 26 rows across all five cities (london 11, reykjavik 6, rome 4, lisbon 4, tel-aviv 1). **The only events a default run stores.** |
 | Events (generated samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …*. **Demo mode only** (`make up-demo`). |
+
+**Which day an event is on.** Instants are stored as `timestamptz` and never
+rewritten, but the *day* an event belongs to is its day in the city, resolved
+through that city's IANA zone — not UTC, and not the database session's zone.
+The Laver Cup starts at `2026-09-25T00:00+01:00`, which is `2026-09-24T23:00Z`;
+in London it is on the 25th, and "any sports events tomorrow?" asked on the
+24th has to find it. A multi-day event is on **every** day it runs, so the
+tournament appears on the 25th, 26th and 27th of an itinerary, labelled *day n
+of 3*. The active window is half-open, `[starts_at, ends_at)`: one billed as
+ending at local midnight ends the previous day rather than opening the next.
+`GET /events?start=&end=` takes local dates and matches on overlap, and every
+row carries `timezone`, `starts_on` and `ends_on` so nothing downstream
+re-derives the day. Proved in `tests/integration/event_local_days.py` (real
+Postgres, real tzdata) and `tests/unit/test_event_days.py`.
 
 **Why Wikidata and not OpenStreetMap for places.** OSM is the better source and
 the code for it is still there (`--places-source osm`). It is not the default
@@ -538,10 +577,11 @@ by its Wikidata P31 class rather than by its distance from a point.
 offline-stageable feed of concerts and fixtures for five cities, and fabricating
 them was not an option. So there are two event files, kept apart at every layer:
 
-* `data/events.seed.jsonl` — seven **real** listings, each checked by hand
+* `data/events.seed.jsonl` — 26 **real** listings, each checked by hand
   against its own source URL. `is_sample: false`. These are the only events the
-  system claims are real, and they are all in London, because that is how far
-  hand-verification got. **They are what a default run stores.**
+  system claims are real. Every city has at least one, but the depth is uneven
+  (london 11, reykjavik 6, rome 4, lisbon 4, tel-aviv 1), because that is how
+  far hand-verification got. **They are what a default run stores.**
 * `data/events.samples.jsonl` — 45 rows generated by
   `services/ingestor/make_samples.py`. Every row is `is_sample: true`, its title
   begins with **"Sample:"**, and its `source` says in words that it is not a
@@ -568,13 +608,13 @@ The consumer's startup sweep is the part that matters: `AOW_DEMO_EVENTS`
 describes the **database**, not just the run. Run `make up-demo`, look around,
 then `make up` — the samples are gone, not merely hidden. Demo mode is also
 visible while you are in it: the UI carries a banner naming the count and
-saying which seven rows are real.
+saying which rows are real.
 
 The loader drops any row in the sample file that does not admit to being a
 sample, so the labelling is checked at the boundary rather than assumed. In demo
 mode the samples are marked in the UI, in the agent's prompt, in its footer, and
-counted separately in the coverage tab — which reports **"7 verified + 45
-samples"**, never a single total of 52.
+counted separately in the coverage tab — which reports **"26 verified + 45
+samples"**, never a single total of 71.
 
 A city with no events on record produces "none on record", never a
 plausible-sounding invention.
@@ -606,9 +646,47 @@ All three are on the **Update data** tab in the UI, which is where a reviewer
 should look first: it names each path, says which work air-gapped, and shows
 the exact command for the one that cannot.
 
-To refresh a normal (non-demo) run from Windows PowerShell, macOS Terminal, or
-Linux, use these commands while connected to the internet. The last command
-returns the ingestor to the offline network after it accepts the new forecast:
+### The operator refresh
+
+One command, on Windows PowerShell, macOS Terminal or Linux, while connected:
+
+```sh
+docker compose -f compose.tools.yml run --rm refresh
+```
+
+`make refresh` is the shorthand. It runs [`scripts/refresh.sh`](scripts/refresh.sh),
+which:
+
+1. records what is stored now, per city — as-of and last day covered;
+2. attaches **only the ingestor container** to the `egress` network;
+3. runs the fetch inside it, into the same outbox every other record uses;
+4. **closes that window again and asserts it closed**, from a `trap`, so a
+   failed fetch, a `Ctrl-C` or a crash mid-way ends the same way a success does;
+5. follows the accepted message ids to the broker and to `ingest_log`;
+6. prints per-city success or failure, the as-of before and after, the accepted
+   message ids, and how many of them are stored versus still in flight.
+
+It exits non-zero when any city fails (`2`), when the egress window could not be
+closed (`3`) — the one outcome that needs a human — or when the rows were
+accepted but nothing reached the database in time (`4`).
+
+```sh
+# open and close the window without fetching: the drill for
+# "does this always put the ingestor back?". Needs no internet.
+docker compose -f compose.tools.yml run --rm refresh --check
+
+# one city, a shorter horizon, and a shorter wait for the consumer
+docker compose -f compose.tools.yml run --rm refresh --city rome --days 7 --wait 60
+```
+
+The window is opened with `docker network connect` and closed with
+`docker network disconnect`, rather than by recreating the container under
+`compose.connected.yml`. That adds and removes one interface on one container:
+no restart mid-refresh, no re-accepting the whole snapshot, and nothing that
+depends on which filesystem the command was typed on.
+
+Typed by hand it is three commands, and the **third** is the one that matters —
+it is what puts the ingestor back:
 
 ```sh
 docker compose -f compose.yml -f compose.connected.yml up -d ingestor
@@ -616,7 +694,18 @@ docker compose exec ingestor python -m services.ingestor.refresh
 docker compose up -d ingestor
 ```
 
-`make refresh` is the shorthand for the first two commands.
+The wrapper exists because a step an operator has to remember is a step that
+gets skipped, and because a failed fetch or a closed terminal skips it too.
+
+`OPEN_METEO_URL` points the fetch at an internal mirror instead of the public
+API, for a site that has a mirror but no route to the internet.
+
+**There is no refresh button in the UI, on purpose.** A button would need
+either the Docker socket inside the UI container or an unauthenticated endpoint
+that runs host commands; both are a worse problem than the one they solve. The
+**Update data → Operator refresh** tab therefore shows what it can show
+honestly: per-city freshness straight from the database, the exact command, and
+a plain statement that displaying the command has not fetched anything.
 
 A user edit is accepted, not applied: `202`, never `200`. The UI says so too.
 There is exactly one write path into this database.
@@ -740,6 +829,16 @@ uses a separate Compose project and removes its temporary volumes afterward. CI 
 the internet; the runtime does not. The guard job enforces the offline model
 boundary.
 
+The rest of the guard job is there because this repository makes claims that
+rot quietly. It fails the build if a pulled image or a Dockerfile base is not
+pinned by digest; if a pinned digest disagrees with `IMAGES.lock`, so the lock
+cannot become documentation of a release nobody runs; if any workflow action is
+on a movable tag rather than a commit SHA, since those actions run with this
+workflow's token; and if any count in the README or the Makefile disagrees with
+`data/snapshot/MANIFEST.json`, which `scripts/snapshot_manifest.py` derives
+from the snapshot files. That last one is not hypothetical: a README quoting
+289 of them shipped against a snapshot holding 620.
+
 On a push to `main`, **only after those gates pass**, CI publishes the same
 tested images to GHCR with a `sha-<commit>` tag. Its `aow-images-<commit>` run
 artifact contains `images.lock` with the registry digests. Pull requests never
@@ -764,8 +863,11 @@ bash scripts/package-offline.sh release/images.lock
 
 `dist/aow-<commit>/` contains the exact CI images (plus the digest-pinned
 upstream images) in `images.tar`, the verified model, the Compose files, code,
-migrations, snapshot, checksums and an installer. Copy the folder to the
-on-prem **Linux/amd64 Docker host**. There, fill in a new `.env` and run:
+migrations, snapshot, an installer, and two files that say what the rest is
+supposed to be: `SHA256SUMS` over **every** file in the folder, and
+`images.bundle.lock`, which records the registry digest each bundled image was
+tagged from. Copy the folder to the on-prem **Linux/amd64 Docker host**. There,
+fill in a new `.env` and run:
 
 ```sh
 cd aow-<commit>
@@ -773,14 +875,45 @@ cp .env.example .env           # set distinct passwords
 bash scripts/install-offline.sh
 ```
 
-The installer verifies checksums, loads the images locally, starts Compose with
-`--no-build --pull never`, then checks API health, stored weather and scores,
-the agent, local model, UI and edge. It preserves the named Postgres, RabbitMQ
-and outbox volumes across upgrades. Before upgrading an existing installation,
-back up those volumes and Postgres; keep the previous release folder. If the
-new release fails, run the previous folder's installer to restore its images.
-A database schema change may require restoring the matching backup too; an
-image rollback alone cannot undo a migration.
+The installer checks the bundle before it changes anything on the host:
+`SHA256SUMS` for every file, `models.lock` for the model, and
+`scripts/verify-bundle-images.sh`, which reads the manifest digests out of
+`images.tar` and compares them with `images.bundle.lock`. The two checks answer
+different questions. `SHA256SUMS` answers *did these bytes arrive intact*; it
+cannot answer *are these the bytes CI built*, because anyone replacing the
+archive would replace the checksum file with it. The digest check answers the
+second question, against digests that came out of the CI run artifact.
+
+Then it loads the images, starts Compose with `--no-build --pull never`, and
+runs `scripts/release-smoke.py`: API health, stored weather and scores, the
+agent, the local model, the UI and the edge.
+
+**Upgrades and rollback.** `compose.yml` fixes the project name, so every
+release folder installs over the same Postgres, RabbitMQ and outbox volumes —
+that is what makes an upgrade an upgrade rather than a second empty system.
+Because of that, an install onto a running system is a change to live data, so
+the installer takes a `pg_dump` into `backup/` **before** it loads the new
+images, and refuses to continue if that dump comes back empty. Keep the
+previous release folder; it is the rollback unit.
+
+If a release fails, roll it back in two steps, because they undo two different
+things:
+
+```sh
+cd ../aow-<previous-commit>
+bash scripts/install-offline.sh                       # 1. code and images back
+bash scripts/restore-offline.sh \
+  ../aow-<failed-commit>/backup/<project>-<stamp>.sql # 2. data back, if needed
+```
+
+Step 1 reverts the images and the migration files. It does not revert what the
+failed migration already did to the database — a migration that dropped or
+deleted something stays dropped or deleted, and the release smoke check will
+fail on the way out rather than report a healthy rollback. Step 2 is for that
+case, and the dump it wants is the one the **failed** install took on its way
+in, which is why it lives in the failed release's folder. The outbox volumes
+are deliberately left alone: they hold records that were accepted but not yet
+published, and replaying them after the restore is the point.
 
 **Two different offline claims, kept apart.** A machine that has completed
 [staging](#2-stage-it--once-with-internet) runs the whole system *and* every
@@ -793,11 +926,35 @@ this whole section exists to avoid. Putting those two images in the release
 would fix it; that is a change to `scripts/package-offline.sh` which has not
 been made or verified here.
 
-The release path was run end to end from a green CI digest manifest on a
-Windows Docker Desktop host with a Linux/amd64 engine: package, checksum
-verification, image load, fresh isolated Compose volumes, `--pull never`, and
-the installer smoke check all passed. The folder has not been transferred to a
-separate offline host.
+**What was actually run, and where.** The release path was exercised end to end
+from the digest manifest of a green `main` run, on a Windows Docker Desktop
+host with a Linux/amd64 engine. Packaging took 3m15s and produced a 1.8 GB
+folder (539 MB `images.tar`, 1.2 GB model, 129 checksummed files). The install
+ran in its own Compose project against fresh volumes
+(`COMPOSE_PROJECT_NAME=aow-rel`, `AOW_BIND_ADDR=127.0.0.2` in that folder's
+`.env`, which is also how you stand a release test beside a running stack), and
+these are the results:
+
+| Exercise | Result |
+|---|---|
+| First install, empty volumes | 61 s to `PASS`, all 11 services up |
+| Upgrade over the running install | 49 s; pre-upgrade dump written first, 4012 lines, all nine tables |
+| `SHA256SUMS`, all 129 files | verified; appending one line to a migration failed the check |
+| `images.bundle.lock` vs `images.tar` | 6/6 digests matched; a wrong digest and a missing entry both failed |
+| `--pull never` with an image deleted | Compose refused — "No such image" — and reached no registry |
+| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel_backend` reports `Internal=true` |
+| E1 through the installed release | answered from stored data, with source and as-of |
+| Failed upgrade (a migration that deletes and then errors) | install aborted; forecast rows 80 → 0 |
+| Rollback: previous folder's installer | images and migrations reverted; smoke **failed**, correctly, on the still-empty forecast |
+| `scripts/restore-offline.sh` with the failed release's dump | 11 s; every row back (80 forecast, 620 place and 81 fact rows, as that bundle's own snapshot holds); smoke passed |
+
+Two limits on that. The isolation is a **second Compose project on the same
+machine**, not a physically disconnected host: the Docker network is
+`internal: true` and the containers cannot route out, but the host NIC stayed
+up and the folder was never transferred anywhere. And the bundle was built from
+the last published `main` commit, so the release tooling in it is this branch's
+copy laid over that bundle rather than a bundle that commit produced — the next
+bundle cut from `main` produces `images.bundle.lock` itself.
 
 ---
 
@@ -818,9 +975,9 @@ you can run.
 | M8 | Tourism: history, places, sports events | `facts`, `places`, `events` tables | `docker compose -f compose.tools.yml run --rm demos questions` (Lisbon history, London sports) |
 | M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build, save and reopen a plan in the UI |
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
-| M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `docker compose -f compose.tools.yml run --rm demos no-data-loss` |
-| M12 | Update stored information | `PATCH /records/...`, a connected refresh, re-enrichment | `docker compose -f compose.tools.yml run --rm demos update` |
-| S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`, `scripts/package-offline.sh`, `scripts/install-offline.sh` | `gh run list`; offline release installer |
+| M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive, outbox↔`ingest_log` reconciliation | `docker compose -f compose.tools.yml run --rm demos no-data-loss`; the CI gate in `scripts/ci-integration.sh` |
+| M12 | Update stored information | `PATCH /records/...`, the operator refresh (`scripts/refresh.sh`), re-enrichment | `docker compose -f compose.tools.yml run --rm demos update`; `… run --rm refresh --check` for the egress window |
+| S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
 | B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |
 | B2 | LLM observability metrics | **not attempted** — `llm` exposes llama.cpp's own `--metrics`, unscraped | — |
@@ -866,9 +1023,28 @@ docker run --rm aow/tests:dev pytest tests/unit/test_compose_ports.py -v
 docker compose config | grep -A 4 'ports:'   # host_ip: 127.0.0.1, twice
 ```
 
-`make offline`, `make demo`, `make test` and the rest are shorthands for these;
-see [Shorthand](#shorthand). The proof runner mounts the Docker socket, for the
-reason given there.
+The release bundle can be checked on the offline host without starting
+anything, which is also what `scripts/install-offline.sh` does before it
+touches the daemon:
+
+```sh
+cd aow-<commit>
+sha256sum -c SHA256SUMS                  # every file in the folder, code included
+sha256sum -c models.lock                 # the model
+bash scripts/verify-bundle-images.sh .   # images.tar against images.bundle.lock
+```
+
+The numbers this file quotes about the snapshot come from the snapshot:
+
+```sh
+docker run --rm -v "$PWD:/work" -w /work \
+  python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 \
+  python scripts/snapshot_manifest.py --check
+```
+
+`make offline`, `make demo`, `make test`, `make manifest` and the rest are
+shorthands for these; see [Shorthand](#shorthand). The proof runner mounts the
+Docker socket, for the reason given there.
 
 ---
 
@@ -877,8 +1053,18 @@ reason given there.
 Stated, not implied:
 
 * **Single-replica broker and database.** Fine for this; not an HA design.
-* **The guarantee is demonstrated by four drills, not by per-message
-  accounting.** There is no reconciler proving every enrichment was delivered.
+* **Per-message accounting covers the producer outboxes, not the whole
+  system.** `services.common.reconcile` audits every confirmed outbox envelope
+  against `ingest_log` and can replay a missing one, so an accepted record can
+  always be accounted for. There is still no equivalent reconciler proving
+  every *enrichment* was delivered.
+* **The outage gate drives the API outbox, not the ingestor's.** The three
+  drills accept through the API, so it is the API's outbox that is proven
+  across a broker and a database outage. The ingestor's outbox is audited on
+  every CI run -- every confirmed envelope reconciled against `ingest_log` --
+  but this gate never stops a dependency underneath the ingestor and replays
+  through it. Same code path on both sides, so the risk is small; it is still
+  audited rather than exercised, and the claim stops there.
 * **The enricher polls** rather than binding to the weather stream. That is a
   deliberate trade: no second delivery branch means no silent partial fan-out.
 * **A user-entered activity is scored against general outdoor comfort**, not a
@@ -892,10 +1078,12 @@ Stated, not implied:
   in Tel Aviv?” is answered with an explicit “I do not have a verified surf
   spot,” never with a beach. A sourced surf-spot layer, carrying the same
   `source` and `as_of` as every other row, is what would close this.
-* **The verified event set is seven rows, all in London.** That is a real
-  coverage gap, not a display problem: a default run answers "none on record"
-  for Rome, Lisbon, Tel Aviv and Reykjavík, and the trip planner has no events
-  to place there. `make up-demo` fills the gap with labelled generated rows for
+* **The verified event set is 26 rows, and it is thin and uneven.** Every
+  city has at least one listing (london 11, reykjavik 6, rome 4, lisbon 4,
+  tel-aviv 1), but it is a hand-checked snapshot of a few venues per city over
+  a few weeks, not a feed. A default run answers "none on record" for most
+  dates and categories, and the trip planner has few events to place.
+  `make up-demo` fills the gap with labelled generated rows for
   demonstration; it does not close it.
 * **The places map is a bundled extract, not a map service.** Stored places are
   drawn as points on a local equirectangular projection over a 20 km
@@ -931,7 +1119,22 @@ Stated, not implied:
   start and the proofs have no such restriction. This applies only to building
   and installing the transport folder, and the
   [production path](#production-path-kubernetes--openshift) below is the answer
-  for a real on-prem install.
+  for a real on-prem install. `scripts/restore-offline.sh` additionally needs
+  the release folder's `.env` to be the one the dump was taken under.
+* **The release has been installed in isolation, not on a disconnected host.**
+  Package, whole-folder checksums, image-digest verification, `--pull never`,
+  first install, upgrade, a failed upgrade and a restore-backed rollback all
+  ran — but in a second Compose project on the staging machine, with the host
+  NIC up. The containers had no route out (`internal: true`, `errno 101` from
+  every service), which is a strong simulation and not a separate-host
+  air-gap certification. [Offline release and
+  installation](#offline-release-and-installation) lists exactly what ran.
+* **Rollback is two commands, not one, and the second needs a dump.** An image
+  rollback cannot undo a migration, so a release that migrates destructively is
+  recoverable only from the `pg_dump` the failed install took on its way in.
+  That dump is automatic, but its retention is not: nothing prunes `backup/`,
+  and a host that runs out of disk there will fail the next upgrade at the dump
+  step rather than half-way through it.
 * **The proof runner holds the Docker socket** while a drill runs. It is a
   deliberate, explicit invocation and nothing in the running stack has the
   socket, but it is real host access and is named here rather than buried.

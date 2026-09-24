@@ -891,7 +891,7 @@ def load_events(seed: Path) -> list[dict[str, Any]]:
     fixtures for five cities, and the brief's rule against inventing events is
     absolute. So this reads a file and copies its rows through unchanged: real
     listings, each row checked against its own source URL by hand,
-    `is_sample: false`. There are seven, and they are all in London.
+    `is_sample: false`. There are 26, across all five cities.
 
     These are the only events a default run stores.
     """

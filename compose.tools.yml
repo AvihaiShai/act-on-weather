@@ -1,10 +1,11 @@
-# Two one-shot tools, kept out of compose.yml on purpose.
+# Three one-shot tools, kept out of compose.yml on purpose.
 #
 # compose.yml is the running system, and a reviewer should be able to read it
-# as exactly that. Neither service below is part of the stack: `stage` runs
-# once while connected and exits, and `demos` runs a proof and exits. Keeping
-# them here means `docker compose up -d` cannot start them by accident, and
-# `docker compose ps` never shows them.
+# as exactly that. None of the services below is part of the stack: `stage`
+# runs once while connected and exits, `demos` runs a proof and exits, and
+# `refresh` opens a temporary egress window, fetches a forecast and closes the
+# window again. Keeping them here means `docker compose up -d` cannot start
+# them by accident, and `docker compose ps` never shows them.
 #
 # Its own project name, so these containers never appear in, or interfere
 # with, the `aow` project. The `demos` service reaches the stack over the
@@ -77,6 +78,37 @@ services:
     volumes:
       # The working tree, so the scripts, compose files and .env come from the
       # checkout rather than from a stale image layer.
+      - .:/work
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [backend]
+
+  # ------------------------------------------------------ operator refresh --
+  # The one supported way to open the egress window on a running stack
+  # (scripts/refresh.sh). Same tooling image as `demos` -- bash, curl, python3
+  # and the Docker CLI -- and built by the same `make stage`.
+  #
+  # It needs the Docker socket for exactly two calls, `docker network connect`
+  # and `docker network disconnect` on the ingestor container, plus the
+  # `compose exec` that runs the fetch. It has NO route out itself: the
+  # forecast is fetched by the ingestor, through the window this opens and
+  # then verifies closed again.
+  refresh:
+    build:
+      context: demos
+      dockerfile: Dockerfile
+    image: aow/demos:dev
+    mem_limit: 256m
+    working_dir: /work
+    entrypoint: ["bash", "/work/scripts/refresh.sh"]
+    environment:
+      API: http://edge:8000
+      COMPOSE_PROJECT_NAME: aow
+      # Seconds to wait for the refreshed days to reach Postgres before the
+      # command reports what is still in flight.
+      REFRESH_WAIT_S: ${REFRESH_WAIT_S:-180}
+      # Set to refresh from an internal mirror instead of the public API.
+      OPEN_METEO_URL: ${OPEN_METEO_URL:-}
+    volumes:
       - .:/work
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [backend]
