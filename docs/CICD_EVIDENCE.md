@@ -121,12 +121,12 @@ would keep asserting a setting nobody checked.
 | | What it proves | Where |
 |---|---|---|
 | **no-pull** | the bundle boots from its own bytes without pulling | `release.yml`, on a hosted runner that has internet throughout |
-| **cannot-pull** | the bundle installs and runs on a separate engine with an empty image store and no reachable egress, verified from inside a container | a separate host, **manual** |
+| **cannot-pull** | the bundle installs and runs on a separate engine with an empty image store and no reachable egress, verified from inside a container | a separate engine, **manual** |
 
 The second is the stronger claim and it catches a defect class the first cannot: the
 no-pull check would have **passed the broken bundle described in §6**, because the
 packaging run's own `docker pull` left the layers in the runner's store. A same-host
-install cannot detect that even in principle. The air-gap certification is manual by
+install cannot detect that even in principle. The air-gap check is manual by
 construction — a hosted runner cannot be made to lack a network it is using — and stays
 described as a manual operator step rather than dressed up as a gate.
 
