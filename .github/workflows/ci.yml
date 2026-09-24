@@ -57,10 +57,15 @@ jobs:
           fi
           echo "clean: the only model client is services/common/llm.py -> llm:8080"
 
-      - name: No .env committed, and .env.example has no real secret
+      - name: No env files committed, and .env.example has no real secret
         run: |
-          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
-            echo "::error::.env is tracked by git"; exit 1
+          # Check every tracked path, including numbered or nested env files.
+          # Do not print offending paths: an env filename may itself reveal
+          # deployment details, and the contents must never reach CI logs.
+          if git ls-files -z | python -c 'import pathlib, sys; paths = (pathlib.PurePosixPath(p.decode()).name for p in sys.stdin.buffer.read().split(b"\0") if p); sys.exit(any(name == ".env" or (name.startswith(".env.") and name != ".env.example") for name in paths))'; then
+            :
+          else
+            echo "::error::a non-example env file is tracked by git"; exit 1
           fi
           test -f .env.example || { echo "::error::.env.example is missing"; exit 1; }
           # Password fields are placeholders; non-secret tuning values (for

@@ -4,6 +4,8 @@ CLAUDE.md
 
 # Secrets
 .env
+.env.*
+!.env.example
 
 # Staged artefacts: fetched by `make stage`, never committed
 models/
