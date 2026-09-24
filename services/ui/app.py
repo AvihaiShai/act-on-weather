@@ -588,6 +588,15 @@ def render_day(day: dict) -> None:
 
         for event in day["events"]:
             venue = f", {event['venue']}" if event["venue"] else ""
+            # A run that spans days says so on each of them, so the same line
+            # appearing three times reads as one tournament rather than three
+            # separate fixtures.
+            run = (
+                f" \N{MIDDLE DOT} day {event['day_index']} of {event['day_count']}"
+                f" ({event['starts_on']} to {event['ends_on']})"
+                if event.get("day_count", 1) > 1
+                else ""
+            )
             if event["is_sample"]:
                 # A sample has no listing to link to, because there is no
                 # listing -- the URL is the Wikidata entry for the real venue
@@ -596,7 +605,7 @@ def render_day(day: dict) -> None:
                 # thoroughly labelled row.
                 st.markdown(
                     f"Event: {escape(event['title'])} "
-                    f"({event['category']}{venue}) "
+                    f"({event['category']}{venue}){run} "
                     f'<span class="aow-sample">sample</span> '
                     f"\N{MIDDLE DOT} [venue reference]({event['source_url']})",
                     unsafe_allow_html=True,
@@ -604,7 +613,7 @@ def render_day(day: dict) -> None:
             else:
                 st.markdown(
                     f"Event: [{event['title']}]({event['source_url']}) "
-                    f"({event['category']}{venue})",
+                    f"({event['category']}{venue}){run}",
                     unsafe_allow_html=True,
                 )
 

@@ -77,13 +77,17 @@ def place(name, category):
     }
 
 
-def event(event_id, title, category, day, venue="The O2 arena"):
+def event(event_id, title, category, day, venue="The O2 arena", last_day=None):
+    """Shaped like a `queries.events` row, local dates included (F2)."""
     return {
         "id": event_id,
         "title": title,
         "category": category,
         "venue": venue,
         "starts_at": datetime(day.year, day.month, day.day, 19, tzinfo=UTC),
+        "timezone": "Europe/London",
+        "starts_on": day,
+        "ends_on": last_day or day,
         "is_sample": False,
         "source": "The O2 arena official event listing",
     }

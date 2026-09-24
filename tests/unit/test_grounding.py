@@ -53,13 +53,22 @@ def place(name, category, is_sample=False):
     }
 
 
-def event(event_id, title, category, day, venue="The O2 arena", is_sample=False):
+def event(event_id, title, category, day, venue="The O2 arena", is_sample=False, last_day=None):
+    """A row shaped the way `queries.events` returns one.
+
+    `starts_on`/`ends_on` are the city-local dates the query derives (F2), so
+    the fixture cannot drift into a shape the database never produces. Pass
+    `last_day` for an event that runs across several days.
+    """
     return {
         "id": event_id,
         "title": title,
         "category": category,
         "venue": venue,
         "starts_at": datetime(day.year, day.month, day.day, 19, tzinfo=UTC),
+        "timezone": "Europe/London",
+        "starts_on": day,
+        "ends_on": last_day or day,
         "is_sample": is_sample,
         "source": "The O2 arena official event listing",
     }
@@ -157,7 +166,8 @@ def test_the_router_filters_events_by_the_requested_kind(monkeypatch):
 
     def events(_conn, _city, *, start=None, end=None, categories=None, **_kwargs):
         asked["categories"] = categories
-        rows = [r for r in stored if start <= r["starts_at"].date() <= end]
+        # Overlap on local dates, the way the real query filters (F2).
+        rows = [r for r in stored if r["ends_on"] >= start and r["starts_on"] <= end]
         if categories:
             rows = [r for r in rows if r["category"] in categories]
         return rows

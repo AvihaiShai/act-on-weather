@@ -286,9 +286,14 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
 
     places = queries.places(conn, body.city, categories=categories or None, limit=60)
     events = queries.events(conn, body.city, start=covered[0], end=covered[-1], limit=40)
+    # Keyed by the city's local date, and a multi-day event is filed under
+    # every day it runs (queries.event_days). Keying by `starts_at.date()` put
+    # the Laver Cup, which opens at local midnight on the 25th, on the 24th and
+    # showed it on none of its other two days -- F2.
     events_by_day: dict[str, list[dict[str, Any]]] = {}
     for row in events:
-        events_by_day.setdefault(str(row["starts_at"].date()), []).append(row)
+        for day in queries.event_days(row):
+            events_by_day.setdefault(day.isoformat(), []).append(row)
 
     meta = _activity_meta()
     wanted_interests = {i.lower().replace(" ", "_") for i in body.interests}
@@ -346,6 +351,10 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
                     }
                     for p in picks
                 ],
+                # `starts_on`/`ends_on` travel with the row so the UI can say
+                # "day 2 of 3" instead of repeating an undated line three
+                # times, and so nothing downstream re-derives the day from the
+                # UTC instant.
                 "events": [
                     {
                         "id": e["id"],
@@ -353,6 +362,10 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
                         "category": e["category"],
                         "venue": e["venue"],
                         "starts_at": e["starts_at"].isoformat(),
+                        "starts_on": e["starts_on"].isoformat(),
+                        "ends_on": e["ends_on"].isoformat(),
+                        "day_index": (day - e["starts_on"]).days + 1,
+                        "day_count": (e["ends_on"] - e["starts_on"]).days + 1,
                         "source_url": e["source_url"],
                         "is_sample": e["is_sample"],
                     }
