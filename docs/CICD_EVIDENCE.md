@@ -162,6 +162,18 @@ downloaded and checked for its 12 distinct gates, exact successful push CI run
 its own SHA256SUMS entry. The live protection read again returned HTTP 403
 and is recorded as unverified.
 
+After PR #44 extended the pinning guard to `.yaml` files, release
+[`36058384682`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36058384682)
+targeted merged commit `5bb498f` and its green push CI run `36057664448`.
+Staging, bundle verification, no-pull install, and the API, forecast, scores,
+agent, model, UI and edge smoke all passed; disk free was **86 GB before
+packaging and 78 GB after packaging and install**. The downloaded promotion
+artifact has 12 distinct gates, a model digest matching `models.lock` and the
+bundle checksum, all 10 image aliases matching the bundle lock, and a
+`SHA256SUMS` entry sealing the record. It contains proof manifests, not the
+multi-gigabyte bundle. Branch protection remains explicitly unverified in
+the record because the live read returned HTTP 403.
+
 ### The two install claims are not the same claim
 
 | | What it proves | Where |
