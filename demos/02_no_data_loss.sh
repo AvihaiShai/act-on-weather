@@ -2,7 +2,7 @@
 #
 # M11: no data loss under temporary failure.
 #
-# Three drills, each one following a single accepted message_id to its terminal
+# Four drills, each one following a single accepted message_id to its terminal
 # state. Row counts are deliberately NOT the assertion -- a lost record and a
 # duplicated one cancel out in a count, and the guarantee is about a specific
 # record, so a specific record is what gets traced.
@@ -18,11 +18,15 @@
 #   never accepted -- weather that was never fetched can be re-fetched while
 #   connected, which the README says plainly.
 #
-# Drill 2 (database down) was cut for time; drills 1, 3 and 4 remain, and each
-# exercises a different link in the chain.
-
 source "$(dirname "$0")/lib.sh"
 FAILED=0
+db_down=0
+restore_db() {
+  if [ "$db_down" -eq 1 ]; then
+    dc start postgres >/dev/null 2>&1 || true
+  fi
+}
+trap restore_db EXIT
 
 hr "Setting the scene"
 note "queue depth:   $(queue_depth aow.ingest)"
@@ -51,6 +55,49 @@ else
   fail "the record never reached the database"
 fi
 note "trace: $(trace "$MID1")"
+
+# ---------------------------------------------------------------------------
+hr "Drill 2 -- the database dies while a record is accepted"
+note "The API accepts into its durable outbox while Postgres is unavailable."
+DAY2=$(psql_q 'SELECT min(forecast_date) FROM weather_daily')
+dc stop postgres >/dev/null 2>&1
+db_down=1
+note "postgres stopped"
+
+MID2=$(curl -fsS -X POST "$API/recommendations" -H 'Content-Type: application/json' \
+  -d '{"city":"rome","forecast_date":"'"$DAY2"'","activity":"drill two database outage"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["message_id"])')
+note "accepted with the database down: $MID2"
+dc exec -T api python -c "
+from services.common import config
+from services.common.outbox import Outbox
+row = Outbox(config.OUTBOX_PATH).status_of('$MID2')
+assert row is not None, 'accepted ID missing from durable outbox'
+print('   durable outbox row:', row['message_id'])
+"
+
+dc start postgres >/dev/null 2>&1
+db_down=0
+note "postgres restarted; waiting for the same ID to commit"
+if wait_stored "$MID2" 120; then
+  pass "the accepted record stored after the database came back"
+else
+  fail "the accepted record never reached the database"
+fi
+# Read from a fresh psql session, then restart the consumer and read again.
+# This catches an ACK following a savepoint release instead of a real commit.
+if [ "$(psql_q "SELECT count(*) FROM ingest_log WHERE message_id = '$MID2'")" = 1 ]; then
+  pass "a separate database session sees the committed ID"
+else
+  fail "the ID is not committed for a separate reader"
+fi
+dc restart consumer >/dev/null 2>&1
+if [ "$(psql_q "SELECT count(*) FROM ingest_log WHERE message_id = '$MID2'")" = 1 ]; then
+  pass "the ID survived consumer restart exactly once"
+else
+  fail "the ID was lost or duplicated after consumer restart"
+fi
+note "trace: $(trace "$MID2")"
 
 # ---------------------------------------------------------------------------
 hr "Drill 3 -- the broker dies while records are being accepted"
@@ -127,6 +174,7 @@ fi
 # ---------------------------------------------------------------------------
 hr "Where every traced record ended up"
 printf '   drill 1  %s\n' "$(trace "$MID1")"
+printf '   drill 2  %s\n' "$(trace "$MID2")"
 printf '   drill 3  %s\n' "$(trace "$MID3")"
 printf '   drill 4  %s\n' "$(trace_in ingestor "$MID4")"
 note ""

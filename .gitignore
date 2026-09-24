@@ -19,3 +19,13 @@ __pycache__/
 
 # Editor config (local only)
 .vscode/
+
+# Local review screenshots, produced by UI review sessions. Never part of the
+# submission; kept out so `git add -A` cannot ship one.
+review-*.png
+
+# Internal review write-ups. These belong in .private/ (HANDOFF §3.12); ignored
+# at the repo root as a backstop so `git add -A` cannot ship one into the
+# submission. Narrow paths, so a deliberate doc is never caught by accident.
+/DEVOPS_REVIEW.md
+/REVIEW_PLAN.md

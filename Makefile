@@ -5,8 +5,7 @@
 COMPOSE        ?= docker compose
 CONNECTED      := -f compose.yml -f compose.connected.yml
 DEMO           := -f compose.yml -f compose.demo.yml
-MODEL_FILE     := models/Qwen3-1.7B-Q4_K_M.gguf
-MODEL_URL      := https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf
+TOOLS          := -f compose.tools.yml
 
 .PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
         offline no-data-loss update reenrich questions refresh snapshot \
@@ -14,7 +13,7 @@ MODEL_URL      := https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3
 
 help:
 	@echo "Staging (needs the internet, once):"
-	@echo "  make stage          pull the pinned images, download the model, build the services"
+	@echo "  make stage          pull the pinned images, stage the model, build the services"
 	@echo ""
 	@echo "Running (no internet needed):"
 	@echo "  make up             start everything (7 verified events, no generated rows)"
@@ -25,7 +24,7 @@ help:
 	@echo "Proofs:"
 	@echo "  make test           unit tests, in a container, no network"
 	@echo "  make offline        M6  -- air-gapped operation"
-	@echo "  make no-data-loss   M11 -- consumer, broker and poison-message drills"
+	@echo "  make no-data-loss   M11 -- consumer, database, broker and poison-message drills"
 	@echo "  make update         M12 -- an edit through the queue, with history"
 	@echo "  make reenrich       the local model is not on the critical path"
 	@echo "  make questions      M7/M8 -- agent breadth, including what it refuses"
@@ -45,20 +44,22 @@ stage: stage-fetch stage-build
 	@echo ""
 	@echo "Staged. From here the stack needs no internet: make up"
 
+# These are the README's four staging commands, verbatim, so `make stage` and
+# the documented Docker-only path produce the same staged machine. The model
+# download and its checksum live in the `stage` container (compose.tools.yml),
+# not here: one implementation, and `make` itself needs no curl and no
+# sha256sum.
 stage-fetch:
 	@echo "Pulling the pinned images (~2.2 GB)..."
 	$(COMPOSE) pull --quiet postgres rabbitmq llm edge
-	@echo "Fetching the model (~1.2 GB) if it is not already here..."
-	@if [ -f $(MODEL_FILE) ]; then \
-	  echo "  $(MODEL_FILE) present"; \
-	else \
-	  mkdir -p models && curl -fL --progress-bar -o $(MODEL_FILE) "$(MODEL_URL)"; \
-	fi
-	@echo "Verifying the model against models.lock..."
-	@sha256sum -c models.lock
+	@echo "Staging the model (~1.2 GB) and verifying it against models.lock..."
+	$(COMPOSE) $(TOOLS) run --rm stage
 
+# The demos image is built here, while we are still connected, for the same
+# reason the services are: the proofs have to run after the network goes away.
 stage-build:
 	$(COMPOSE) build
+	$(COMPOSE) $(TOOLS) build demos
 
 # ---------------------------------------------------------------- running --
 up:
@@ -97,6 +98,10 @@ test:
 	docker run --rm aow/tests:dev
 
 # ------------------------------------------------------------------ demos --
+# A convenience for hosts that have bash. The portable form -- what the README
+# documents, and what a Windows reviewer runs -- is
+#   docker compose -f compose.tools.yml run --rm demos <name>
+# and it executes these same scripts from this same working tree.
 offline:       ; bash demos/01_offline.sh
 no-data-loss:  ; bash demos/02_no_data_loss.sh
 update:        ; bash demos/03_update.sh

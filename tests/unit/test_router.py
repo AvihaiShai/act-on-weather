@@ -183,36 +183,69 @@ def test_named_activity_keeps_all_seven_days_and_fallback_verdicts(monkeypatch):
     today = date(2026, 9, 24)
     monkeypatch.setattr(dates, "today_in", lambda _timezone: today)
     city = {
-        "id": "rome", "name": "Rome", "country": "Italy", "timezone": "Europe/Rome",
-        "aliases": [], "coastal": True,
+        "id": "rome",
+        "name": "Rome",
+        "country": "Italy",
+        "timezone": "Europe/Rome",
+        "aliases": [],
+        "coastal": True,
     }
     coverage = {
-        "cities": [city], "weather_first_date": "2026-09-24",
-        "weather_last_date": "2026-10-09", "weather_as_of": "2026-09-24",
+        "cities": [city],
+        "weather_first_date": "2026-09-24",
+        "weather_last_date": "2026-10-09",
+        "weather_as_of": "2026-09-24",
     }
     rows = []
     for offset in range(7):
         day = today + timedelta(days=offset)
-        rows.extend([
+        rows.append(
             {
-                "forecast_date": day, "activity": "beach_day",
-                "activity_label": "A day at the beach", "score": 95,
-                "band": "good", "text": None,
-            },
+                "forecast_date": day,
+                "activity": "beach_day",
+                "activity_label": "A day at the beach",
+                "score": 95,
+                "band": "good",
+                "text": None,
+            }
+        )
+        rows.extend(
             {
-                "forecast_date": day, "activity": "running",
-                "activity_label": "Running", "score": 55 + offset,
-                "band": "fair", "text": None,
-            },
-        ])
+                "forecast_date": day,
+                "activity": f"other_{number:02}",
+                "activity_label": f"Other {number}",
+                "score": 95,
+                "band": "good",
+                "text": None,
+            }
+            for number in range(16)
+        )
+        rows.append(
+            {
+                "forecast_date": day,
+                "activity": "running",
+                "activity_label": "Running",
+                "score": 55 + offset,
+                "band": "fair",
+                "text": None,
+            }
+        )
+    assert len(rows) == 7 * 18  # The original first-40 slice lost later days.
     monkeypatch.setattr(router.queries, "cities", lambda _conn: [city])
     monkeypatch.setattr(router.queries, "coverage", lambda _conn: coverage)
     monkeypatch.setattr(router.queries, "forecast", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(router.queries, "recommendations", lambda *_args, **_kwargs: rows)
+    queried_activities = []
+
+    def recommendations(_conn, _city, *, activity=None, **_kwargs):
+        queried_activities.append(activity)
+        return [row for row in rows if row["activity"] == activity] if activity else rows
+
+    monkeypatch.setattr(router.queries, "recommendations", recommendations)
     monkeypatch.setattr(router.queries, "events", lambda *_args, **_kwargs: [])
 
     result = router.Router(object()).retrieve("Is it a good week to go running in Rome?")
 
+    assert queried_activities == ["running"]
     assert result.resolution.activities == ["running"]
     assert len(result.recommendations) == 7
     assert {row["forecast_date"] for row in result.recommendations} == {
@@ -224,19 +257,16 @@ def test_named_activity_keeps_all_seven_days_and_fallback_verdicts(monkeypatch):
         day = str(today + timedelta(days=offset))
         assert f"{day} Running: fair ({55 + offset}/100)" in context
         assert f"{day}: Running is fair ({55 + offset}/100)" in fallback
+    assert "Other" not in context
+    assert "Other" not in fallback
     assert "beach" not in context.lower()
     assert "beach" not in fallback.lower()
-    assert not main.named_verdicts_present("Running looks good this week.", result)
-    assert not main.named_verdicts_present(fallback + " It is a good week overall.", result)
-    assert not main.named_verdicts_present(
-        fallback.replace("2026-09-30: Running is fair", "2026-09-30: Running is good"),
-        result,
-    )
-    assert main.named_verdicts_present(fallback, result)
 
     monkeypatch.setattr(main, "pool", type("StubPool", (), {"conn": object()})())
     monkeypatch.setattr(
-        main, "Router", lambda _conn: type("StubRouter", (), {"retrieve": lambda self, _q: result})()
+        main,
+        "Router",
+        lambda _conn: type("StubRouter", (), {"retrieve": lambda self, _q: result})(),
     )
 
     def unavailable(*_args, **_kwargs):
@@ -245,8 +275,12 @@ def test_named_activity_keeps_all_seven_days_and_fallback_verdicts(monkeypatch):
     monkeypatch.setattr(main.client, "chat_json", unavailable)
     response = main.ask(main.AskIn(question="Is it a good week to go running in Rome?"))
     assert response["llm_called"] is False
-    assert response["answer"] == fallback
+    assert response["answer"] == main.named_activity_answer(result)
     assert response["rows_used"]["recommendations"] == 7
+    assert "good week" not in response["answer"].lower()
+    for offset in range(7):
+        day = str(today + timedelta(days=offset))
+        assert f"{day}: Running is fair ({55 + offset}/100)" in response["answer"]
 
 
 def test_open_question_context_retains_each_date():
@@ -255,8 +289,11 @@ def test_open_question_context_retains_each_date():
     rows = [
         {
             "forecast_date": start + timedelta(days=offset),
-            "activity": f"activity_{number}", "activity_label": f"Activity {number}",
-            "score": 100 - number, "band": "good", "text": None,
+            "activity": f"activity_{number}",
+            "activity_label": f"Activity {number}",
+            "score": 100 - number,
+            "band": "good",
+            "text": None,
         }
         for offset in range(7)
         for number in range(18)

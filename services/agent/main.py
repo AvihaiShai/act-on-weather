@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from datetime import date
 from functools import lru_cache
 from typing import Any
@@ -128,6 +127,12 @@ def ask(body: AskIn) -> dict[str, Any]:
             llm_called=False,
         )
 
+    if result.resolution.activities:
+        # The small CPU model repeatedly turns seven "fair" daily scores into
+        # a "good week". Render named verdicts from their stored rows so every
+        # date, band and score survives without an invented overall verdict.
+        return respond(result, named_activity_answer(result), llm_called=False)
+
     try:
         parsed = client.chat_json(
             SYSTEM,
@@ -138,8 +143,6 @@ def ask(body: AskIn) -> dict[str, Any]:
         answer = str(parsed.get("answer", "")).strip()
         if len(answer) < 10:
             raise LlmInvalidOutput("answer too short")
-        if not named_verdicts_present(answer, result):
-            raise LlmInvalidOutput("named activity verdicts missing or inconsistent")
     except LlmUnavailable as exc:
         # The model is the phrasing layer, not the source of truth, so its
         # absence degrades the answer rather than failing the request.
@@ -202,43 +205,22 @@ def plain_answer(result: Retrieval) -> str:
     return "\n".join(lines)
 
 
-def named_verdicts_present(answer: str, result: Retrieval) -> bool:
-    """Accept model wording only if every named score survives in the answer.
-
-    A missing date or a changed band/score is more harmful than plain wording.
-    Split at ISO dates so a band from a different day cannot satisfy the check.
-    """
-    if not result.resolution.activities or not result.recommendations:
-        return True
-    chunks = re.split(r"(?=\b\d{4}-\d{2}-\d{2}\b)", answer.lower())
-    expected_by_day: dict[str, set[str]] = {}
+def named_activity_answer(result: Retrieval) -> str:
+    city = result.resolution.city["name"]
+    lines = [f"Stored suitability for the activities you asked about in {city}:"]
     for row in result.recommendations:
-        expected_by_day.setdefault(str(row["forecast_date"]), set()).add(row["band"])
-    if re.search(r"\b(good|fair|poor)\b", chunks[0]):
-        return False
-    for chunk in chunks[1:]:
-        day = chunk[:10]
-        mentioned_bands = set(re.findall(r"\b(good|fair|poor)\b", chunk))
-        if not mentioned_bands <= expected_by_day.get(day, set()):
-            return False
-    for row in result.recommendations:
-        day = str(row["forecast_date"])
-        matching = [chunk for chunk in chunks if chunk.startswith(day)]
-        if not any(
-            row["activity_label"].lower() in chunk
-            and re.search(rf"\b{re.escape(str(row['band']).lower())}\b", chunk)
-            and re.search(rf"\b{row['score']}\s*/\s*100\b", chunk)
-            for chunk in matching
-        ):
-            return False
-    return not (
-        len(expected_by_day) > 1
-        and re.search(
-            r"\b(?:good|fair|poor)\s+(?:week|period|trip)\b|"
-            r"\b(?:week|period|trip)\s+(?:is|looks|will be)\s+(?:good|fair|poor)\b",
-            answer.lower(),
+        lines.append(
+            f"- {row['forecast_date']}: {row['activity_label']} is "
+            f"{row['band']} ({row['score']}/100)."
         )
-    )
+    for activity in result.unscored_activities:
+        reason = ""
+        if _activity_meta().get(activity, {}).get(
+            "requires_coast"
+        ) and not result.resolution.city.get("coastal"):
+            reason = f"; {city} has no coast on record"
+        lines.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------- itinerary ----

@@ -278,7 +278,11 @@ class Router:
             result.forecast = queries.forecast(self.conn, city_id, start=start, end=end)
         if "activities" in resolution.intents or "weather" in resolution.intents:
             result.recommendations = queries.recommendations(
-                self.conn, city_id, start=start, end=end
+                self.conn,
+                city_id,
+                start=start,
+                end=end,
+                activity=resolution.activities[0] if len(resolution.activities) == 1 else None,
             )
             if resolution.activities:
                 # A named activity is the subject of the question, not one

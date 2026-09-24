@@ -104,7 +104,6 @@ sys.exit(0 if d["llm_called"] is False else 1)
 hr "Result"
 if [ "$FAILED" -eq 0 ]; then
   printf '\033[32mOffline operation demonstrated.\033[0m\n'
-  note "Re-run this with the host network adapter disabled for the full proof."
 else
   printf '\033[31mSomething failed -- see above.\033[0m\n'
 fi

@@ -1,0 +1,82 @@
+# Two one-shot tools, kept out of compose.yml on purpose.
+#
+# compose.yml is the running system, and a reviewer should be able to read it
+# as exactly that. Neither service below is part of the stack: `stage` runs
+# once while connected and exits, and `demos` runs a proof and exits. Keeping
+# them here means `docker compose up -d` cannot start them by accident, and
+# `docker compose ps` never shows them.
+#
+# Its own project name, so these containers never appear in, or interfere
+# with, the `aow` project. The `demos` service reaches the stack over the
+# already-existing aow_backend network and drives it through the Docker socket.
+name: aow-tools
+
+networks:
+  # Declared external: this file never creates or modifies the stack's
+  # networks, it only attaches to the one `docker compose up -d` made.
+  backend:
+    external: true
+    name: aow_backend
+
+services:
+  # ------------------------------------------------------------- staging --
+  # Downloads and verifies every artefact in models.lock. Connected step; run
+  # once. Replaces the per-OS curl/Invoke-WebRequest + sha256sum/Get-FileHash/
+  # shasum recipes with one implementation, and the checksum lives only in
+  # models.lock.
+  #
+  # No Docker socket. Pulling images and building the services are `docker`
+  # commands the operator runs directly, so the part that is not already a
+  # Docker command does not need, and does not get, control of the daemon.
+  #
+  # Runs as root because it writes into the ./models bind mount, whose
+  # ownership differs per host and per OS; a fixed non-root uid here would fail
+  # outright on a Linux host where ./models belongs to the invoking user.
+  stage:
+    image: python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+    mem_limit: 256m
+    working_dir: /work
+    environment:
+      # The one place the artefact location is configured. Override it in .env
+      # to stage from an internal mirror instead of the public internet.
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main}
+    volumes:
+      # Only models/ is writable. The lock file and the script are read-only,
+      # and the rest of the working tree is not mounted at all.
+      - ./models:/work/models
+      - ./models.lock:/work/models.lock:ro
+      - ./scripts/stage_model.py:/work/scripts/stage_model.py:ro
+    command: ["python", "scripts/stage_model.py", "models.lock"]
+
+  # --------------------------------------------------------------- proofs --
+  # Runs demos/*.sh on any OS. See demos/Dockerfile for why it exists.
+  #
+  # THIS CONTAINER MOUNTS THE DOCKER SOCKET, which is root-equivalent access to
+  # the host daemon. That is not incidental: the drills stop the consumer, stop
+  # the broker and restart the model server, so driving Docker *is* the proof.
+  # It is why this service is a deliberate, explicit `docker compose run` and
+  # never part of `up`, and why it is in this file rather than in compose.yml.
+  # Nothing in the running stack has the socket.
+  demos:
+    build:
+      context: demos
+      dockerfile: Dockerfile
+    image: aow/demos:dev
+    mem_limit: 256m
+    working_dir: /work
+    environment:
+      # The stack is reached over the internal network, through the same edge
+      # proxy the browser uses -- not through a published port, which would
+      # mean localhost, which inside a container is this container.
+      API: http://edge:8000
+      # Belt and braces. The nested `docker compose` calls in demos/lib.sh read
+      # /work/compose.yml, whose `name: aow` already selects the right project,
+      # but COMPOSE_PROJECT_NAME outranks that key -- so it is set explicitly
+      # rather than left to whatever the environment happens to hold.
+      COMPOSE_PROJECT_NAME: aow
+    volumes:
+      # The working tree, so the scripts, compose files and .env come from the
+      # checkout rather than from a stale image layer.
+      - .:/work
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [backend]

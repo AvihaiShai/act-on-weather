@@ -24,6 +24,7 @@ import os
 from datetime import date, datetime, timedelta
 from html import escape
 
+import forecast
 import pandas as pd
 import places_map
 import plotly.express as px
@@ -177,12 +178,21 @@ def page_forecast(cov) -> None:
         st.warning("No stored weather for that city.")
         return
 
-    frame = pd.DataFrame(rows)
+    city_info = next(item for item in cov["cities"] if item["id"] == city)
+    latest = forecast.next_row(rows, city_info["timezone"])
+    if latest is None:
+        last_day = max(row["forecast_date"] for row in rows)
+        st.warning(
+            f"No current forecast for {city_info['name']}. The stored forecast ended "
+            f"{last_day}; refresh while connected."
+        )
+        return
+
+    frame = pd.DataFrame(rows).sort_values("forecast_date")
     frame["forecast_date"] = pd.to_datetime(frame["forecast_date"])
 
-    latest = frame.iloc[0]
     columns = st.columns(4)
-    columns[0].metric("Next high", f"{latest['temp_max_c']:.0f}°C")
+    columns[0].metric(f"Next high · {latest['forecast_date']}", f"{latest['temp_max_c']:.0f}°C")
     columns[1].metric("Next low", f"{latest['temp_min_c']:.0f}°C")
     columns[2].metric("Rain", f"{latest['precip_mm']:.1f} mm")
     columns[3].metric("Wind", f"{latest['wind_kmh']:.0f} km/h")

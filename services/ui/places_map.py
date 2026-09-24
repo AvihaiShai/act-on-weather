@@ -164,9 +164,7 @@ def basemap(slug: str) -> Basemap:
         # an open way in an area layer would fill as a wedge across the city.
         if (geometry["type"] == "Polygon") != (layer in AREA_LAYERS):
             continue
-        rings = (
-            geometry["coordinates"] if layer in AREA_LAYERS else [geometry["coordinates"]]
-        )
+        rings = geometry["coordinates"] if layer in AREA_LAYERS else [geometry["coordinates"]]
         for ring in rings:
             layers.setdefault(layer, []).append(
                 tuple((float(lon), float(lat)) for lon, lat in ring)

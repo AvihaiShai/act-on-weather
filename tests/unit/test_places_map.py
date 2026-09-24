@@ -42,7 +42,9 @@ import places_map  # noqa: E402
 CITIES = yaml.safe_load((ROOT / "data" / "cities.yml").read_text(encoding="utf-8"))["cities"]
 SNAPSHOT_PLACES = [
     json.loads(line)
-    for line in (ROOT / "data" / "snapshot" / "places.jsonl").read_text(encoding="utf-8").splitlines()
+    for line in (ROOT / "data" / "snapshot" / "places.jsonl")
+    .read_text(encoding="utf-8")
+    .splitlines()
     if line.strip()
 ]
 
@@ -82,9 +84,9 @@ def test_an_inland_city_has_street_geometry_in_view(slug):
     """The failure this replaces: at a ~5 km view, Rome and London had zero
     coastline segments and no other geometry, so the panel was empty."""
     place, (x_range, y_range) = view_of(slug)
-    assert not places_map.coastline_xy(
-        float(place["lat"]), float(place["lon"]), x_range, y_range
-    )[0], f"{slug} unexpectedly has coastline in view -- this test is checking the wrong thing"
+    assert not places_map.coastline_xy(float(place["lat"]), float(place["lon"]), x_range, y_range)[
+        0
+    ], f"{slug} unexpectedly has coastline in view -- this test is checking the wrong thing"
 
     projected = places_map.basemap_xy(
         slug, float(place["lat"]), float(place["lon"]), x_range, y_range

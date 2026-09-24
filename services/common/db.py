@@ -23,6 +23,11 @@ def connect(dsn: str, *, autocommit: bool = False, max_wait: float = 30.0) -> ps
         try:
             conn = psycopg.connect(dsn, autocommit=autocommit, row_factory=dict_row)
             conn.execute("SET application_name = 'aow'")
+            # With autocommit=False, SET starts a transaction. The consumer's
+            # later `with conn.transaction()` would then be only a savepoint;
+            # it could ACK a message whose write was never committed.
+            if not autocommit:
+                conn.commit()
             return conn
         except psycopg.OperationalError as exc:
             log.warning("postgres unreachable (%s); retrying in %.0fs", exc, delay)

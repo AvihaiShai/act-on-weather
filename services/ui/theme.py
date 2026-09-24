@@ -281,16 +281,26 @@ def apply() -> None:
 
 def transparent(figure, height: int):
     """Make a Plotly figure sit on the glass instead of on its own white card."""
+    # Plotly widens a margin to fit tick labels on its own, but not to fit an
+    # axis *title*, so with margins this tight the right-hand title on the
+    # forecast chart's rain axis was clipped. automargin covers the titles;
+    # the wider right margin is the fallback if it ever stops doing so.
+    titled_right = any(axis.side == "right" and axis.title.text for axis in figure.select_yaxes())
+    right = 60 if titled_right else 10
     figure.update_layout(
         height=height,
-        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+        margin={"l": 10, "r": right, "t": 30, "b": 10},
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font={"color": "#141A2A"},
         legend={"orientation": "h", "y": 1.14, "bgcolor": "rgba(0,0,0,0)"},
     )
     figure.update_xaxes(gridcolor="rgba(20,26,42,0.08)", zerolinecolor="rgba(20,26,42,0.12)")
-    figure.update_yaxes(gridcolor="rgba(20,26,42,0.08)", zerolinecolor="rgba(20,26,42,0.12)")
+    figure.update_yaxes(
+        gridcolor="rgba(20,26,42,0.08)",
+        zerolinecolor="rgba(20,26,42,0.12)",
+        automargin=True,
+    )
     return figure
 
 

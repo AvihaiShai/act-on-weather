@@ -17,6 +17,7 @@ What this does not do is check that the fixture still matches the API. That is
 
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -34,6 +35,7 @@ FIXTURES = json.loads((ROOT / "tests" / "fixtures" / "ui_api.json").read_text(en
 if str(UI_DIR) not in sys.path:
     sys.path.insert(0, str(UI_DIR))
 
+import forecast  # noqa: E402
 
 # The seven tabs across the top of the app. `app.tabs` also returns the three
 # nested ones inside "Update data", so these are matched by label rather than
@@ -89,6 +91,7 @@ def _run(monkeypatch, *, offline=False) -> AppTest:
 
     monkeypatch.setattr(requests, "get", fake_get)
     monkeypatch.setattr(requests, "request", fake_request)
+    monkeypatch.setattr(forecast, "utc_now", lambda: datetime(2026, 9, 24, 12, tzinfo=UTC))
     # The app caches its reads, and the cache outlives a single AppTest run.
     st.cache_data.clear()
 
@@ -119,6 +122,20 @@ def test_the_places_map_renders_a_figure(app):
     """
     map_tab = next(tab for tab in app.tabs if "Places map" in tab.label)
     assert map_tab.get("plotly_chart"), "the places map rendered no figure"
+
+
+def test_forecast_card_shows_next_city_local_date(app):
+    card = next(metric for metric in app.metric if metric.label.startswith("Next high"))
+    assert card.label == "Next high · 2026-09-24"
+    assert card.value == "33°C"
+
+
+def test_expired_forecast_has_no_next_card(monkeypatch):
+    app = _run(monkeypatch)
+    monkeypatch.setattr(forecast, "utc_now", lambda: datetime(2026, 9, 30, 12, tzinfo=UTC))
+    app.run()
+    assert not any(metric.label.startswith("Next high") for metric in app.metric)
+    assert any("No current forecast" in warning.value for warning in app.warning)
 
 
 def test_the_as_of_stamp_is_in_the_header(app):

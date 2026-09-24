@@ -15,92 +15,107 @@ outside that window and the system says it has no forecast instead of guessing.
 
 ## Quick start
 
-You need **Docker Desktop** (Windows or macOS) or Docker Engine with the
-**Compose plugin** (Linux). Start Docker before running the commands below.
-Give Docker at least **8 GB of memory** and have several GB of free disk space.
-Use a terminal opened in this project's folder. The first setup needs internet
-to download container images, build the services, and download the local model.
+**The only thing you need on the host is Docker** — Docker Desktop on Windows
+or macOS, Docker Engine with the Compose plugin on Linux. No `make`, no `curl`,
+no `python`, nothing to install beyond that. Give Docker at least **8 GB of
+memory** and a few GB of free disk, and start it before you begin.
 
-### Windows (PowerShell)
+Everything below is one recipe. The commands are character-identical on
+Windows, macOS and Linux except the single line that creates `.env`. Run them
+in a terminal opened in this project's folder.
 
-1. Create your local settings file and open it in Notepad. If `.env` already
-   exists, skip `Copy-Item` so you keep your current settings:
+### 1. Settings
 
-   ```powershell
-   Copy-Item .env.example .env
-   notepad .env
-   ```
-
-   Replace **every** `change-me` in `.env` with a different password, save the
-   file, and close Notepad. Keep `.env` private.
-
-2. Download the images and model, then build the app. Run these commands in
-   the same PowerShell window:
-
-   ```powershell
-   docker compose pull postgres rabbitmq llm edge
-   New-Item -ItemType Directory -Force models | Out-Null
-   Invoke-WebRequest 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf' -OutFile 'models/Qwen3-1.7B-Q4_K_M.gguf'
-   if ((Get-FileHash 'models/Qwen3-1.7B-Q4_K_M.gguf' -Algorithm SHA256).Hash -ne 'd2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5') { throw 'Model download failed its checksum check' }
-   docker compose build
-   ```
-
-3. Start the app:
-
-   ```powershell
-   docker compose up -d
-   ```
-
-### Linux (terminal)
-
-Install `make`, `curl`, and `sha256sum` if needed. With Docker running:
+On Linux and macOS:
 
 ```sh
 cp .env.example .env
-nano .env
-make stage
-make up
 ```
 
-In the editor, replace every `change-me` with a different password, then save
-and exit (`Ctrl+O`, Enter, `Ctrl+X` in `nano`). If `.env` already exists, skip
-the `cp` command.
+On Windows, in PowerShell:
 
-### macOS (Terminal)
-
-With Docker Desktop running, create `.env` (skip `cp` if it already exists),
-then open it in TextEdit. Replace every `change-me` with a different password
-and save it.
-
-```sh
-cp .env.example .env
-open -e .env
+```powershell
+Copy-Item .env.example .env
 ```
 
-Then download and verify the model, build, and start:
+Then open `.env` in any editor, replace **every** `change-me` with a different
+password, and save. If `.env` already exists, skip the copy and keep it. The
+file is gitignored; keep it private.
+
+### 2. Stage it — once, with internet
 
 ```sh
 docker compose pull postgres rabbitmq llm edge
-mkdir -p models
-curl -fL --progress-bar -o models/Qwen3-1.7B-Q4_K_M.gguf 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf'
-shasum -a 256 -c models.lock
+docker compose -f compose.tools.yml run --rm stage
 docker compose build
+docker compose -f compose.tools.yml build demos
+```
+
+| | |
+|---|---|
+| `pull` | the four upstream images (~2.2 GB), every one pinned by digest |
+| `run --rm stage` | downloads the model (~1.2 GB) into `models/` and checks it against **`models.lock`** — the only place in this repository where its checksum is written. A model that is already staged is re-verified rather than re-fetched, so running this twice is safe and quick. |
+| `build` | the five Python services and the UI |
+| `build demos` | the proof runner, built now, while there is still a network, because the proofs have to work after it goes away |
+
+To stage from an internal mirror rather than the public internet, set
+`MODEL_BASE_URL` in `.env`. The checksum check is identical either way.
+
+### 3. Run it — no internet needed
+
+```sh
 docker compose up -d
 ```
 
 ### Open and stop the app
 
-Open **<http://localhost:8080>** in your browser. The API documentation is at
-<http://localhost:8000/docs>. The first start can take several minutes while
-the model loads and the saved data enters the database. Check progress with
-`docker compose ps`; an exited `migrate` container with code 0 is normal.
-If the page does not load after a few minutes, run
-`docker compose logs --tail 50` to see the startup messages.
+Open **<http://localhost:8080>**. The API documentation is at
+<http://localhost:8000/docs>. The first start takes several minutes while the
+model loads and the saved data enters the database. Check progress with
+`docker compose ps`; an exited `migrate` container with code 0 is normal. If
+the page does not load after a few minutes, run `docker compose logs --tail 50`
+to see the startup messages.
 
-To stop the app, run `docker compose down` (or `make down` on Linux). To run it
-again later, run `docker compose up -d`. These commands keep the database and
-queue data. Do not use `docker compose down -v` unless you intend to remove
-those saved volumes.
+Stop it with `docker compose down`, and start it again later with
+`docker compose up -d`. Both keep the database and queue data. Do not use
+`docker compose down -v` unless you mean to delete those volumes.
+
+### Shorthand
+
+`make` is a convenience for hosts that have it, and nothing requires it. Each
+target is the Docker command next to it, and the Docker command is what works
+everywhere:
+
+| shorthand | what it actually runs |
+|---|---|
+| `make stage` | the four staging commands above |
+| `make up` / `make down` | `docker compose up -d` / `docker compose down` |
+| `make up-demo` | `docker compose -f compose.yml -f compose.demo.yml up -d` |
+| `make test` | `docker build -q -f tests/Dockerfile -t aow/tests:dev .` then `docker run --rm aow/tests:dev` |
+| `make offline` | `docker compose -f compose.tools.yml run --rm demos offline` |
+| `make questions` | `… run --rm demos questions` |
+| `make no-data-loss` | `… run --rm demos no-data-loss` |
+| `make update` | `… run --rm demos update` |
+| `make reenrich` | `… run --rm demos reenrich` |
+| `make demo` | `… run --rm demos all` |
+| `make refresh` | `docker compose -f compose.yml -f compose.connected.yml up -d ingestor` then `docker compose exec ingestor python -m services.ingestor.refresh` |
+| `make snapshot` | `docker compose -f compose.yml -f compose.connected.yml run --rm --no-deps ingestor python -m services.ingestor.fetch_content` |
+
+Both forms run the same scripts from this same working tree — `demos/*.sh` is
+one implementation, and the container is only a shell to run it in. The stack
+must already be up; the proofs reach it over the internal network, through the
+same `edge` proxy the browser uses.
+
+**The `demos` container mounts the Docker socket**, which is root-equivalent
+access to the host's Docker daemon. That is deliberate and it is the point: the
+drills stop the consumer, stop the broker and restart the model server, so
+driving Docker *is* the proof. It is why the proof runner is a `docker compose
+run` you type on purpose and never part of `up`, and why it lives in
+`compose.tools.yml` rather than in `compose.yml`. Nothing in the running stack
+has the socket. If you would rather not grant it, run the same scripts directly
+on a host with bash: `bash demos/01_offline.sh`.
+
+### Demo mode
 
 A default run stores the **seven hand-verified events**, all of them in London,
 and answers "none on record" for the other four cities. To see the trip planner
@@ -112,15 +127,14 @@ docker compose -f compose.yml -f compose.demo.yml up -d
 
 Demo mode adds 45 **generated sample events**, labelled wherever they appear.
 The UI also shows a demo banner. Run `docker compose up -d` to return to
-verified events only; the generated events are removed from the database.
-On Linux, `make up-demo` and `make up` are shortcuts for those two commands. The
+verified events only; the generated events are removed from the database. The
 section
 [Events: verified, and generated](#events-verified-and-generated) says exactly
 what they are and why they exist.
 
-The saved data is included in `data/snapshot/`. Once setup has downloaded the
-images and model, a normal run needs no internet. A fresh clone alone is **not**
-ready for offline use because the images and model are not included in Git.
+The saved data is included in `data/snapshot/`. Once staging has downloaded the
+images and the model, a normal run needs no internet. A fresh clone alone is
+**not** ready for offline use, because the images and the model are not in Git.
 
 ---
 
@@ -194,12 +208,12 @@ rather than 18, and **no surfing row at all**. A score for surf derived from an
 inland forecast is a number the system cannot stand behind.
 
 The agent enforces the same boundary. It matches the activity a question names
-against the `keywords` in `data/activities.yml`, and any named activity with no
-stored row for that city is put in front of the model as `NOT ON RECORD`. This
-is not belt-and-braces: asked *"is it a good day for surfing in London?"* with
-no surfing row in front of it, the model does not stay silent — it invents a
-weather-based reason why the surf is poor. The gate is what turns that into
-*"no record of surfing in London — there is no coast there."*
+against the `keywords` in `data/activities.yml` and renders the stored daily
+scores directly. An unscored activity is reported as having no score on record;
+for coastal activities in inland cities, it also says why. This avoids a
+misleading overall verdict from the small model: in a live seven-day running
+question, it called a week with seven `fair` scores a “good week.” Open-ended
+questions still use the local model to phrase the retrieved data.
 
 ### What gets worded, and what does not
 
@@ -328,10 +342,10 @@ guarantee here and the code does not pretend otherwise.
 **Proof, not assertion:**
 
 ```sh
-make no-data-loss
+docker compose -f compose.tools.yml run --rm demos no-data-loss
 ```
 
-Three drills — consumer down, broker down, poison message. Each one follows a
+Four drills — consumer down, database down, broker down and poison message. Each follows a
 **single accepted `message_id`** to its terminal state. Row counts are
 deliberately not the assertion: a loss and a duplicate cancel out in a count.
 
@@ -345,7 +359,7 @@ deliberately not the assertion: a loss and a duplicate cancel out in a count.
 | **RabbitMQ**, quorum queues | per-message ack after DB commit, a real DLX, and `x-delivery-limit` are exactly the primitives M11 needs, with the smallest operational surface | **Kafka/Redpanda** — offset-based, so per-message quarantine needs machinery; heavier for one node. **Redis Streams** — durability story is weaker and harder to defend |
 | **Outbox before the broker** | publisher confirms alone cannot help if the broker is *unreachable*. The outbox is what makes "the broker is down" a delay rather than a loss | **confirms only** — leaves a window where an accepted record exists nowhere durable |
 | **Deterministic score, model phrases it** | the verdict is reproducible, testable and defensible; a model outage degrades the wording, never the content | **LLM decides suitability** — unrepeatable, untestable, and it would put a 1.7B model on the critical path |
-| **Router-first agent** | city, dates and coverage resolved in readable code; one model call to phrase retrieved rows. E1 answers in ~5 s | **model tool-calling** — 3–4 sequential generations on CPU (30–90 s), non-deterministic in front of a reviewer, and silent when it goes wrong |
+| **Router-first agent** | city, dates and coverage resolved in readable code; at most one model call to phrase retrieved rows. E1 answers in ~5 s | **model tool-calling** — 3–4 sequential generations on CPU (30–90 s), non-deterministic in front of a reviewer, and silent when it goes wrong |
 | **Qwen3-1.7B Q4_K_M** | runs on CPU at ~1.2 s per call, Apache-2.0, 1.2 GB on disk, reliable under a JSON-schema grammar | a 3–4 B model — better prose, but 3–4× the latency on the reviewer's likely CPU-only machine |
 | **Streamlit** | seven working tabs in the time a hand-written SPA would take to scaffold, and it bundles its own assets, so it works offline | a React SPA — more polish, but the brief weighs the pipeline more heavily |
 | **Docker Compose** | one command, identical on Linux, macOS and Windows | Kubernetes — the production path, described below, not the demo path |
@@ -359,7 +373,7 @@ content: measured 4.2 s and no answer, versus 1.2 s and a clean one.
 ## Offline operation, and its limits
 
 ```sh
-make offline
+docker compose -f compose.tools.yml run --rm demos offline
 ```
 
 That script proves four things structurally — `aow_backend` really is
@@ -475,7 +489,8 @@ Three paths, two of which work offline:
 
 1. **A correction** — `PATCH /records/{entity}/{id}` → 202 + a `message_id` →
    queue → consumer → `revision + 1` and a `record_history` row. Works offline.
-   `make update` demonstrates it end to end.
+   `docker compose -f compose.tools.yml run --rm demos update` demonstrates it
+   end to end.
 2. **A connected refresh** — re-fetches the forecast and moves the coverage
    window forward. Needs an internet connection.
 3. **Re-enrichment** — `POST /reenrich` → 202 → queue → consumer flips the
@@ -484,7 +499,8 @@ Three paths, two of which work offline:
    refresh changes them. Set `include_deferred` to pull in the activities the
    consumer ranked out of the wording queue. Works offline. This also happens
    on its own whenever a refresh changes the weather behind a row.
-   `make reenrich` demonstrates it, including a full model outage.
+   `docker compose -f compose.tools.yml run --rm demos reenrich` demonstrates
+   it, including a full model outage.
 
 All three are on the **Update data** tab in the UI, which is where a reviewer
 should look first: it names each path, says which work air-gapped, and shows
@@ -500,7 +516,7 @@ docker compose exec ingestor python -m services.ingestor.refresh
 docker compose up -d ingestor
 ```
 
-On Linux, `make refresh` runs the first two commands.
+`make refresh` is the shorthand for the first two commands.
 
 A user edit is accepted, not applied: `202`, never `200`. The UI says so too.
 There is exactly one write path into this database.
@@ -517,6 +533,10 @@ There is exactly one write path into this database.
   enricher) may only `SELECT`. Enforced by grants, not convention.
 * Secrets live only in a gitignored `.env`; `.env.example` is committed.
 * Only 8080 and 8000 are published.
+* **No container in the running stack can reach the Docker socket.** The one
+  container that mounts it is the proof runner in `compose.tools.yml`, which
+  exists only while a drill is running and is never started by `up` — see
+  [Shorthand](#shorthand) for why it needs the daemon and how to avoid it.
 * CI runs blocking **Trivy** (`HIGH,CRITICAL`) on both images and the filesystem,
   **gitleaks**, and a guard that fails the build if a hosted-model SDK or
   endpoint ever appears in the source.
@@ -526,8 +546,13 @@ There is exactly one write path into this database.
 ## Tests and CI
 
 ```sh
-make test     # unit tests in a container; CI runs that container with --network none
+docker build -q -f tests/Dockerfile -t aow/tests:dev .
+docker run --rm aow/tests:dev
 ```
+
+Dependencies are baked into that image at build time, so the run itself makes
+no network call; CI runs the same container with `--network none`. `make test`
+is the shorthand.
 
 Unit tests cover the rule engine's truth table (including that indoor
 activities really are scored as the inverse of outdoor ones), envelope
@@ -541,9 +566,12 @@ CI (`.github/workflows/ci.yml`) runs lint, unit tests and guards, then builds
 the service and UI images once, scans them and the repository, and runs a fresh
 Compose integration test against those images. That test checks snapshot →
 RabbitMQ → Postgres → API, stored suitability scores, and a correction through
-the outbox and queue into the audit history. It uses a separate Compose project
-and removes its temporary volumes afterward. CI has the internet; the runtime
-does not. The guard job enforces the offline model boundary.
+the outbox and queue into the audit history. It also accepts a record while
+Postgres is stopped, verifies its commit through a separate reader after
+recovery, and checks it survives a consumer restart exactly once. It uses a
+separate Compose project and removes its temporary volumes afterward. CI has
+the internet; the runtime does not. The guard job enforces the offline model
+boundary.
 
 On a push to `main`, **only after those gates pass**, CI publishes the same
 tested images to GHCR with a `sha-<commit>` tag. Its `aow-images-<commit>` run
@@ -586,6 +614,18 @@ new release fails, run the previous folder's installer to restore its images.
 A database schema change may require restoring the matching backup too; an
 image rollback alone cannot undo a migration.
 
+**Two different offline claims, kept apart.** A machine that has completed
+[staging](#2-stage-it--once-with-internet) runs the whole system *and* every
+proof with the network off, because staging built the proof runner too. The
+transport folder is narrower: `images.tar` holds the six runtime images only.
+The `stage` and `demos` tool images are **not** in it. The demo scripts
+themselves travel with the folder, so on a bundle-installed host they run if
+that host has `bash`, `curl` and `python3` — which is the per-OS dependency
+this whole section exists to avoid. Putting those two images in the release
+would fix it; that is a change to `scripts/package-offline.sh` which has not
+been made or verified here, and the release path itself has not yet been run
+end to end.
+
 ---
 
 ## Requirements traceability
@@ -596,37 +636,57 @@ you can run.
 | ID | Requirement | Where it lives | Verify |
 |---|---|---|---|
 | M1 | Weather for five cities from an external API | `services/ingestor/providers.py` (Open-Meteo), `data/cities.yml` | `curl localhost:8000/coverage` → 80 rows, 5 cities |
-| M2 | LLM recommendation: is the weather suitable for the activity | `common/rules.py` scores it, `services/enricher/` words it; free-text via `POST /recommendations` | `make reenrich`; the Suitability page |
-| M3 | Local open-weights LLM, no external API | `llm` (llama.cpp + Qwen3-1.7B), `common/llm.py` is the only client | `make offline` §3 |
-| M4 | All collected data → queue → database | outbox → `aow.events` → consumer; consumer is the only writer | `make no-data-loss`; `psql` grants |
-| M5 | Containerized, one uniform way to run | `compose.yml`, `Makefile` | `docker compose up -d` |
-| M6 | Runs on-prem without full internet | `backend` is `internal: true`; committed snapshot | `make offline`, ideally with the host NIC down |
-| M7 | Agent answering varied questions from stored data | `services/agent/` | `make questions` |
-| M8 | Tourism: history, places, sports events | `facts`, `places`, `events` tables | `make questions` (Lisbon history, London sports) |
+| M2 | LLM recommendation: is the weather suitable for the activity | `common/rules.py` scores it, `services/enricher/` words it; free-text via `POST /recommendations` | `docker compose -f compose.tools.yml run --rm demos reenrich`; the Suitability page |
+| M3 | Local open-weights LLM, no external API | `llm` (llama.cpp + Qwen3-1.7B), `common/llm.py` is the only client | `docker compose -f compose.tools.yml run --rm demos offline` §3 |
+| M4 | All collected data → queue → database | outbox → `aow.events` → consumer; consumer is the only writer | `docker compose -f compose.tools.yml run --rm demos no-data-loss`; `psql` grants |
+| M5 | Containerized, one uniform way to run | `compose.yml` runs it; `compose.tools.yml` stages it and runs the proofs. One quick start, the same commands on Windows, macOS and Linux, with Docker as the only host dependency; `Makefile` is a shorthand and is required by nothing | the [Quick start](#quick-start), ending in `docker compose up -d` |
+| M6 | Runs on-prem without full internet | `backend` is `internal: true`; committed snapshot | `docker compose -f compose.tools.yml run --rm demos offline`, ideally with the host NIC down |
+| M7 | Agent answering varied questions from stored data | `services/agent/` | `docker compose -f compose.tools.yml run --rm demos questions` |
+| M8 | Tourism: history, places, sports events | `facts`, `places`, `events` tables | `docker compose -f compose.tools.yml run --rm demos questions` (Lisbon history, London sports) |
 | M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build and save a plan in the UI |
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
-| M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `make no-data-loss` |
-| M12 | Update stored information | `PATCH /records/...`, `make refresh`, re-enrichment | `make update` |
+| M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `docker compose -f compose.tools.yml run --rm demos no-data-loss` |
+| M12 | Update stored information | `PATCH /records/...`, a connected refresh, re-enrichment | `docker compose -f compose.tools.yml run --rm demos update` |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`, `scripts/package-offline.sh`, `scripts/install-offline.sh` | `gh run list`; offline release installer |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `make test`; CI integration job |
+| B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |
 | B2 | LLM observability metrics | **not attempted** — `llm` exposes llama.cpp's own `--metrics`, unscraped | — |
-| B3 | Automatic recovery from failures | **partial, and not as a bonus feature** — reconnect-with-backoff everywhere, `restart: unless-stopped`, healthchecks, automatic re-enrichment | `make reenrich`, `make no-data-loss` |
+| B3 | Automatic recovery from failures | **partial, and not as a bonus feature** — reconnect-with-backoff everywhere, `restart: unless-stopped`, healthchecks, automatic re-enrichment | `docker compose -f compose.tools.yml run --rm demos reenrich`, then `… demos no-data-loss` |
 
 ---
 
 ## Reproducing every claim in this file
 
+Every proof runs the same way on every operating system, against a stack that
+is already up:
+
 ```sh
-make test           # unit tests in a container
-make offline        # M6  — air-gapped operation, and the no-guessing rule
-make questions      # M7/M8 — agent breadth, including what it refuses
-make no-data-loss   # M11 — three drills, each tracing one accepted message_id
-make update         # M12 — an edit through the queue, with its history
-make reenrich       # the model is a presentation layer, not a dependency
+docker compose -f compose.tools.yml run --rm demos offline       # M6
+docker compose -f compose.tools.yml run --rm demos questions     # M7/M8
+docker compose -f compose.tools.yml run --rm demos no-data-loss  # M11
+docker compose -f compose.tools.yml run --rm demos update        # M12
+docker compose -f compose.tools.yml run --rm demos reenrich      # the model is not a dependency
+docker compose -f compose.tools.yml run --rm demos all           # all of them, in order
 ```
 
-Or `make demo` for all of them, in order.
+| | |
+|---|---|
+| `offline` | air-gapped operation, and the no-guessing rule |
+| `questions` | agent breadth, including what it refuses |
+| `no-data-loss` | four drills, each tracing one accepted `message_id` |
+| `update` | an edit through the queue, with its history |
+| `reenrich` | the local model is a presentation layer, not a dependency |
+
+The unit tests need no stack and no network:
+
+```sh
+docker build -q -f tests/Dockerfile -t aow/tests:dev .
+docker run --rm aow/tests:dev
+```
+
+`make offline`, `make demo`, `make test` and the rest are shorthands for these;
+see [Shorthand](#shorthand). The proof runner mounts the Docker socket, for the
+reason given there.
 
 ---
 
@@ -635,10 +695,8 @@ Or `make demo` for all of them, in order.
 Stated, not implied:
 
 * **Single-replica broker and database.** Fine for this; not an HA design.
-* **The guarantee is demonstrated by three drills, not by per-message
+* **The guarantee is demonstrated by four drills, not by per-message
   accounting.** There is no reconciler proving every enrichment was delivered.
-* **Drill 2 (database down) was cut for time.** The reconnect path it would
-  exercise is in `services/common/db.py` and is used by every service.
 * **The enricher polls** rather than binding to the weather stream. That is a
   deliberate trade: no second delivery branch means no silent partial fan-out.
 * **A user-entered activity is scored against general outdoor comfort**, not a
@@ -670,6 +728,17 @@ Stated, not implied:
 * **`edge` is the one container on a routable network**, by necessity.
 * **The CSP carries `'unsafe-inline'` and `'unsafe-eval'`** because Streamlit's
   bundle requires them. Noted rather than quietly included.
+* **The offline release scripts are Linux/amd64 only.**
+  `scripts/package-offline.sh` and `scripts/install-offline.sh` refuse to run
+  on any other architecture and need `bash` and `sha256sum` on the host, so
+  they are unavailable on Windows and on Apple Silicon. They have also not been
+  run end to end. The quick start and the proofs have no such restriction; this
+  applies only to building and installing the transport folder, and the
+  [production path](#production-path-kubernetes--openshift) below is the answer
+  for a real on-prem install.
+* **The proof runner holds the Docker socket** while a drill runs. It is a
+  deliberate, explicit invocation and nothing in the running stack has the
+  socket, but it is real host access and is named here rather than buried.
 * **The bonus items (B1–B3) are partial**: CI covers the queue/database/API
   integration path, but not the full model and UI flows. There is no
   Prometheus/Grafana stack; `llm` exposes llama.cpp's own `--metrics`.
@@ -678,22 +747,44 @@ Stated, not implied:
 
 ## Production path (Kubernetes / OpenShift)
 
-This runs on Compose because that is the right shape for a reviewable
-take-home. What would change:
+**Compose is the demo vehicle, not the shipping mechanism.** It is here because
+one `docker compose up -d` on the reviewer's own laptop is the most honest way
+to show that this works, and because it is the same stack on every OS. It is
+not what I would deploy.
+
+**The shipping unit is images in an internal registry.** Nothing is built on
+the target and nothing is pulled from the public internet:
+
+* CI publishes the tested, scanned images by digest. A connected mirror host
+  copies those digests, and the pinned upstream ones, into the internal
+  registry — `skopeo copy --all docker://ghcr.io/…@sha256:…
+  docker://harbor.internal/aow/…`, or `oc mirror` with an ImageSetConfiguration
+  on OpenShift, which also writes the `ImageDigestMirrorSet` that redirects
+  every pull at the cluster.
+* The model is not an image. It goes into the registry as an OCI artefact, or
+  onto a PVC seeded by a Job, verified against `models.lock` either way — the
+  same check the `stage` container runs here.
+* **A Helm chart** is the deployable: one values file per environment, image
+  digests as values so a rollback is a value change, and the schema migration
+  as a `pre-install`/`pre-upgrade` hook Job.
+* **A default-deny egress `NetworkPolicy`** on the namespace is the real
+  version of `internal: true`, with one explicit allow for the ingestor during
+  a scheduled refresh, and one for DNS.
+
+That path needs a registry, a chart repository and cluster access to
+demonstrate, none of which a take-home reviewer has. What is demonstrable here
+is the property underneath it — digest pinning, checksum verification, and a
+runtime with no route out — and that is what the proofs exercise.
+
+The rest of what would change:
 
 * **Postgres** via an operator (CloudNativePG) with a PVC, backups and a
   replica; **RabbitMQ** via the cluster operator with a quorum of three.
 * **Outbox volumes** become PVCs with `ReadWriteOnce`; the ingestor and API
   become StatefulSets, because an outbox is state.
-* **A default-deny egress `NetworkPolicy`** replaces `internal: true`, with a
-  single explicit allow for the ingestor when a refresh is scheduled.
-* **Air-gapped install** mirrors the pinned digests into an internal registry
-  (Harbor), and the model goes into a PVC or an OCI artifact rather than a bind
-  mount.
 * **Secrets** move to Vault or sealed secrets; the three database roles stay as
   they are, because that separation is the useful part.
-* `migrate` becomes a Job with a Helm `pre-install`/`pre-upgrade` hook;
-  healthchecks become readiness and liveness probes, with the model load
+* Healthchecks become readiness and liveness probes, with the model load
   covered by a `startupProbe`.
 * Prometheus scrapes the services (B2, not attempted here), and Loki takes the
   logs.

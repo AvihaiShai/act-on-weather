@@ -63,8 +63,11 @@ jobs:
             echo "::error::.env is tracked by git"; exit 1
           fi
           test -f .env.example || { echo "::error::.env.example is missing"; exit 1; }
-          if grep -vE '^\s*#|^\s*$' .env.example | grep -viE '=(change-me|aow|Qwen3-1.7B|4096|4|60|8)' ; then
-            echo "::error::.env.example looks like it contains a real value"; exit 1
+          # Password fields are placeholders; non-secret tuning values (for
+          # example context size and parallelism) are intentionally real.
+          if grep -E '^(POSTGRES_PASSWORD|POSTGRES_WRITER_PASSWORD|POSTGRES_READER_PASSWORD|RABBITMQ_PASSWORD)=' .env.example \
+               | grep -vE '=change-me$'; then
+            echo "::error::.env.example contains a non-placeholder password"; exit 1
           fi
           echo "clean"
 
@@ -90,21 +93,27 @@ jobs:
               if service and image and not built and not re.fullmatch(r".+@sha256:[0-9a-f]{64}", image):
                   errors.append(f"{service}: {image}")
 
-          for line in Path("compose.yml").read_text().splitlines():
-              match = re.fullmatch(r"  ([a-z][a-z0-9_-]*):", line)
-              if match:
-                  check()
-                  service, image, built = match.group(1), None, False
-              elif service:
-                  match = re.match(r"    image:\s*(\S+)", line)
+          # compose.tools.yml too: the staging and proof containers are pulled
+          # on the reviewer's machine like any other, so a moving tag there
+          # would break the same offline guarantee.
+          for path in (Path("compose.yml"), Path("compose.tools.yml")):
+              service, image, built = None, None, False
+              for line in path.read_text().splitlines():
+                  match = re.fullmatch(r"  ([a-z][a-z0-9_-]*):", line)
                   if match:
-                      image = match.group(1)
-                  if re.match(r"    build:", line):
-                      built = True
-          check()
+                      check()
+                      service, image, built = match.group(1), None, False
+                  elif service:
+                      match = re.match(r"    image:\s*(\S+)", line)
+                      if match:
+                          image = match.group(1)
+                      if re.match(r"    build:", line):
+                          built = True
+              check()
+              service, image, built = None, None, False
           if errors:
               raise SystemExit("::error::unpinned pulled images: " + ", ".join(errors))
-          print("every pulled image in compose.yml carries a digest")
+          print("every pulled image in the compose files carries a digest")
           PY
 
       - name: Docker base images are pinned by digest
@@ -113,7 +122,12 @@ jobs:
           import re
           from pathlib import Path
 
-          files = [Path("services/Dockerfile"), Path("services/ui/Dockerfile"), Path("tests/Dockerfile")]
+          files = [
+              Path("services/Dockerfile"),
+              Path("services/ui/Dockerfile"),
+              Path("tests/Dockerfile"),
+              Path("demos/Dockerfile"),
+          ]
           for path in files:
               for line in path.read_text().splitlines():
                   if line.startswith("FROM ") and not re.fullmatch(r"FROM \S+@sha256:[0-9a-f]{64}(?: AS \S+)?", line):
@@ -124,8 +138,17 @@ jobs:
       - name: Validate delivery scripts and Compose overlay
         run: |
           bash -n scripts/*.sh
+          bash -n demos/*.sh
           docker compose -f compose.yml -f compose.ci.yml --env-file .env.example config --quiet
           AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml --env-file .env.example config --quiet
+          # Every overlay a reviewer can actually pass to `docker compose -f`
+          # is rendered here. An overlay nobody validates is one that breaks on
+          # the reviewer's machine and nowhere else.
+          docker compose -f compose.yml -f compose.connected.yml --env-file .env.example config --quiet
+          docker compose -f compose.yml -f compose.demo.yml --env-file .env.example config --quiet
+          # Rendered on its own: it is never combined with compose.yml, and its
+          # one external network is not resolved at config time.
+          docker compose -f compose.tools.yml --env-file .env.example config --quiet
 
   build-and-scan:
     runs-on: ubuntu-latest

@@ -39,7 +39,8 @@ evidence of success. `overpass_fetch` checks the body.
 **Found:** on CPU that is three or four sequential generations per question —
 30–90 s — and non-deterministic in front of a reviewer.
 **Decided:** the router resolves city, dates, intents and coverage in code, runs
-the SQL, and spends exactly one model call phrasing the rows.
+the SQL, and spends at most one model call phrasing the rows. Named activity
+verdicts are rendered directly from their stored daily scores.
 **Result:** E1 answers in ~5 s, E2 in ~20 s, and a question outside coverage is
 refused *without a model call at all*.
 
@@ -110,7 +111,6 @@ Pre-agreed cut order, taken in this order as the deadline approached:
 
 | Cut | Cost |
 |---|---|
-| Drill 2 (database down) | One of four M11 drills. The reconnect path it would exercise is in `services/common/db.py` and is used by every service. |
 | Itinerary editing → generate-and-save only | M9's editing affordance. Building and saving both work. |
 | The markers map page | Visual breadth on M10; the forecast chart, the heatmap and the coverage banner carry it. |
 | Marine data and surfing | No marine provider, so surfing is not among the scored defaults. Typed as a free-text activity it is answered from the weather on hand, with that caveat stated. |
