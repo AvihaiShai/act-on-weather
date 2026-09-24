@@ -17,8 +17,18 @@ outside that window and the system says it has no forecast instead of guessing.
 
 **The only thing you need on the host is Docker** — Docker Desktop on Windows
 or macOS, Docker Engine with the Compose plugin on Linux. No `make`, no `curl`,
-no `python`, nothing to install beyond that. Give Docker at least **8 GB of
-memory** and a few GB of free disk, and start it before you begin.
+no `python`, no `bash`; nothing to install beyond Docker and the `git` that
+fetched this folder. Start Docker before you begin.
+
+| what it needs | how much, and why |
+|---|---|
+| **Compose v2** | the `docker compose` subcommand, with a space. The standalone `docker-compose` v1 cannot read the top-level `name:` key these files use. Verified on Docker Engine 29.8 with Compose v5.5.1. |
+| **Memory** | **8 GB for Docker.** `compose.yml` caps every container and the caps total 6.7 GB, 3 GB of it the model server. On Docker Desktop that is the VM's limit, not the host's; on Linux it is simply free RAM. |
+| **Disk** | **about 6 GB** — ~2.2 GB of pulled images, ~0.4 GB more for the two tooling bases (`python:3.12-slim`, `docker:28-cli`), the 1.2 GB model, and ~1.7 GB of images built here. Another ~1.2 GB if you also build the test image. These are the sizes `docker images` reports, so shared layers make the real figure a little lower. |
+| **CPU** | CPU-only, and that is the only mode: no GPU override ships and nothing here asks for one. `LLM_THREADS` in `.env` (default 4) is the knob. |
+| **Internet** | for [step 2](#2-stage-it--once-with-internet) only. Step 3 and everything after it run with the network off. |
+| **Published ports** | 8080 (UI) and 8000 (API), on `127.0.0.1` only. Nothing else is published — not the database, not the broker, not the model server. |
+| **Architecture** | verified on linux/amd64. Every pinned digest is a multi-arch manifest list that includes linux/arm64, so Apple Silicon pulls native images, but that combination is untested here. The [offline release bundle](#offline-release-and-installation) is amd64-only by design and refuses anything else. |
 
 Everything below is one recipe. The commands are character-identical on
 Windows, macOS and Linux except the single line that creates `.env`. Run them
@@ -61,6 +71,21 @@ docker compose -f compose.tools.yml build demos
 To stage from an internal mirror rather than the public internet, set
 `MODEL_BASE_URL` in `.env`. The checksum check is identical either way.
 
+**Check the staging before you start the stack.** Three commands, none of which
+starts a container that stays up, changes a volume or needs a network:
+
+```sh
+docker compose config --quiet                         # .env is present and complete
+docker compose config --images                        # every image a run will need
+docker compose -f compose.tools.yml run --rm stage    # the model, re-hashed
+```
+
+The first fails by name on any password still missing from `.env`, which is the
+one way a fresh clone usually goes wrong. The third re-hashes a model that is
+already there instead of fetching it, so it answers "is the staged file the one
+`models.lock` describes?" offline. `make preflight` is the first and the third
+in one command; see [Shorthand](#shorthand).
+
 ### 3. Run it — no internet needed
 
 ```sh
@@ -88,13 +113,16 @@ Stop it with `docker compose down`, and start it again later with
 
 ### Shorthand
 
-`make` is a convenience for hosts that have it, and nothing requires it. Each
-target is the Docker command next to it, and the Docker command is what works
-everywhere:
+`make` is a convenience for hosts that have it, and nothing requires it — it
+is the one tool in this file that Docker does not supply. Each target is the
+Docker command next to it, and the Docker command is what works everywhere.
+`make help` lists these plus the operational ones (`ps`, `logs`, `clean`,
+`samples`, `dlq`, `redrive`):
 
 | shorthand | what it actually runs |
 |---|---|
 | `make stage` | the four staging commands above |
+| `make preflight` | `docker compose config --quiet`, then `… run --rm stage` — the two checks in [step 2](#2-stage-it--once-with-internet) |
 | `make up` / `make down` | `docker compose up -d` / `docker compose down` |
 | `make up-demo` | `docker compose -f compose.yml -f compose.demo.yml up -d` |
 | `make test` | `docker build -q -f tests/Dockerfile -t aow/tests:dev .` then `docker run --rm aow/tests:dev` |
@@ -122,12 +150,14 @@ driving Docker *is* the proof. It is why the proof runner is a `docker compose
 run` you type on purpose and never part of `up`, and why it lives in
 `compose.tools.yml` rather than in `compose.yml`. Nothing in the running stack
 has the socket. If you would rather not grant it, run the same scripts directly
-on a host with bash: `bash demos/01_offline.sh`.
+on a host that has bash, curl and python3: `bash demos/01_offline.sh`. That is
+the one path in this project that needs more than Docker, and it is a fallback,
+not the documented route.
 
 ### Demo mode
 
-A default run stores the **26 hand-verified events** — 11 London, 6 Reykjavík,
-4 Rome, 4 Lisbon, 1 Tel Aviv — and answers "none on record" for any city, date
+A default run stores the **39 hand-verified events** — 10 London, 10 Rome,
+9 Tel Aviv, 6 Reykjavík, 4 Lisbon — and answers "none on record" for any city, date
 or category the feed does not cover. To see the trip planner and the agent
 working with a denser event calendar, switch to **demo mode**:
 
@@ -638,7 +668,7 @@ check:
 
 | | |
 |---|---|
-| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (7) and `data/snapshot/events.samples.jsonl` (45) |
+| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (39) and `data/snapshot/events.samples.jsonl` (45) |
 | **Ingestor** | replays the sample file only when `AOW_DEMO_EVENTS` is set, so a default run never even *accepts* a generated row |
 | **Consumer** | the only role with write grants, so it is the last word: it drops a sample row that arrives while demo mode is off, whoever produced it, and on startup it deletes every `is_sample` row it finds |
 
@@ -917,10 +947,13 @@ rot quietly. It fails the build if a pulled image or a Dockerfile base is not
 pinned by digest; if a pinned digest disagrees with `IMAGES.lock`, so the lock
 cannot become documentation of a release nobody runs; if any workflow action is
 on a movable tag rather than a commit SHA, since those actions run with this
-workflow's token; and if any count in the README or the Makefile disagrees with
+workflow's token; and if any count in the README, the Makefile, `ASSIGNMENT.md`,
+`TECHNICAL_DECISIONS.md` or `docs/ARCHITECTURE.md` disagrees with
 `data/snapshot/MANIFEST.json`, which `scripts/snapshot_manifest.py` derives
-from the snapshot files. That last one is not hypothetical: a README quoting
-289 of them shipped against a snapshot holding 620.
+from the snapshot files — totals and the per-city split alike, and it also
+fails when a sentence it was watching has been reworded out from under it.
+That last one is not hypothetical: an earlier README put the place count at
+289 while the snapshot already held 620.
 
 ### The grounding gate, before a release
 
@@ -960,6 +993,11 @@ integration test exercises the queue and database path without it.
 
 ### Offline release and installation
 
+This is the one path that asks the staging machine for more than Docker: `git`,
+the GitHub CLI (`gh`, signed in), and `bash` with `sha256sum`. Git Bash supplies
+the last two on Windows, and the engine must be Linux/amd64 — see [Known
+limitations](#known-limitations). The quick start above needs none of this.
+
 The repository is private, so sign in to GHCR on a connected staging machine
 with permission to read its packages. Download `aow-images-<commit>` from the
 successful `main` workflow run, check out that exact commit in a clean clone,
@@ -973,6 +1011,18 @@ docker compose --env-file .env.example pull postgres rabbitmq llm edge
 docker compose -f compose.tools.yml --env-file .env.example run --rm stage
 bash scripts/package-offline.sh release/images.lock
 ```
+
+**One precondition on the staging engine, and it is not cosmetic.** Docker's
+containerd image store keeps a per-store record of every manifest it has
+pulled. If this engine ever pulled one of these images while it was published
+as a single-platform manifest, that stale record wins over a later re-pull, and
+`docker save` will keep writing an archive with no layers in it — silently,
+exiting 0. Purge those digests (`docker system prune -af`, **with the
+containerd store active**; purging under `overlay2` leaves the containerd
+records untouched) and pull again. A CI runner is clean per job and is safe by
+construction. `package-offline.sh` fails rather than ship such a bundle, so the
+worst case is a failed packaging run, not a bad release — see
+[docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) §1.
 
 `dist/aow-<commit>/` contains the exact CI images, the digest-pinned upstream
 images and the locally built proof runner in `images.tar`, plus the verified
@@ -1045,31 +1095,44 @@ The bundle overlay also points the operator refresh's detached window guard
 at the packaged `demos` image, so `refresh --check` can enforce its deadline
 without a locally built `aow/demos:dev` tag.
 
-**Last release drill.** Commit `a129bb6` was packaged from its own green
-`main` workflow and digest manifest on a Windows Docker Desktop host with a
-Linux/amd64 engine. The 1.8 GB folder was installed in a second Compose
-project against fresh volumes (`COMPOSE_PROJECT_NAME=aow-rel2`,
-`AOW_BIND_ADDR=127.0.0.3` in that folder's `.env`). This drill predates the
-addition of tool images above; its archive held the six runtime images.
+**Last release drill.** Run on a **separate Docker engine** — its own
+`docker-ce` daemon, its own image store, no Docker Desktop integration — with
+outbound network cut by nftables and the cut verified from inside a container
+(DNS, raw-IP HTTP, raw TCP, raw-IP HTTPS and ICMP all dead). Three releases
+were packaged from three commits, so the upgrade moved image tags and code
+rather than a version string.
 
 | Exercise | Result |
 |---|---|
-| First install, empty volumes | 60 s to `PASS`; weather 80, places 620, events 26, facts 81 |
-| Upgrade over the running install | pre-upgrade dump written first (628 KB); `PASS` |
-| `SHA256SUMS` | all 142 files verified, including after the rollback drill |
-| `images.bundle.lock` vs `images.tar` | all six image digests matched |
-| `--pull never` | installer smoke passed with fresh volumes |
-| Egress from agent, api, consumer, ingestor | `errno 101`; `aow-rel2_backend` reports `Internal=true` |
-| E1 through the installed release | answered from stored data, with source and as-of |
-| Failed upgrade (a migration that deletes and then errors) | install aborted; forecast rows 80 → 0 |
-| Rollback: previous folder's installer | images and migrations reverted; smoke **failed**, correctly, on the still-empty forecast |
-| `scripts/restore-offline.sh` with the failed release's dump | 12 s; weather 80, places 620, events 26 and facts 81 restored; smoke passed |
+| First install, empty volumes, `--pull never` | `PASS` in 16 s, **0 pull attempts**; weather 80, places 620, events 26, facts 81 |
+| Live data through the queue | a recommendation, an itinerary and a `PATCH`, all three `message_id`s traced to `stored` |
+| Upgrade with that data in place | `PASS` in 14 s; pre-upgrade dump written first; every traced ID and record survived |
+| Deliberately failed migration | install aborted, `migrate` exit 3, dump taken first, `weather_daily` 80 → 0 |
+| Image rollback | images and migrations reverted; smoke **failed, correctly**, on the still-empty forecast |
+| Restore from the failed install's dump | `PASS` in 18 s; all counts and all traced IDs back |
+| Packaged proof runner, E1 and E2 | exit 0; both answered from stored data with source and as-of |
+| Out-of-coverage question | refused in code, `llm_called: False` |
 
-The isolation was a **second Compose project on the same machine**. Its backend
-network was `internal: true`, and agent, API, consumer and ingestor got
-`errno 101` when they tried to reach `1.1.1.1:443`. The host NIC stayed up and
-the folder was not transferred to another machine, so this is not a physical
-air-gap certification.
+**That drill found a real defect, and it is the reason this section no longer
+describes a same-host test.** The bundle it started from was unloadable: CI
+publishes the two application images as a manifest with no platform
+descriptor, and a containerd-store `docker save` exports such an image as its
+manifest alone — no config, no layers — while exiting 0. The archive passed
+`SHA256SUMS` and the digest check and then died on the clean host with
+`failed to read config content`.
+
+It had passed every previous drill because those installed on the machine that
+packaged the bundle, and that engine already held the layers from its own
+`docker pull`. A same-host install cannot detect this even in principle, so
+**the earlier `a129bb6` drill is not evidence that its archive was complete**;
+it is evidence about the installer and the recovery path only.
+`scripts/verify-bundle-images.sh` now refuses an archive whose images are not
+physically complete for this release's platform, so it cannot recur silently.
+
+[docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) has the full record: the
+diagnosis, the measurements, the exact isolation this environment does and does
+not provide, the staging-host precondition it exposed, and what is still not
+proven.
 
 ---
 
@@ -1237,7 +1300,10 @@ sha256sum -c models.lock                 # the model
 bash scripts/verify-bundle-images.sh .   # images.tar against images.bundle.lock
 ```
 
-The numbers this file quotes about the snapshot come from the snapshot:
+The numbers this file quotes about the snapshot — and the ones in the
+Makefile, `ASSIGNMENT.md`, `TECHNICAL_DECISIONS.md` and `docs/ARCHITECTURE.md`
+— come from the snapshot. `tests/unit/test_readme_counts.py` runs the same
+tables as a unit test; this is the standalone form, and what CI runs:
 
 ```sh
 docker run --rm -v "$PWD:/work" -w /work \

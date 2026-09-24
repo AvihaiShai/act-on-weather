@@ -12,9 +12,12 @@ cd "$(dirname "$0")/.."
 arch="$(docker info --format '{{.Architecture}}')"
 [[ "$arch" == amd64 || "$arch" == x86_64 ]] || { echo "this release requires a Linux/amd64 Docker engine" >&2; exit 1; }
 test -f .env || { echo "copy .env.example to .env and set passwords first" >&2; exit 1; }
-sha256sum -c SHA256SUMS
-sha256sum -c models.lock
-bash scripts/verify-bundle-images.sh .
+
+# Everything the bundle claims about itself, checked before anything on this
+# host changes: SHA256SUMS over every file, no unlisted file, models.lock,
+# images.bundle.lock against the CI manifest and the committed IMAGES.lock,
+# and images.tar against images.bundle.lock by verified manifest digest.
+bash scripts/verify-bundle.sh .
 export AOW_IMAGE_VERSION="$(cat release-version.txt)"
 [[ "$AOW_IMAGE_VERSION" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release version" >&2; exit 1; }
 
@@ -37,7 +40,25 @@ if [ -n "$running_pg" ]; then
   test -s "$dump" || { echo "pre-upgrade dump is empty; refusing to continue" >&2; exit 1; }
 fi
 
-docker load -i images.tar
+# `docker load` exits 0 even when it could not unpack an image. A layer blob
+# whose bytes do not match the digest its manifest names is refused by the
+# content store, the tag is still created, and the only sign is a line in the
+# output -- verified against Docker 29.8, which printed "Loaded image: ..."
+# and "Error unpacking image ... content digest ... not found" and then exited
+# 0. So the output is the check, not the exit status.
+load_log="$(mktemp)"
+trap 'rm -f "$load_log"' EXIT
+docker load -i images.tar 2>&1 | tee "$load_log"
+if grep -qi 'error' "$load_log"; then
+  echo "docker load reported an error; the release has not been started" >&2
+  exit 1
+fi
+expected_images="$(grep -c . images.bundle.lock)"
+loaded_images="$(grep -c '^Loaded image' "$load_log" || true)"
+if [ "$loaded_images" != "$expected_images" ]; then
+  echo "docker load reported $loaded_images images, the release ships $expected_images" >&2
+  exit 1
+fi
 dc config --quiet
 dc up -d --no-build --pull never
 dc exec -T api python - < scripts/release-smoke.py

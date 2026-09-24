@@ -17,6 +17,10 @@ dump="${1:?usage: bash scripts/restore-offline.sh backup/<project>-<timestamp>.s
 test -s "$dump" || { echo "$dump is missing or empty" >&2; exit 1; }
 test -f .env || { echo "this release folder has no .env" >&2; exit 1; }
 export AOW_IMAGE_VERSION="$(cat release-version.txt)"
+# Same check the installer makes: this value picks the image tags Compose
+# resolves, so a folder whose version file is not a commit would silently start
+# nothing at all.
+[[ "$AOW_IMAGE_VERSION" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release version" >&2; exit 1; }
 
 dc() { docker compose -f compose.yml -f compose.bundle.yml --env-file .env "$@"; }
 

@@ -1,6 +1,7 @@
-# Convenience only. Every target is a docker compose line you can type by hand,
-# and the README shows the raw commands too -- nothing here is required to run
-# the project, and there is no host-side Python anywhere.
+# Convenience only. Every target is a docker command you can type by hand, and
+# the README shows the raw commands too -- nothing here is required to run the
+# project, and no target needs host-side Python, bash or curl. `make` itself is
+# the only thing this file adds to the prerequisites.
 
 COMPOSE        ?= docker compose
 CONNECTED      := -f compose.yml -f compose.connected.yml
@@ -10,7 +11,8 @@ PROBE          := -p aow-f3 -f compose.yml -f compose.model-probe.yml
 # Pinned in IMAGES.lock like every other image, and checked against it in CI.
 PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
-.PHONY: help stage stage-fetch stage-build up up-demo down logs ps test verify demo \
+.PHONY: help stage stage-fetch stage-build preflight up up-demo down logs ps \
+        test verify demo \
         grounding offline no-data-loss update reenrich questions refresh \
         refresh-check snapshot samples manifest redrive dlq clean \
         monitor monitor-down backup restore backup-restore
@@ -18,6 +20,7 @@ PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a
 help:
 	@echo "Staging (needs the internet, once):"
 	@echo "  make stage          pull the pinned images, stage the model, build the services"
+	@echo "  make preflight      check .env and the staged model, without starting anything"
 	@echo ""
 	@echo "Running (no internet needed):"
 	@echo "  make up             start everything (39 verified events, no generated rows)"
@@ -74,6 +77,18 @@ stage-build:
 	$(COMPOSE) build
 	$(COMPOSE) $(TOOLS) build demos
 
+# Everything a fresh clone gets wrong, checked before anything is started.
+# Both steps are read-only: `config` renders the Compose files and fails by
+# name on a password still missing from .env, and the `stage` container
+# re-hashes a model that is already there rather than fetching it, so this
+# needs no network.
+preflight:
+	$(COMPOSE) config --quiet
+	@echo ".env is present and complete."
+	$(COMPOSE) $(TOOLS) run --rm stage
+	@echo ""
+	@echo "Ready. Start it with: make up"
+
 # ---------------------------------------------------------------- running --
 up:
 	$(COMPOSE) up -d
@@ -128,22 +143,27 @@ grounding:
 	  $(COMPOSE) $(PROBE) down; exit $$status
 
 # ------------------------------------------------------------------ demos --
-# A convenience for hosts that have bash. The portable form -- what the README
-# documents, and what a Windows reviewer runs -- is
-#   docker compose -f compose.tools.yml run --rm demos <name>
-# and it executes these same scripts from this same working tree.
-offline:       ; bash demos/01_offline.sh
-no-data-loss:  ; bash demos/02_no_data_loss.sh
-update:        ; bash demos/03_update.sh
-reenrich:      ; bash demos/04_reenrich.sh
-questions:     ; bash demos/05_questions.sh
+# Each of these is the proof runner, spelled exactly as the README documents
+# it. They used to be `bash demos/NN_*.sh`, which quietly added bash, curl and
+# python3 to the host dependencies of a project whose stated prerequisite is
+# Docker. The container bind-mounts this working tree, so it runs demos/*.sh
+# from the checkout and not from an image layer -- and on a host that does have
+# bash, curl and python3, `bash demos/01_offline.sh` is the same run without
+# the wrapper.
+offline:       ; $(COMPOSE) $(TOOLS) run --rm demos offline
+no-data-loss:  ; $(COMPOSE) $(TOOLS) run --rm demos no-data-loss
+update:        ; $(COMPOSE) $(TOOLS) run --rm demos update
+reenrich:      ; $(COMPOSE) $(TOOLS) run --rm demos reenrich
+questions:     ; $(COMPOSE) $(TOOLS) run --rm demos questions
 # Deliberately not part of `make demo`. Every proof above runs against the
 # stack that is already up; this one builds an isolated project of its own
 # and destroys its volumes, which takes about two minutes and would be a
 # surprising thing for `make demo` to do to a reviewer.
-backup-restore: ; bash demos/06_backup_restore.sh
+backup-restore: ; $(COMPOSE) $(TOOLS) run --rm demos backup-restore
 
-demo: offline questions no-data-loss update reenrich
+# One container. demos/run.sh keeps the order -- prove the system works and
+# answers before breaking it, so a failure in a drill is unambiguous.
+demo: ; $(COMPOSE) $(TOOLS) run --rm demos all
 
 # ------------------------------------------------------ connected updates --
 # The operator refresh. One command, because the dangerous part of a refresh is
@@ -207,13 +227,27 @@ redrive:
 #
 # Grafana is the only thing published, on loopback like everything else.
 # Prometheus stays on the internal network and is reached through Grafana.
+#
+# The installer exports AOW_IMAGE_VERSION only for its own process. A later
+# `make monitor` reads the release's version file itself, so it still selects
+# the bundle aliases from a fresh shell. A developer checkout has no version
+# file and uses the registry-pinned observability overlay directly.
+ifeq ($(strip $(AOW_IMAGE_VERSION)),)
+ifneq ($(wildcard release-version.txt),)
+AOW_IMAGE_VERSION := $(shell cat release-version.txt)
+endif
+endif
+export AOW_IMAGE_VERSION
+OBS_BUNDLE = $(if $(AOW_IMAGE_VERSION),-f compose.bundle.yml -f compose.observability.bundle.yml,)
+OBS_OFFLINE_ARGS = $(if $(AOW_IMAGE_VERSION),--no-build --pull never,)
+
 monitor:
-	$(COMPOSE) -f compose.yml -f compose.observability.yml up -d
+	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) up -d $(OBS_OFFLINE_ARGS)
 	@echo ""
 	@echo "Grafana http://127.0.0.1:3000 -- admin / GRAFANA_ADMIN_PASSWORD from .env"
 
 monitor-down:
-	$(COMPOSE) -f compose.yml -f compose.observability.yml stop \
+	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) stop \
 	  prometheus grafana edge-observability
 
 # ------------------------------------------------------- backup / restore --
