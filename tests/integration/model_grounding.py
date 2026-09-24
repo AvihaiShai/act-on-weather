@@ -42,6 +42,9 @@ from services.common.llm import LlmClient, LlmUnavailable
 
 DAY1 = date(2026, 9, 24)
 DAY2 = date(2026, 9, 25)
+# The Laver Cup's real span in the snapshot: local midnight on the 25th to
+# late on the 27th.
+DAY4 = date(2026, 9, 27)
 
 LONDON = {
     "id": "london",
@@ -117,11 +120,20 @@ def verdict_row(day, activity, label, score, band):
     }
 
 
-def retrieval(question, city=LONDON, **rows):
+def retrieval(question, city=LONDON, window=None, **rows):
+    """`window` pins the date range a relative question would otherwise resolve
+    against today's clock.
+
+    "Are there any sports events tomorrow in London?" is the review's exact
+    wording and has to stay that way, but a probe whose fixtures are dated
+    2026-09-25 must keep asserting the same thing after 2026-09-25. Pinning the
+    range is the only part that is faked; the question, the prompt and the
+    validator are the real ones.
+    """
     resolution = router.Resolution(
         question=question,
         city=city,
-        window=router.dates.parse(question, city["timezone"]),
+        window=window or router.dates.parse(question, city["timezone"]),
     )
     text = question.lower()
     for intent, words in router.INTENT_WORDS.items():
@@ -139,6 +151,23 @@ def retrieval(question, city=LONDON, **rows):
     return router.Retrieval(resolution, COVERAGE, True, **rows)
 
 
+def surfing_retrieval():
+    """London, asked about surfing: a forecast row and no surfing score.
+
+    `unscored_activities` is what the real router sets when a named activity
+    has no row for that city -- London is inland, so the rule engine never
+    scores surfing there at all.
+    """
+    result = retrieval(
+        "Is it a good day for surfing in London tomorrow?",
+        window=router.dates.DateRange(DAY2, DAY2, "tomorrow"),
+        forecast=[forecast_row(DAY2, 19.0, 12.0)],
+    )
+    result.resolution.activities = ["surfing"]
+    result.unscored_activities = ["surfing"]
+    return result
+
+
 PLACES = [
     place("Wigmore Hall", "concert_hall"),
     place("Cadogan Hall", "concert_hall"),
@@ -152,10 +181,11 @@ VERDICTS = [
     verdict_row(DAY1, "running", "Running", 55, "fair"),
 ]
 
-# The London example from ASSIGNMENT.md, plus the three probes from the review
-# that produced ungrounded answers. The last one is the control: it must NOT be
-# rejected, or the validator is just refusing to let the model speak.
-CASES: list[tuple[str, object, list[str]]] = [
+# The London example from ASSIGNMENT.md, plus every probe from the review that
+# produced an ungrounded or wrongly dated answer. Each case is
+# (name, retrieval, must_contain, must_not_contain); the phrases are matched
+# case-insensitively against the answer the traveller actually receives.
+CASES: list[tuple[str, object, list[str], list[str]]] = [
     (
         "E2 -- the London example question",
         retrieval(
@@ -168,6 +198,7 @@ CASES: list[tuple[str, object, list[str]]] = [
         # The concert gap has to reach the traveller whichever path the answer
         # took, because there is no concert row in the window.
         ["No concert is on record in London"],
+        [],
     ),
     (
         "concerts only",
@@ -176,6 +207,7 @@ CASES: list[tuple[str, object, list[str]]] = [
             places=[p for p in PLACES if p["category"] == "concert_hall"],
         ),
         ["No concert is on record in London"],
+        [],
     ),
     (
         "a sports event is reported as itself",
@@ -184,10 +216,41 @@ CASES: list[tuple[str, object, list[str]]] = [
             events=[event("theo2:laver-cup-2026", "Laver Cup 2026", "sport", DAY2)],
         ),
         [],
+        [],
+    ),
+    (
+        # F2, through the model rather than through SQL: the review asked this
+        # on 2026-09-24 and was told there was nothing on, because the row's
+        # UTC instant is the 24th. The window is pinned so the question keeps
+        # its exact wording without depending on today's date.
+        "London sports on 2026-09-25 -- the review's exact question",
+        retrieval(
+            "Are there any sports events tomorrow in London?",
+            window=router.dates.DateRange(DAY2, DAY2, "tomorrow"),
+            events=[event("theo2:laver-cup-2026", "Laver Cup 2026", "sport", DAY2, last_day=DAY4)],
+        ),
+        ["Laver Cup 2026"],
+        # The defect this closes was an answer that reported nothing on the
+        # day the event actually opens.
+        ["no sports event is on record", "no scheduled event"],
+    ),
+    (
+        # The live agent never reaches the model with this one: "surfing" is a
+        # named activity, so `ask` renders the stored verdicts in code and
+        # makes no LLM call at all. The probe asks the model anyway, because
+        # the guarantee worth proving is that a surf verdict cannot reach the
+        # traveller even if it did.
+        "London surfing -- no score on record",
+        surfing_retrieval(),
+        ["surf"],
+        # The review saw "there is no record" followed by a weather-based
+        # verdict in the same answer. Any of these is that failure.
+        ["good for surfing", "ideal for surfing", "good day for surf", "suitable", "unsuitable"],
     ),
     (
         "the history of Lisbon",
         retrieval("Tell me about the history of Lisbon", city=LISBON),
+        [],
         [],
     ),
 ]
@@ -202,6 +265,14 @@ CONTROLS = {
     ),
     "concerts only": "I hold no scheduled concert for London in that week.",
     "a sports event is reported as itself": "Laver Cup 2026 is on at The O2 arena on 2026-09-25.",
+    "London sports on 2026-09-25 -- the review's exact question": (
+        "Laver Cup 2026 runs at The O2 arena from 2026-09-25 to 2026-09-27, so it is "
+        "on tomorrow."
+    ),
+    "London surfing -- no score on record": (
+        "There is no surfing score on record for London. On 2026-09-25 the stored "
+        "forecast is a high of 19C and a low of 12C."
+    ),
     "the history of Lisbon": "Lisbon is the capital of Portugal, on the river Tagus.",
 }
 
@@ -219,7 +290,8 @@ def lisbon_facts():
     ]
 
 
-CASES[3][1].facts = lisbon_facts()
+# By name, not by position: the list has grown once and will grow again.
+next(c for c in CASES if c[0] == "the history of Lisbon")[1].facts = lisbon_facts()
 
 
 def wait_for_model(client: LlmClient, timeout: int = 300) -> None:
@@ -236,7 +308,7 @@ def main() -> int:
     wait_for_model(client)
 
     failures: list[str] = []
-    for name, result, must_contain in CASES:
+    for name, result, must_contain, must_not_contain in CASES:
         brief = grounding.build(result)
 
         # 1. The control: a correct answer must survive.
@@ -274,9 +346,13 @@ def main() -> int:
         still_broken = grounding.violations(delivered, brief)
         if still_broken:
             failures.append(f"{name}: delivered answer is still ungrounded: {still_broken}")
+        lowered = delivered.lower()
         for phrase in must_contain:
-            if phrase not in delivered:
+            if phrase.lower() not in lowered:
                 failures.append(f"{name}: delivered answer never says {phrase!r}")
+        for phrase in must_not_contain:
+            if phrase.lower() in lowered:
+                failures.append(f"{name}: delivered answer says {phrase!r}")
 
         print(f"\n=== {name} ({elapsed:.1f}s, {verdict}) ===")
         print(f"model: {answer}")
