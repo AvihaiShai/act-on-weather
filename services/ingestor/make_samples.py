@@ -121,6 +121,17 @@ def build(
                     "source_url": venue.get("source_url"),
                     "is_sample": True,
                     "as_of": as_of,
+                    # Samples carry the same two freshness columns as a checked
+                    # row, and for the same reason: they go through the same
+                    # schema, the same queue and the same table, so a demo run
+                    # must not be the one path where an event has no expiry. A
+                    # generated row has no listing page, so "checked" here means
+                    # the moment it was generated -- which is exactly how long
+                    # it deserves to be trusted for.
+                    "checked_at": as_of,
+                    "valid_until": config.event_valid_until(
+                        datetime.fromisoformat(as_of)
+                    ).isoformat(),
                 }
             )
             made += 1
@@ -131,7 +142,14 @@ def build(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate labelled sample events.")
     parser.add_argument("--days", type=int, default=16, help="window to spread samples over")
-    parser.add_argument("--per-city", type=int, default=8)
+    # 9, because that is what the committed data/events.samples.jsonl actually
+    # holds: 45 rows, nine per city. The default said 8, so `make samples`
+    # rewrote the file with 40 rows and every count in the README went stale --
+    # which defeats the point of a file whose docstring promises that the same
+    # snapshot in gives the same file out. Reproducibility is the property that
+    # makes a generated file reviewable, so the default is the number that
+    # reproduces it.
+    parser.add_argument("--per-city", type=int, default=9)
     parser.add_argument(
         "--start",
         default=None,

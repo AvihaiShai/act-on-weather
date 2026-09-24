@@ -213,9 +213,27 @@ def get_events(
     start: date | None = None,
     end: date | None = None,
     category: str | None = None,
+    include_expired: bool = False,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    return queries.events(pool.conn, city, start=start, end=end, category=category, limit=limit)
+    """Scheduled listings, current by default.
+
+    Every row was read off its own `source_url` at `checked_at` and stops being
+    offered as a schedule at `valid_until` (migration 006). `include_expired`
+    is the operator's view: it returns the stale readings too, each carrying
+    `is_current`, so that "the feed has gone out of date" can be told apart
+    from "there was never anything here". A caller that renders these rows to a
+    traveller should leave it alone.
+    """
+    return queries.events(
+        pool.conn,
+        city,
+        start=start,
+        end=end,
+        category=category,
+        include_expired=include_expired,
+        limit=limit,
+    )
 
 
 @app.get("/facts")

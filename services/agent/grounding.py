@@ -584,6 +584,36 @@ def build(result: Retrieval) -> Brief:
     return brief
 
 
+def _stale_feed_sentence(result: Retrieval) -> str:
+    """The clause that says a gap is an out-of-date feed, not an empty city.
+
+    An event row is a reading of a listing page taken on a particular day, and
+    an air-gapped run cannot find out what the venue did afterwards, so a
+    reading stops being offered as a schedule once it is past its recheck date
+    (migration 006). When that filter is the *reason* the answer is empty, the
+    reader is owed the fact: "nothing on record" invites them to conclude the
+    city is quiet, whereas "the listings we hold went out of date on the 15th"
+    tells them the system, not the city, is the limit -- and what would fix it.
+
+    Returns "" when nothing was filtered out, so the ordinary wording is
+    unchanged and no sentence appears without a number behind it.
+    """
+    expired = int((result.expired_events or {}).get("expired") or 0)
+    if not expired:
+        return ""
+    checked = (result.expired_events or {}).get("last_checked")
+    when = f", last checked {str(checked)[:10]}," if checked else ""
+    if expired == 1:
+        return (
+            f" One stored listing for those dates{when} is past its recheck date "
+            "and is no longer reported as current."
+        )
+    return (
+        f" {expired} stored listings for those dates{when} are past their recheck date "
+        "and are no longer reported as current."
+    )
+
+
 def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
     from .router import activity_meta
 
@@ -593,6 +623,7 @@ def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
     present = brief.event_categories_present()
 
     if asked_for_events:
+        stale = _stale_feed_sentence(result)
         if brief.event_categories:
             for category in brief.event_categories:
                 if category not in present:
@@ -601,7 +632,7 @@ def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
                             f"events:{category}",
                             f"No {event_label(category)} is on record in {brief.city} for "
                             f"{brief.window}. That is the limit of the stored event feed, "
-                            f"not evidence that none is scheduled.",
+                            f"not evidence that none is scheduled.{stale}",
                         )
                     )
         elif not brief.events:
@@ -610,7 +641,7 @@ def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
                     "events",
                     f"No scheduled event of any kind is on record in {brief.city} for "
                     f"{brief.window}. That is the limit of the stored event feed, not "
-                    f"evidence that nothing is on.",
+                    f"evidence that nothing is on.{stale}",
                 )
             )
 

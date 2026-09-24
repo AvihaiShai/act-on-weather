@@ -101,6 +101,11 @@ def stub(monkeypatch):
     monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON, TEL_AVIV])
     monkeypatch.setattr(router.queries, "coverage", lambda _conn: COVERAGE)
     monkeypatch.setattr(router.queries, "events", lambda *_a, **_k: [])
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        router.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
     monkeypatch.setattr(router.queries, "facts", lambda *_a, **_k: [])
     monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
 

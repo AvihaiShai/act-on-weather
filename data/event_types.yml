@@ -50,6 +50,16 @@ event_types:
     words: ["comedy", "comedian", "comedians", "stand-up", "standup", "stand up"]
     claims: ["comedy show", "stand-up show", "comedy gig"]
 
+  dance:
+    label: dance performance
+    # Added when the verified feed reached Tel Aviv: the Suzanne Dellal Centre
+    # is the city's dance house, and its listings are the only first-party
+    # event pages this project could check there. Without a category of its
+    # own a dance listing had to be filed as `theatre`, which is a different
+    # claim about what is on stage.
+    words: ["dance", "dancing", "ballet", "choreography", "contemporary dance"]
+    claims: ["dance performance", "dance show", "ballet"]
+
   exhibition:
     label: exhibition
     words: ["exhibition", "exhibitions", "exhibit", "exhibits"]

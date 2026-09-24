@@ -1,18 +1,36 @@
 {
   "entities": {
     "events": {
+      "by_city": {
+        "lisbon": 4,
+        "london": 10,
+        "reykjavik": 6,
+        "rome": 10,
+        "tel-aviv": 9
+      },
+      "checked_at": "2026-09-24T18:00:00+00:00",
       "cities": 5,
       "file": "data/snapshot/events.jsonl",
-      "lines": 26,
-      "sha256": "79083a52dedd678b27adb9098609b65c796ec47cc8024f14d3cdba70bfa693e3",
-      "stored": 26
+      "lines": 39,
+      "sha256": "f84835ca53ecd85c7a26776282163ef0dd6ea9d12ca79545b33c505068e2af4c",
+      "stored": 39,
+      "valid_until": "2026-10-15T18:00:00+00:00"
     },
     "events.samples": {
+      "by_city": {
+        "lisbon": 9,
+        "london": 9,
+        "reykjavik": 9,
+        "rome": 9,
+        "tel-aviv": 9
+      },
+      "checked_at": "2026-09-24T14:51:53.085567+00:00",
       "cities": 5,
       "file": "data/snapshot/events.samples.jsonl",
       "lines": 45,
-      "sha256": "a4999b7c8ee75eee5ed06e52b0c280348aa7cd901b0e8939a3280fb67b8e53e2",
-      "stored": 45
+      "sha256": "0678c6588538541dd9d86316a59690fb816c70bf03dde0c302a3d8e3caeee69d",
+      "stored": 45,
+      "valid_until": "2026-10-15T14:51:53.085567+00:00"
     },
     "facts": {
       "cities": 5,

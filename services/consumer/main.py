@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 
 import psycopg
 import yaml
@@ -51,7 +52,13 @@ COASTAL: dict[str, bool] = {}
 PATCHABLE = {
     "places": {"name", "category", "address", "lat", "lon"},
     "facts": {"title", "summary", "topic"},
-    "events": {"title", "category", "venue", "starts_at", "ends_at"},
+    # `checked_at` is patchable on purpose: re-opening a listing page and
+    # confirming that it is still on is a correction like any other, and it is
+    # the only way an operator can extend a row's life without editing the seed
+    # and re-ingesting. `valid_until` is deliberately NOT patchable -- it is
+    # derived from `checked_at` by the policy in config.EVENT_RECHECK_DAYS, and
+    # a hand-set expiry would let a row outlive the check that justifies it.
+    "events": {"title", "category", "venue", "starts_at", "ends_at", "checked_at"},
     "itineraries": {"title", "days"},
     "weather_daily": {
         "temp_max_c",
@@ -262,6 +269,12 @@ EVENT_COLS = [
     "source_url",
     "is_sample",
     "as_of",
+    # See migration 006. `checked_at` is when the listing was last read off its
+    # own page, and `valid_until` is when that reading stops being offered as a
+    # current schedule. Both travel on the message so the freshness policy is
+    # decided once, by the producer, rather than re-derived by every reader.
+    "checked_at",
+    "valid_until",
 ]
 
 
@@ -405,8 +418,20 @@ def apply_patch(cur: psycopg.Cursor, p: schemas.RecordPatch) -> None:
     if not p.fields:
         raise Poison("patch carries no fields")
 
-    assignments = ", ".join(f"{k} = %({k})s" for k in p.fields)
-    params = dict(p.fields)
+    fields = dict(p.fields)
+    if p.entity == "events" and "checked_at" in fields:
+        # Re-checking a listing is the point of patching `checked_at`, and a
+        # re-check that did not move the expiry would be a no-op: the row would
+        # carry a fresh check date and still be filtered out as stale. So the
+        # derived column moves with it, by the same policy the ingestor uses,
+        # which is also why `valid_until` is not patchable on its own.
+        checked = fields["checked_at"]
+        if isinstance(checked, str):
+            checked = datetime.fromisoformat(checked)
+        fields["valid_until"] = config.event_valid_until(checked)
+
+    assignments = ", ".join(f"{k} = %({k})s" for k in fields)
+    params = dict(fields)
     if p.entity == "weather_daily":
         city_id, _, forecast_date = p.entity_id.partition("/")
         params.update({"city_id": city_id, "forecast_date": forecast_date})

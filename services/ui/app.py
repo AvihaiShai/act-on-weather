@@ -112,14 +112,25 @@ def header(cov, health) -> None:
         return f"{(entities.get(name) or {}).get('rows', 0):,}"
 
     def events_chip() -> str:
-        """Never a single number. "52 events" reads as coverage; "7 verified +
-        45 samples" reads as what it is."""
+        """Never a single number. "52 events" reads as coverage; "39 verified +
+        45 samples" reads as what it is.
+
+        The counts behind it are current rows only, because that is what the
+        agent will answer from: an event row is a reading of a listing page
+        taken on a particular day, and once it is past its recheck date it
+        stops being offered as a schedule (migration 006). Rows that have
+        fallen out of the window are named separately rather than dropped from
+        the chip, so a reviewer looking at a thin number can tell a feed that
+        has gone stale apart from a feed that was never there.
+        """
         row = entities.get("events") or {}
         samples = int(row.get("samples") or 0)
         verified = int(row.get("rows") or 0) - samples
-        if samples:
-            return f"{verified} verified + {samples} samples"
-        return f"{verified} verified"
+        chip = f"{verified} verified + {samples} samples" if samples else f"{verified} verified"
+        expired = int((cov.get("event_freshness") or {}).get("expired") or 0)
+        if expired:
+            chip += f", {expired} expired"
+        return chip
 
     st.markdown(
         f"""
@@ -774,9 +785,15 @@ def render_day(day: dict) -> None:
                     unsafe_allow_html=True,
                 )
             else:
+                # The check date travels with the line, not just with the page.
+                # A traveller reading "Laver Cup, 25 to 27 September" is reading
+                # somebody's note of a web page, and the date that note was
+                # taken is the difference between a schedule and a recollection.
+                checked = str(event.get("checked_at") or "")[:10]
+                stamp = f" \N{MIDDLE DOT} listing checked {checked}" if checked else ""
                 st.markdown(
                     f"Event: [{event['title']}]({event['source_url']}) "
-                    f"({event['category']}{venue}){run}",
+                    f"({event['category']}{venue}){run}{stamp}",
                     unsafe_allow_html=True,
                 )
 
@@ -1477,6 +1494,28 @@ def page_coverage(cov) -> None:
         "Those rows are stamped with the as-of of the fetch that collected them."
     )
 
+    freshness = cov.get("event_freshness") or {}
+    current = int(freshness.get("current") or 0)
+    expired = int(freshness.get("expired") or 0)
+    covered = int(freshness.get("cities_covered") or 0)
+    total_cities = len(cov["cities"])
+    st.markdown("**Verified event listings**")
+    st.caption(
+        f"{current} checked listing(s) are still inside their recheck window, across "
+        f"{covered} of {total_cities} cities; {expired} have fallen out of it. Each row "
+        "records when somebody last opened its own listing page, and stops being "
+        "offered as a scheduled event once that reading is older than the recheck "
+        "window. Expired rows are kept and counted here rather than deleted: a feed "
+        "that has gone out of date and a city nobody ever checked are different "
+        "problems, and only a connected refresh fixes the first."
+        + (
+            f" The oldest current reading was taken {fmt_ts(freshness.get('oldest_check'))}"
+            f" and the first one expires {fmt_ts(freshness.get('next_expiry'))}."
+            if current
+            else ""
+        )
+    )
+
     st.markdown("**By city**")
     by_city = pd.DataFrame(cov["by_city"])
     st.dataframe(
@@ -1485,6 +1524,8 @@ def page_coverage(cov) -> None:
                 "name": "city",
                 "sample_events": "of which samples",
                 "coastal": "has a coast",
+                "verified_events_current": "verified events, current",
+                "verified_events_expired": "verified events, expired",
             }
         ).drop(columns=["city_id"]),
         hide_index=True,
@@ -1537,8 +1578,11 @@ def page_coverage(cov) -> None:
         "- **Background facts** — Wikipedia REST summaries, CC BY-SA 4.0: the city "
         "article plus one article per venue, resolved through its Wikidata sitelink\n"
         "- **Events (verified)** — `data/events.seed.jsonl`, hand-verified real "
-        "listings, each row carrying its own source URL. 26 rows across all five "
-        "cities, thin and uneven. "
+        "listings, each row carrying its own source URL. 39 rows across all five "
+        "cities, still thin and still uneven: London 10, Rome 10, Tel Aviv 9, "
+        "Reykjavík 6, Lisbon 4. Each row records when its listing page was last "
+        "opened and stops being reported as a current schedule once that reading "
+        "is past its recheck window. "
         "These are the only events a default run stores.\n"
         "- **Events (generated samples)** — `data/events.samples.jsonl`, replayed "
         "only in demo mode (`compose.demo.yml`). Titled *Sample: …*, marked "

@@ -131,6 +131,11 @@ def retrieve(question, events, today=TODAY, monkeypatch=None):
     monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON])
     monkeypatch.setattr(router.queries, "coverage", lambda _conn: coverage)
     monkeypatch.setattr(router.queries, "events", fake_events)
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        router.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
     monkeypatch.setattr(router.queries, "places", lambda *_a, **_k: [])
     monkeypatch.setattr(router.queries, "forecast", lambda *_a, **_k: [])
     monkeypatch.setattr(router.queries, "recommendations", lambda *_a, **_k: [])
@@ -274,6 +279,11 @@ def itinerary(monkeypatch):
     monkeypatch.setattr(agent_main.queries, "recommendations", lambda *_a, **_k: scores)
     monkeypatch.setattr(agent_main.queries, "places", lambda *_a, **_k: [])
     monkeypatch.setattr(agent_main.queries, "events", fake_events)
+    # Asked only when the retrieval above comes back empty, so a gap can
+    # say whether the feed went stale or was never there.
+    monkeypatch.setattr(
+        agent_main.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
+    )
     monkeypatch.setattr(agent_main.dates, "today_in", lambda _tz: TODAY)
     monkeypatch.setattr(type(agent_main.pool), "conn", property(lambda _self: object()))
 

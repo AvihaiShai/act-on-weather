@@ -38,10 +38,21 @@ import psycopg
 # IMMUTABLE, so no index can cover them -- and `events_city_start_idx` is left
 # serving the ordering alone. A deliberate trade: this table holds tens of
 # rows, and the right day matters more here than the scan does.
+#
+# Every read also derives `is_current` from `valid_until` (migration 006). A
+# stored listing is a reading of a web page taken at `checked_at`, and nothing
+# in an air-gapped run can notice that the venue cancelled the show afterwards.
+# So the row keeps its provenance and its place in the coverage counts, but
+# once its reading has expired it stops being returned as something that is
+# scheduled. `events()` filters on it by default; the coverage panel and the
+# API's `include_expired` are the two callers that deliberately do not, because
+# "we hold four London listings that nobody has re-checked since 24 September"
+# is a more useful thing to show a reader than an empty list.
 EVENTS_LOCALISED_SQL = """
 WITH localised AS (
   SELECT e.id, e.city_id, e.title, e.category, e.venue, e.starts_at, e.ends_at,
          e.source, e.source_url, e.is_sample, e.as_of, e.revision,
+         e.checked_at, e.valid_until, (e.valid_until > now()) AS is_current,
          c.timezone,
          (e.starts_at AT TIME ZONE c.timezone)::date AS starts_on,
          GREATEST(
@@ -91,6 +102,11 @@ SELECT 'recommendations', 'forecast window', MAX(updated_at), COUNT(*),
 UNION ALL
 -- Local dates, and the window closes on the last day an event is still
 -- running rather than on the last day one starts (see EVENTS_LOCALISED_SQL).
+-- Counted over the CURRENT rows only, so the window this reports is the window
+-- the agent will actually answer from. An expired listing still exists and is
+-- still counted separately by `EVENT_FRESHNESS_SQL`; what it must not do is
+-- stretch the advertised coverage window past the last date anything can
+-- actually be answered for.
 SELECT 'events', 'event window', MAX(e.as_of), COUNT(*),
        COUNT(DISTINCT e.city_id), COUNT(*) FILTER (WHERE e.is_sample),
        MIN((e.starts_at AT TIME ZONE c.timezone)::date)::text,
@@ -100,6 +116,7 @@ SELECT 'events', 'event window', MAX(e.as_of), COUNT(*),
                 AT TIME ZONE c.timezone)::date
            ))::text
   FROM events e JOIN cities c ON c.id = e.city_id
+ WHERE e.valid_until > now()
 UNION ALL
 SELECT 'places', 'not date-scoped', MAX(as_of), COUNT(*),
        COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample), NULL, NULL
@@ -125,8 +142,37 @@ SELECT c.id AS city_id, c.name, c.coastal,
        (SELECT COUNT(*) FROM places p WHERE p.city_id = c.id)          AS places,
        (SELECT COUNT(*) FROM facts f WHERE f.city_id = c.id)           AS facts,
        (SELECT COUNT(*) FROM events e WHERE e.city_id = c.id)          AS events,
-       (SELECT COUNT(*) FROM events e WHERE e.city_id = c.id AND e.is_sample) AS sample_events
+       (SELECT COUNT(*) FROM events e WHERE e.city_id = c.id AND e.is_sample) AS sample_events,
+       -- Split out per city because F9 was about exactly this shape: "26
+       -- events" read as coverage right up until you saw that eleven were in
+       -- London and one was in Tel Aviv. A per-city current count is what lets
+       -- the UI and the closure record say where the feed is thin without
+       -- anybody having to count rows by hand.
+       (SELECT COUNT(*) FROM events e
+         WHERE e.city_id = c.id AND NOT e.is_sample AND e.valid_until > now())
+                                                                       AS verified_events_current,
+       (SELECT COUNT(*) FROM events e
+         WHERE e.city_id = c.id AND NOT e.is_sample AND e.valid_until <= now())
+                                                                       AS verified_events_expired
   FROM cities c ORDER BY c.name
+"""
+
+# The freshness of the verified feed as a whole: how many readings are still
+# inside their recheck window, how many have fallen out of it, and when the
+# oldest still-current reading was taken. This is the number an operator needs
+# in order to decide whether to run a connected refresh, and it is deliberately
+# reported next to the coverage window rather than buried in a log line.
+EVENT_FRESHNESS_SQL = """
+SELECT COUNT(*) FILTER (WHERE NOT is_sample AND valid_until > now())  AS current,
+       COUNT(*) FILTER (WHERE NOT is_sample AND valid_until <= now()) AS expired,
+       COUNT(*) FILTER (WHERE is_sample)                              AS samples,
+       MIN(checked_at) FILTER (WHERE NOT is_sample AND valid_until > now())
+                                                                      AS oldest_check,
+       MIN(valid_until) FILTER (WHERE NOT is_sample AND valid_until > now())
+                                                                      AS next_expiry,
+       COUNT(DISTINCT city_id) FILTER (WHERE NOT is_sample AND valid_until > now())
+                                                                      AS cities_covered
+  FROM events
 """
 
 
@@ -145,6 +191,10 @@ def coverage(conn: psycopg.Connection) -> dict[str, Any]:
         "weather_first_date": weather.get("first_date"),
         "weather_last_date": weather.get("last_date"),
         "weather_as_of": weather.get("as_of"),
+        # Reported beside the windows rather than inside the events row,
+        # because it answers a different question: not "what does the system
+        # hold" but "how much of it is still worth quoting".
+        "event_freshness": conn.execute(EVENT_FRESHNESS_SQL).fetchone(),
         "cities": conn.execute(
             "SELECT id, name, country, lat, lon, timezone, coastal FROM cities ORDER BY name"
         ).fetchall(),
@@ -319,6 +369,7 @@ def events(
     end: date | None = None,
     category: str | None = None,
     categories: list[str] | None = None,
+    include_expired: bool = False,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """`category` is the API's single-value filter; `categories` is the agent's.
@@ -332,12 +383,21 @@ def events(
     match on overlap: a row comes back if any day it is active on falls inside
     the range, not only if it *begins* inside it. Every row carries `timezone`,
     `starts_on` and `ends_on` so no caller has to re-derive the day.
+
+    `include_expired` defaults to False, which is the important default in this
+    function: by default this returns only listings whose last check is still
+    inside the recheck window, because everything that consumes it -- the
+    agent's event answers, the itinerary, the API -- presents what it gets back
+    as a schedule. An operator who wants to see what has gone stale asks for it
+    explicitly, and gets `is_current` on every row to tell the two apart.
     """
     sql = [
         EVENTS_LOCALISED_SQL,
         "SELECT * FROM localised WHERE true",
     ]
     params: dict[str, Any] = {"limit": limit}
+    if not include_expired:
+        sql.append("AND is_current")
     if city_id:
         sql.append("AND city_id = %(city)s")
         params["city"] = city_id
@@ -357,6 +417,44 @@ def events(
     # different cities belong together, whatever their UTC instants are.
     sql.append("ORDER BY starts_on, starts_at LIMIT %(limit)s")
     return conn.execute("\n".join(sql), params).fetchall()
+
+
+def expired_events(
+    conn: psycopg.Connection,
+    city_id: str | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    categories: list[str] | None = None,
+) -> dict[str, Any]:
+    """How many listings the default read just filtered out, and when they
+    were checked.
+
+    "No concert is on record in Tel Aviv this week" and "the four concert
+    listings on record for Tel Aviv this week were last checked on 24 September
+    and are past their recheck date" are different answers, and only the second
+    one tells the reader what to do about it. The agent asks for this only when
+    it is about to report a gap, so the ordinary path still runs one query.
+    """
+    sql = [
+        EVENTS_LOCALISED_SQL,
+        "SELECT COUNT(*) AS expired, MAX(checked_at) AS last_checked",
+        "  FROM localised WHERE NOT is_current",
+    ]
+    params: dict[str, Any] = {}
+    if city_id:
+        sql.append("AND city_id = %(city)s")
+        params["city"] = city_id
+    if start:
+        sql.append("AND ends_on >= %(start)s::date")
+        params["start"] = start
+    if end:
+        sql.append("AND starts_on <= %(end)s::date")
+        params["end"] = end
+    if categories:
+        sql.append("AND category = ANY(%(categories)s)")
+        params["categories"] = list(categories)
+    return conn.execute("\n".join(sql), params).fetchone() or {"expired": 0, "last_checked": None}
 
 
 # ---------------------------------------------------------------- facts ----

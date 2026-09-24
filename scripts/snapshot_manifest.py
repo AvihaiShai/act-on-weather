@@ -89,6 +89,20 @@ def build() -> dict:
             entry["days"] = len(dates)
             entry["first_date"] = dates[0]
             entry["last_date"] = dates[-1]
+        if name.startswith("events"):
+            # The distribution, not just the total. F9 was a finding about
+            # shape: 26 verified events read as coverage of five cities until
+            # you saw that eleven were in London and one was in Tel Aviv. A
+            # derived per-city count means the README can state where the feed
+            # is thin without anybody re-counting the file by hand, and means a
+            # later edit that quietly concentrates the feed in one city shows
+            # up in the manifest diff.
+            by_city: dict[str, int] = {}
+            for row in rows:
+                by_city[row["city_id"]] = by_city.get(row["city_id"], 0) + 1
+            entry["by_city"] = dict(sorted(by_city.items()))
+            entry["checked_at"] = sorted({row["checked_at"] for row in rows})[0]
+            entry["valid_until"] = sorted({row["valid_until"] for row in rows})[0]
         entities[name] = entry
     return {"entities": entities}
 
