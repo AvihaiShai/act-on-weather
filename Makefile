@@ -10,7 +10,7 @@ PROBE          := -p aow-f3 -f compose.yml -f compose.model-probe.yml
 # Pinned in IMAGES.lock like every other image, and checked against it in CI.
 PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
-.PHONY: help stage stage-fetch stage-build up up-demo down logs ps test demo \
+.PHONY: help stage stage-fetch stage-build up up-demo down logs ps test verify demo \
         grounding offline no-data-loss update reenrich questions refresh \
         refresh-check snapshot samples manifest redrive dlq clean
 
@@ -26,6 +26,7 @@ help:
 	@echo ""
 	@echo "Proofs:"
 	@echo "  make test           unit tests, in a container, no network"
+	@echo "  make verify         every cheap gate CI runs on a PR, before you push"
 	@echo "  make offline        M6  -- air-gapped operation"
 	@echo "  make no-data-loss   M11 -- consumer, database, broker and poison-message drills"
 	@echo "  make update         M12 -- an edit through the queue, with history"
@@ -103,6 +104,12 @@ clean:
 test:
 	docker build -q -f tests/Dockerfile -t aow/tests:dev .
 	docker run --rm aow/tests:dev
+
+# The four cheap gates a pull request has to pass, run the way CI runs them:
+# each one separately, judged by its exit code. Read scripts/local-gates.sh for
+# why that distinction is the whole point of the target.
+verify:
+	bash scripts/local-gates.sh
 
 # The grounding gate (F3). Its own Compose project, so it never touches a
 # running stack: it starts a second llm on an isolated network, replays the
