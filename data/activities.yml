@@ -57,13 +57,20 @@
 #                    activity whose sea conditions are unknown can be reported
 #                    as at best `fair`, and can never be the thing the planner
 #                    recommends most confidently. The cap is the deliberate
-#                    price of not holding marine data -- adding a wave feed
-#                    would be the other way to close this, and it would mean a
-#                    second provider staged into the offline bundle. When the
-#                    cap actually binds, the scorer says so in the reasons, so
-#                    the number is never lowered silently.
+#                    price of not holding marine data. A wave feed is the other
+#                    way to close it, and the obvious candidate was probed
+#                    rather than assumed: Open-Meteo's keyless marine endpoint
+#                    answers for all four coast points in data/cities.yml, but
+#                    it forecasts 10 days against the 16 this system stores,
+#                    and it answers from a model cell up to 13 km from the
+#                    named point. Staging it would narrow this gap, not close
+#                    it -- six of every sixteen days would still be capped --
+#                    at the price of a second source in the offline bundle and
+#                    in the refresh path. See services/ingestor/providers.py
+#                    for the measured numbers. When the cap actually binds, the
+#                    scorer says so in the reasons, so the number is never
+#                    lowered silently.
 #   ideal_temp_c     [lo, hi]
-#   min_wind_kmh     wind the activity NEEDS (surfing); too calm is penalised
 #   max_wind_kmh / max_precip_mm / max_precip_prob / max_uv / min_sunshine_hours
 #   indoor_floor / indoor_weight   see rules.outdoor_comfort; they are what
 #                    stops every indoor activity scoring identically on a day
@@ -72,7 +79,14 @@
 # the next ingest. That is the intended effect -- a surfing recommendation
 # written under version 2 could say "good", and nothing in this system ever
 # measured the water it was talking about.
-rule_version: 3
+# 4: surfing lost `min_wind_kmh`. Version 3 capped what a sea score may claim
+# but left one rule still inferring a sea state from the land: a calm day was
+# penalised as "too flat for this", which is a statement about the waves made
+# out of a wind reading taken on shore. The claim was checked against
+# Open-Meteo's marine model for the same points and days and it does not hold
+# -- see the surfing block below. The rule is gone rather than retuned,
+# because no threshold on land wind makes it a measurement of swell.
+rule_version: 4
 
 activities:
 
@@ -220,6 +234,11 @@ activities:
 
   surfing:
     label: Surfing
+    # "waves" stays on this list on purpose. It is the word somebody asks the
+    # sea question with, and matching it routes the question to an activity
+    # that answers "nothing in the data measures the waves". Dropping it would
+    # leave the question unmatched and answered with a general forecast, which
+    # is the same silence with none of the explanation.
     keywords: ["surfing", "surf", "a surf", "surfs", "waves", "bodyboarding"]
     icon: "\U0001F3C4"
     indoor: false
@@ -228,13 +247,38 @@ activities:
     score_ceiling: 69
     where_noun: surf spot
     interests: [sports, outdoors]
+    # Only air and rain, deliberately. Every threshold here is a comfort limit
+    # on being outside in the water's general direction; none of them is a
+    # statement about the water.
     ideal_temp_c: [16, 32]
     max_precip_mm: 5.0
     max_precip_prob: 60
-    # Surfing is the one activity here that wants wind rather than merely
-    # tolerating it: a flat, windless day has no swell.
-    min_wind_kmh: 12
     max_wind_kmh: 45
+    # There is no `min_wind_kmh` here any more, and that is the point.
+    #
+    # Until rule_version 4 surfing carried `min_wind_kmh: 12`, justified as "a
+    # flat, windless day has no swell", and a calm day was told "only 8km/h of
+    # wind, too flat for this". That reason is a claim about the sea built out
+    # of a land wind reading, which is precisely what `sea_state_unmeasured`
+    # and the ceiling exist to forbid -- the cap was holding the number down
+    # while a reason string went on describing the waves.
+    #
+    # It is also wrong in both directions. The check that matters compares the
+    # wind this rule actually reads -- the stored city forecast, taken at the
+    # city `lat`/`lon` -- against Open-Meteo's marine model for that city's
+    # coast point, on the same day (both read 2026-09-25):
+    #   Lisbon / Praia de Carcavelos, 2026-10-03 -- stored land wind 10.9 km/h,
+    #     under the threshold, so the rule penalised the day as "too flat",
+    #     while the swell was 1.58 m at 8.8 s: a clean, rideable groundswell.
+    #     Groundswell is made by weather that is nowhere near the beach.
+    #   Rome / Lido di Ostia, 2026-09-25 -- stored land wind 16.9 km/h, well
+    #     past the threshold and so unpenalised, while the swell was 0.40 m at
+    #     3.6 s: short-period windslop, and nothing anyone would paddle out for.
+    # A rule that fails open on a flat sea and fails closed on a clean swell is
+    # not a weak measurement of the sea; it is not a measurement of it at all.
+    # Removing it costs nothing a reader can see -- the ceiling already holds
+    # these scores at 69 -- and it removes a sentence the system cannot stand
+    # behind.
 
   fishing:
     label: Fishing

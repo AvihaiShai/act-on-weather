@@ -6,6 +6,37 @@ to smuggle and the connected refresh has no account to expire -- and because
 its free tier includes the 16-day daily forecast the brief's "this week"
 questions need. The interface exists so that swapping it is a new file, not a
 rewrite; the README records the comparison.
+
+There is no marine provider, and that is a measured decision rather than an
+assumed one. Open-Meteo publishes a second keyless endpoint at
+``https://marine-api.open-meteo.com/v1/marine``, and it was probed on
+2026-09-25 against the four coast reference points ``data/cities.yml`` names.
+All four answered ``200`` with real values -- ``wave_height``,
+``swell_wave_height``, ``swell_wave_period``, ``wind_wave_height`` and
+``sea_surface_temperature`` -- so the near-shore grid does resolve Ostia,
+Carcavelos, Gordon Beach and Nautholsvik. Two properties are why it is still
+not ingested:
+
+* **Horizon.** ``forecast_days=16`` is accepted and returns 384 hourly slots,
+  but only the first 240 carry values: the wave model runs 10 days, against
+  the 16 days of land forecast this system stores. Six of every sixteen days
+  would have no sea data at all, so the ``score_ceiling`` in
+  ``data/activities.yml`` would still be needed for them. Marine data narrows
+  that gap; it does not close it.
+* **Where the answer comes from.** The service replies from its own grid cell,
+  not the point asked for: Ostia 2.9 km away, Carcavelos 4.6 km, Gordon Beach
+  7.2 km, Nautholsvik 13.2 km. That is a second "this was not measured where
+  you think" caveat stacked on the forecast-point distance the consumer
+  already stores.
+
+Against that, ingesting it completely -- a snapshot file and a manifest entry,
+a table and a migration, a consumer write path, the connected refresh, scoring
+and tests -- is not a small change, and ``scripts/snapshot_manifest.py``
+requires every snapshot entity to cover every configured city, which marine
+data for a five-city set including London cannot do. A half-integrated wave
+feed, stored but unscored or scored but unrefreshable, would be worse than the
+honest cap. The probe is recorded here so the next person weighs the same
+numbers instead of re-deriving them.
 """
 
 from __future__ import annotations

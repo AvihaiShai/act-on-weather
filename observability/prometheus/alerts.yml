@@ -245,15 +245,13 @@ groups:
         annotations:
           summary: "No successful ingestion from {{ $labels.source }} for over a day"
           description: >-
-            Stored data is more than 24 hours old, so the system will
-            increasingly answer 'no data for that date' rather than being
-            wrong -- which is the designed behaviour, not a bug. On an
-            air-gapped host this may simply be true and expected: new weather
-            requires connectivity. If the host can reach the internet, run
-            `make refresh`, which opens the egress window on the ingestor,
-            fetches, and closes it again. If it cannot, this alert is
-            information, not a fault; the UI and the agent already show the
-            as-of timestamp of everything they serve.
+            The ingestor has not accepted records in over 24 hours. This
+            measures ingestion activity, not source-data age: replaying an
+            old snapshot can make the timer recent without updating the
+            weather. Check Data coverage in the app for source as-of dates.
+            If the host can reach the internet, run `make refresh` to fetch
+            current weather. On an air-gapped host this alert can be expected;
+            the UI and agent show the as-of date of the data they serve.
 
   # =========================================================================
   - name: aow-service-quality

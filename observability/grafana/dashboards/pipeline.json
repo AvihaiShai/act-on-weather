@@ -81,13 +81,13 @@
       "id": 3,
       "type": "timeseries",
       "title": "Publish failures to the broker (failures/second, by producer)",
-      "description": "Counts attempts that did not reach RabbitMQ. A failed publish leaves the row pending and is retried with backoff, so this rising is not loss -- it is the early warning for the panel to its left. Almost always the broker being down or a wrong RABBITMQ_PASSWORD.",
+      "description": "Counts attempts that did not reach RabbitMQ. A producer with a readable outbox and no failures shows zero. If its outbox cannot be read, the series disappears rather than claiming zero. A failed publish leaves the row pending for retry.",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service) (rate(aow_outbox_publish_failures_total[5m]))",
+          "expr": "sum by (service) (rate(aow_outbox_publish_failures_total[5m])) or (0 * sum by (service) (aow_outbox_entries{state=\"pending\"}))",
           "legendFormat": "{{service}}"
         }
       ],
@@ -175,7 +175,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rabbitmq_detailed_queue_messages{queue=\"aow.dlq\"} or vector(0)",
+          "expr": "sum(rabbitmq_detailed_queue_messages{queue=\"aow.dlq\"}) or vector(0)",
           "instant": true
         }
       ],
@@ -203,14 +203,14 @@
     {
       "id": 7,
       "type": "stat",
-      "title": "Since the consumer last committed a message (seconds)",
-      "description": "Idle is normal -- this stack ingests in bursts, not continuously -- so read this together with the queue-depth panel. Queue depth high AND this number climbing is a stuck consumer. Queue depth zero and this number climbing just means nothing has been published lately.",
+      "title": "Time since the consumer last handled a message (seconds)",
+      "description": "Includes stored, duplicate and rejected deliveries. 'No delivery recorded' means the current consumer has not handled a message, or Prometheus cannot scrape it; check the scrape targets. Idle is normal when queue depth is zero.",
       "gridPos": { "h": 4, "w": 12, "x": 12, "y": 19 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - aow_consumer_last_message_timestamp_seconds",
+          "expr": "max(time() - (aow_consumer_last_message_timestamp_seconds{job=\"aow-consumer\"} > 0)) or vector(-1)",
           "instant": true
         }
       ],
@@ -218,6 +218,7 @@
         "defaults": {
           "unit": "s",
           "min": 0,
+          "mappings": [{ "type": "value", "options": { "-1": { "text": "No delivery recorded", "index": 0 } } }],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
         },
         "overrides": []
@@ -389,14 +390,14 @@
     {
       "id": 13,
       "type": "bargauge",
-      "title": "Data freshness: time since the last successful ingestion, by source (seconds)",
-      "description": "What every answer's as-of timestamp is ultimately derived from. On an air-gapped host this growing past a day is expected and not a fault -- new weather needs connectivity, and the agent answers 'no data for that date' rather than guessing. AowIngestionStale fires at 24h so that an operator who CAN connect knows to run `make refresh`.",
+      "title": "Time since the last successful ingestor run, by source (seconds)",
+      "description": "Time since this ingestor process last accepted records, not the age of the source data. 'Never succeeded' means the current process has no successful run. Replaying an old snapshot resets this timer but does not make the weather newer. Check Data coverage in the app for source as-of dates.",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 39 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - aow_ingestion_last_success_timestamp_seconds",
+          "expr": "(time() - (aow_ingestion_last_success_timestamp_seconds{job=\"aow-ingestor\"} > 0)) or (aow_ingestion_last_success_timestamp_seconds{job=\"aow-ingestor\"} * 0 - 1)",
           "instant": true,
           "legendFormat": "{{source}}"
         }
@@ -405,6 +406,7 @@
         "defaults": {
           "unit": "s",
           "min": 0,
+          "mappings": [{ "type": "value", "options": { "-1": { "text": "Never succeeded", "index": 0 } } }],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -424,23 +426,23 @@
     },
     {
       "id": 14,
-      "type": "timeseries",
-      "title": "Ingestion runs in the last 24h, by source and outcome",
-      "description": "Counts whole fetch cycles, not records. A run that failed is not a lost record -- nothing was accepted, so nothing needs recovering; it simply has to be re-fetched while connected. That distinction is the boundary of the M11 guarantee, and this panel is where it is visible.",
+      "type": "bargauge",
+      "title": "Ingestion attempts since ingestor start, by source and outcome",
+      "description": "Counts ingestor attempts since this process started. A snapshot replay is one attempt; live mode counts one per city. A short-lived `make refresh` container cannot be scraped and reports its outcome in the app's Update data page. A failed attempt accepted no records and must be retried while connected.",
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 46 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (source, result) (increase(aow_ingestion_runs_total[24h]))",
+          "expr": "sum by (source, result) (aow_ingestion_runs_total{job=\"aow-ingestor\"})",
+          "instant": true,
           "legendFormat": "{{source}} {{result}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "min": 0,
-          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never" }
+          "min": 0
         },
         "overrides": [
           {
@@ -450,8 +452,10 @@
         ]
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true
       }
     }
   ]

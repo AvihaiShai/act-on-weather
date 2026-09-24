@@ -145,7 +145,15 @@ if [ "$status" -eq 0 ]; then
   mapfile -t config_blobs < <(LC_ALL=C sort -u "$work/configs")
   [ "${#config_blobs[@]}" -eq 0 ] || tar -xf images.tar -C "$work" "${config_blobs[@]}" 2>/dev/null || true
 
-  for alias in $(awk '{print $1}' "$work/candidates" | LC_ALL=C sort -u); do
+  # Every alias that got this far, not only the ones with a candidate. An index
+  # whose children are all absent produces no candidate rows at all, so driving
+  # this loop from the candidate list let that archive -- the empty bundle in
+  # its index-shaped form, which is the shape both application images have now
+  # -- fall straight through and be reported complete.
+  mapfile -t checked < <(
+    for blob in "${blobs[@]}"; do printf '%s\n' "${alias_of[$blob]}"; done | LC_ALL=C sort -u
+  )
+  for alias in "${checked[@]}"; do
     loadable=0
     reasons=""
     while read -r candidate blob; do
@@ -181,6 +189,11 @@ if [ "$status" -eq 0 ]; then
     done < "$work/candidates"
 
     if [ "$loadable" -eq 0 ]; then
+      # No reason at all means no candidate was even examined: the alias is an
+      # index and not one of the manifests it lists is in the archive. Say that,
+      # rather than printing a bare colon and leaving the reader to guess.
+      [ -n "$reasons" ] || reasons="
+    its index lists no manifest whose blobs are in the archive"
       echo "images.tar cannot load $alias as $want_platform:$reasons" >&2
       status=1
     fi

@@ -1,6 +1,8 @@
 # CI/CD evidence matrix — review item #4 (S1, B1)
 
-**As of 2026-09-24.** Every row names a gate and a run, or says plainly that it is manual.
+**Updated 2026-09-25.** Named run counts and timings are historical; the new
+clean-daemon release gate awaits its first successful CI run. Every row names
+a gate and a run, or says plainly that it is manual.
 Written for a reviewer who wants to check the claims rather than read about them.
 
 Review item #4 asked whether CI/CD is adequate against **S1** ("Git repo with all code,
@@ -21,7 +23,7 @@ Listed first, because a matrix that silently corrects its own source is not evid
 
 | Statement in item #4 | Verdict | What disproves it |
 |---|---|---|
-| "Latest working tree **fails** its formatting gate on `services/ui/theme.py`" | **Stale** | `ruff check` and `ruff format --check` both clean on `main`; the `lint` job has been green on every run since. The failure existed only in an uncommitted working tree. |
+| "Latest working tree **fails** its formatting gate on `services/ui/theme.py`" | **Stale** | `ruff check` and `ruff format --check` passed in `main` run `36057664448`. The cited failure existed only in an uncommitted working tree. |
 | "action tags such as `checkout@v4` are not pinned to immutable SHAs" (F10) | **Stale** | Every `uses:` in both workflows is a 40-hex SHA, and the `guard` job **fails the build** on a bare tag. Additionally `sha_pinning_required` is now enforced at the GitHub platform level. |
 | "Integration does not exercise … outage/recovery" | **Stale** | `scripts/ci-integration.sh` runs five traced outage drills plus a full restart and a `count(*) = 6` exactly-once assertion, inside `build-and-scan`, on every PR. |
 | "Integration does not exercise model, UI, offline bundle or backup" | **Was true, now closed** | All four now have gates. See §3. |
@@ -33,8 +35,8 @@ Listed first, because a matrix that silently corrects its own source is not evid
 
 | Claim | Status | Evidence |
 |---|---|---|
-| Git repo with all code and configuration | **PASS** | Public repo; 10 Compose files, `.env.example`, `IMAGES.lock`, `models.lock`, `ruff.toml`, `pytest.ini`, `edge/nginx.conf`, `db/migrations/` all tracked |
-| CI/CD definitions present and running | **PASS** | `ci.yml` (8 jobs), `release.yml`; the current `main` push run is green, including publish |
+| Git repo with all code and configuration | **PASS** | Public repo (`private: false`, `visibility: public`, checked through the GitHub API on 2026-09-25); 10 Compose files, `.env.example`, `IMAGES.lock`, `models.lock`, `ruff.toml`, `pytest.ini`, `edge/nginx.conf`, `db/migrations/` all tracked |
+| CI/CD definitions present and running | **PASS** | `ci.yml` (8 jobs), `release.yml`; successful historical `main` push runs include publish |
 | README present and substantive | **PASS** | `README.md`, plus `docs/ARCHITECTURE.md`, `TECHNICAL_DECISIONS.md`, `docs/RELEASE.md` |
 | README counts are not stale | **PASS** | `scripts/snapshot_manifest.py --check` runs in `guard` on every PR |
 | No secrets committed | **PASS** | `guard` rejects a tracked `.env` and any non-placeholder password in `.env.example`; gitleaks runs on every PR; secret scanning and push protection enabled at the repo level |
@@ -45,11 +47,11 @@ S1 is a low bar and the repository clears it. Nothing here is open.
 
 ## 2. B1 — partial, and honest about which parts
 
-"Full tests for all components." The latest main unit job collected 1170 tests:
+"Full tests for all components." Main run `36057664448` collected 1170 tests:
 1168 passed and 2 skipped under `--network none`.
 Per component:
 
-| Component | Automated coverage today | Level |
+| Component | Automated coverage in the cited runs | Level |
 |---|---|---|
 | ingestor | unit + real broker/DB outage drills 4–5 driving its own outbox | **integration** |
 | consumer | real integration (smoke, reconnect, 5 drills); direct `handle()` tests route every declared key and distinguish stored, duplicate, rejected and retry outcomes | **integration + unit** |
@@ -77,7 +79,7 @@ All timings from real GitHub-hosted runners, not estimates.
 
 | Gate | What it asserts | When | Proof |
 |---|---|---|---|
-| `lint` | ruff check + format | every PR | green on current `main` run `36057664448` |
+| `lint` | ruff check + format | every PR | green in `main` run `36057664448` |
 | `unit` | 1168 passed, 2 skipped, `--network none` | every PR | run `36057664448` |
 | `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR and push | main guard run `36057664448` scanned 2.08 MB of committed content |
 | `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
@@ -87,7 +89,7 @@ All timings from real GitHub-hosted runners, not estimates.
 | `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `5bb498f` (run `36057664448`) |
 
 **Why `model-grounding` and `restore-drill` are release-candidate rather than per-PR:**
-not cost — 82s and 104s in the latest run are cheap next to `build-and-scan`. Blast radius. The restore
+not cost — 82s and 104s in run `36055211121` are cheap next to `build-and-scan`. Blast radius. The restore
 drill destroys volumes, and a stateful full-stack drill is the wrong default for every
 dependabot bump. One "expensive or stateful" tier, not two conventions. They run on
 `workflow_dispatch`, a `release-candidate` label, or a `release/*` branch.
@@ -108,7 +110,7 @@ answer, not a better one.
 | Re-resolve digests | **Independently re-resolves each digest against the registry** rather than trusting the artifact. `SHA256SUMS` is self-attesting — whoever replaces the tar replaces the checksums with it — so the registry is the only external anchor |
 | Build the bundle | Calls `scripts/package-offline.sh` **unmodified** |
 | Verify the bundle | Calls `scripts/verify-bundle-images.sh` **unmodified** |
-| Install it | Installs with no pulls and runs the release smoke |
+| Install it (current source) | Starts a second Docker 29.8.1 daemon, requires a distinct engine ID and zero images and volumes, then runs `install-offline.sh` with `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`; the installer uses `--pull never` and runs the release smoke. A passing release run of this new step is still pending |
 | Record the decision | `promotion-record.json`, written **into** the bundle so `SHA256SUMS` covers it |
 
 The promotion record states **per image** whether a digest was registry-re-resolved or
@@ -117,6 +119,20 @@ machine and not published by CI. A reader must not infer uniform provenance from
 that does not have it. Branch protection is read **live** at release time and recorded as
 `verified: false` with a reason if the read fails, rather than carrying a constant that
 would keep asserting a setting nobody checked.
+
+An authenticated operator read on 2026-09-25 independently queried
+`repos/AvihaiShai/act-on-weather/branches/main/protection`. It confirmed
+`enforce_admins.enabled: true` and four required contexts: `lint`, `unit`,
+`guard`, `build-and-scan` (their GitHub App ID is `15368`). Checks are
+`strict: false`; stale reviews are dismissed and the required approval count
+is zero. This closes the live settings inspection for that date. Historical
+promotion records still correctly report their own HTTP 403 reads as
+`verified: false`; the manual read is not embedded in those records and the
+workflow still cannot verify protection with its default token.
+
+The hosted release runs cited next used the **packaging daemon** for their
+no-pull install. They predate the second empty-daemon gate now written in
+`release.yml`; none is evidence that the new gate has passed.
 
 The first complete hosted release run, [`36048802334`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36048802334),
 completed on `b6b38f9`: bundle build, archive verification, no-pull install,
@@ -174,19 +190,21 @@ bundle checksum, all 10 image aliases matching the bundle lock, and a
 multi-gigabyte bundle. Branch protection remains explicitly unverified in
 the record because the live read returned HTTP 403.
 
-### The two install claims are not the same claim
+### Three install checks with different evidence
 
 | | What it proves | Where |
 |---|---|---|
-| **no-pull** | the bundle boots from its own bytes without pulling | `release.yml`, on a hosted runner that has internet throughout |
-| **cannot-pull** | the bundle installs and runs on a separate engine with an empty image store and no reachable egress, verified from inside a container | a separate engine, **manual** |
+| **Historical same-daemon no-pull** | the bundle boots without a pull on the packaging daemon; cached layers can mask a bad archive | hosted release runs cited above |
+| **New clean-daemon no-pull** | if it passes, the tar boots on a second initially empty image store without pulling | current `release.yml` source; **CI result pending** |
+| **Manual cannot-pull** | the bundle installs and runs on a separate engine with an empty image store and no reachable egress, verified from inside a container | F10's manual drill |
 
-The second is the stronger claim and it catches a defect class the first cannot: the
-no-pull check would have **passed the broken bundle described in §6**, because the
-packaging run's own `docker pull` left the layers in the runner's store. A same-host
-install cannot detect that even in principle. The air-gap check is manual by
-construction — a hosted runner cannot be made to lack a network it is using — and stays
-described as a manual operator step rather than dressed up as a gate.
+The historical same-daemon check would have **passed the broken bundle
+described in §6**, because packaging left the layers in that daemon's store.
+The new workflow source removes that cache dependency by starting another
+daemon and checking its initial image and volume lists. It has not yet run
+successfully after this change. The manual cannot-pull drill also cuts
+egress; the hosted runner remains connected even when its second daemon has
+an empty store. A physical air-gap transfer remains untested.
 
 #### cannot-pull: the run
 
@@ -218,7 +236,7 @@ everything below is the offline host's.
   out of band: `SHA256SUMS` matched, `images.bundle.lock` matched the CI manifest and the
   committed `IMAGES.lock`, `images.tar` matched by verified manifest digest (10 images),
   and — the check added after §6 — *"images.tar is complete: every image has its config
-  and layers, as linux/amd64"*. 195 files verified.
+  and layers, as linux/amd64"*. 194 files verified.
 - **Install:** exit 0 in 40 s, **0 pull attempts** in the log, 10 images loaded.
   **Smoke:** `PASS: API, stored forecast, scores, agent, model, UI and edge`; stored counts
   matched `MANIFEST.json`; `aow_backend Internal=true`.
@@ -309,7 +327,7 @@ Three things are worth keeping from how this was found:
 
    Confirmed directly afterwards, on Docker Desktop 29.8.0 with a containerd store — the
    same engine and version on which the wrapped image had appeared unexportable. Pulled
-   fresh from `main`, the current image exports completely:
+   fresh from `main` at that time, the image exported completely:
 
    ```
    type: application/vnd.docker.distribution.manifest.list.v2+json
@@ -457,7 +475,7 @@ PR #10 was closed as superseded.
 
 | Item | Why it is not a gate |
 |---|---|
-| Air-gap install certification | A hosted runner has internet throughout. Requires a separate engine with egress dropped; manual by construction. **Executed** — see §4 |
+| Air-gap install exercise | A hosted runner has internet throughout. Requires a separate engine with egress dropped; manual by construction. **Executed** — see §4 |
 
 ## 10. Known limits of this matrix
 

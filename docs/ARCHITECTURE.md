@@ -239,9 +239,9 @@ it has no separate architectural role.
   not move the window forward. A question outside stored weather coverage is
   refused; refresh needs an operator and temporary internet access.
 - **Coverage:** The app supports five configured cities and an 18-activity
-  catalogue. Default event data is 39 hand-verified listings across all five
-  cities, unevenly spread (london 10, rome 10, tel-aviv 9, reykjavik 6,
-  lisbon 4); the 45 generated events are opt-in demo samples and are labelled
+  catalogue. Default event data is 55 hand-verified listings across all five
+  cities, unevenly spread (london 10, rome 10, tel-aviv 8, reykjavik 13,
+  lisbon 14); the 45 generated events are opt-in demo samples and are labelled
   as such. Cities and date ranges outside that set honestly show no event on
   record.
 - **Event freshness:** A stored event is a reading of a listing page taken on a

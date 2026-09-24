@@ -17,7 +17,7 @@
       "description": "Prometheus can scrape the local llama.cpp server. A down model delays generated wording and agent answers; weather ingestion continues.",
       "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
-      "targets": [{ "refId": "A", "expr": "up{job=\"llm\"} or vector(0)", "instant": true }],
+      "targets": [{ "refId": "A", "expr": "max(up{job=\"llm\"}) or vector(0)", "instant": true }],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -43,10 +43,10 @@
       "id": 3,
       "type": "stat",
       "title": "Failed agent answers, last 6h",
-      "description": "Agent /ask responses with a 5xx status, plus unhandled exceptions. Validation errors from callers are excluded.",
+      "description": "Agent /ask responses with a 5xx status, including unhandled exceptions. Validation errors from callers are excluded.",
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
-      "targets": [{ "refId": "A", "expr": "(sum(increase(aow_http_requests_total{service=\"agent\",route=\"/ask\",status=~\"5..\"}[6h])) or vector(0)) + (sum(increase(aow_http_exceptions_total{service=\"agent\",route=\"/ask\"}[6h])) or vector(0))", "instant": true }],
+      "targets": [{ "refId": "A", "expr": "sum(increase(aow_http_requests_total{service=\"agent\",route=\"/ask\",status=~\"5..\"}[6h])) or vector(0)", "instant": true }],
       "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
     },

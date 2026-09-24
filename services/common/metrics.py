@@ -177,9 +177,15 @@ class HttpMetrics:
                 HTTP_EXCEPTIONS.labels(
                     service=self.service, method=method, route=route, type=raised
                 ).inc()
-            elif status is not None:
+            # An unhandled exception before response.start becomes a 500 in
+            # Starlette's outer error middleware. Count that response here too:
+            # otherwise the 5xx ratio omits exactly the failures it should show.
+            # If streaming failed after response.start, keep the status that
+            # was actually sent instead of inventing a second 500 response.
+            observed_status = status or ("500" if raised is not None else None)
+            if observed_status is not None:
                 HTTP_REQUESTS.labels(
-                    service=self.service, method=method, route=route, status=status
+                    service=self.service, method=method, route=route, status=observed_status
                 ).inc()
             # Neither branch: the client went away before a response started.
             # Counted as nothing rather than invented as a status, because a

@@ -119,7 +119,7 @@ on screen is worse than no cut list.
 | The markers map page | **Reversed.** The Places map tab ships, drawn over a bundled OpenStreetMap extract rather than a tile service — no residential streets, no labels, no routing, nothing past 20 km from the centre. Tiles are a runtime download, and the air-gap rule outranks the cartography. |
 | Marine data and surfing | **Half reversed.** No marine provider was staged, so there is still no wave, swell or sea-state data. Surfing *is* scored, in coastal cities only, from wind, temperature and precipitation — the day, not the surf — and the UI and the agent both say so. |
 | B1, B3 (bonuses) | **Partly reversed.** CI runs a Compose integration test (`scripts/ci-integration.sh`) over the queue → database → API path, and the demo scripts carry the model and UI flows. B3 is partial and not as a bonus feature: reconnect-with-backoff, `restart: unless-stopped`, healthchecks and automatic re-enrichment. |
-| B2 (bonus) | **Reversed. Met.** Prometheus and Grafana ship as an opt-in overlay (`compose.observability.yml`), pinned and air-gapped, with request/error/latency and pipeline metrics, 11 alert rules and two provisioned dashboards. No Alertmanager: a single air-gapped host has nowhere to route to. |
+| B2 (bonus) | **Reversed. Met.** Prometheus and Grafana ship as an opt-in overlay (`compose.observability.yml`), pinned and air-gapped, with request/error/latency and pipeline metrics, 11 alert rules and three provisioned dashboards -- service health, pipeline, and a dedicated LLM view. No Alertmanager: a single air-gapped host has nowhere to route to. |
 
 Never cut, and all verified: one-command startup, the full outbox → queue →
 consumer → Postgres path, the coverage gate and as-of footers, both example

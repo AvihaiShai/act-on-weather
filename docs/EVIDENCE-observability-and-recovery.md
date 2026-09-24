@@ -347,7 +347,7 @@ Stated, not implied.
   reading zero — it serves its last cached value, because dialling a new
   connection per scrape would park a thread per scrape.
 * **Grafana's UI was not opened in a browser** under the observability edge's
-  CSP. The header is served and both dashboards load through the API with all
+  CSP. The header is served and all three dashboards load through the API with all
   panels intact, but no visual confirmation was made.
 * **`llm` metrics were never observed**, only its scrape URL confirmed.
 * **One machine, one daemon.** No cross-host or cross-architecture restore was
@@ -376,5 +376,5 @@ docker build -q -f tests/Dockerfile -t aow/tests:dev . && docker run --rm --netw
 Gates run on this change set: **832 unit tests** under `--network none`;
 `ruff check` and `ruff format --check` over `services tests scripts` clean;
 every Compose overlay renders against `.env.example`; `bash -n` over every
-script; `IMAGES.lock` matches every pinned reference (8 images); `promtool check
+script; `IMAGES.lock` matches every pinned reference (9 images); `promtool check
 config` and `check rules` pass.

@@ -1,0 +1,159 @@
+{
+  "title": "Act on Weather | Monitoring overview",
+  "description": "Shared operational landing page. Open the detailed dashboards for diagnosis; Data coverage in the app shows the age of source weather and activity data.",
+  "tags": ["aow"],
+  "timezone": "utc",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Monitoring dashboards",
+      "description": "Choose a detailed view. These links work for the local read-only Viewer account.",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "### Act on Weather monitoring\n[Service health](/d/aow-service-health) · [Pipeline](/d/aow-pipeline) · [LLM observability](/d/aow-llm-observability)\n\nCurrent status is below. Open a detailed dashboard to investigate a nonzero alert or backlog."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Application services reachable (of 5)",
+      "description": "API, agent, ingestor, consumer and enricher. Prometheus writes the up metric even when a target cannot be scraped.",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "count(up{job=~\"aow-.*\"} == 1) or vector(0)", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 5,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 4 }, { "color": "green", "value": 5 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Local model server",
+      "description": "A down model delays generated wording and agent answers. Weather ingestion and storage continue.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "max(up{job=\"llm\"}) or vector(0)", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [{ "type": "value", "options": { "0": { "text": "down", "color": "orange", "index": 0 }, "1": { "text": "up", "color": "green", "index": 1 } } }],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Dead-lettered messages",
+      "description": "Quarantined messages in aow.dlq. Use make dlq to inspect their validation errors before attempting a redrive.",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rabbitmq_detailed_queue_messages{queue=\"aow.dlq\"}) or vector(0)", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Firing alerts",
+      "description": "Rules currently firing in Prometheus. The alert table below identifies the rules and affected targets.",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Messages waiting for consumer",
+      "description": "Current aow.ingest queue depth from RabbitMQ. A growing count means the consumer is falling behind.",
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rabbitmq_detailed_queue_messages{queue=\"aow.ingest\"}) or vector(0)", "instant": true }],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 500 }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Accepted records awaiting publication",
+      "description": "Records durable in a producer outbox but not yet confirmed by RabbitMQ. See Pipeline for age by producer.",
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(aow_outbox_entries{state=\"pending\"})", "instant": true }],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Time since last consumer delivery",
+      "description": "Seconds since the consumer handled a stored, duplicate or rejected message. An idle consumer is normal when its queue is empty.",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "max(time() - (aow_consumer_last_message_timestamp_seconds{job=\"aow-consumer\"} > 0)) or vector(-1)", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": [{ "type": "value", "options": { "-1": { "text": "No delivery recorded", "index": 0 } } }],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Firing alert details",
+      "description": "Active Prometheus alerts with severity, job and target. An empty table is the healthy state. Open Service health for context and remediation notes.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
+      "targets": [{ "refId": "A", "expr": "ALERTS{alertstate=\"firing\"}", "instant": true, "format": "table" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 10,
+      "type": "text",
+      "title": "Reading this overview",
+      "description": "Where to look next for source data and pipeline incidents.",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 21 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Weather and activity freshness:** check [Data coverage in the app](http://127.0.0.1:8080/). Grafana's ingestion timer measures a successful run, not the age of source data.\n\n**Dead letters:** `make dlq` lists quarantined messages. Fix their cause before running `make redrive`."
+      }
+    }
+  ]
+}

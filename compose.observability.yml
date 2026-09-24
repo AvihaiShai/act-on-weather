@@ -129,7 +129,11 @@ services:
       # published on the host, even if only on loopback.
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # The app's Monitoring menu opens dashboard links without a login form.
+      # Grafana is published on loopback only; visitors get Viewer permissions,
+      # while changing settings still requires the admin account above.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_USERS_ALLOW_SIGN_UP: "false"
 
       # ---- everything that would otherwise reach the internet -----------
@@ -180,6 +184,9 @@ services:
       GF_SECURITY_DISABLE_GRAVATAR: "true"
 
       # ---- provisioning -------------------------------------------------
+      # A shared landing page for the anonymous Viewer. Personal dashboard
+      # stars do not populate the home page for other users.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/home.json
       # File-provisioned, not clicked together in the UI. The datasource and
       # both dashboards are in Git, so a rebuilt stack has the same dashboards
       # and a reviewer can read them as text.
@@ -188,6 +195,7 @@ services:
       # and the path is unchanged, so this is just the published address.
       GF_SERVER_ROOT_URL: http://localhost:3000/
     volumes:
+      - ./observability/grafana/home.json:/etc/grafana/home.json:ro
       # The two provisioning subdirectories individually, NOT the whole
       # /etc/grafana/provisioning tree. Mounting the parent replaces the
       # image's own directory, which also contains empty `plugins/`,
@@ -222,10 +230,9 @@ services:
     mem_limit: 64m
     volumes:
       - ./observability/edge/nginx.conf:/etc/nginx/nginx.conf:ro
-    # Loopback, for the same reason as `edge`: Grafana has a login form, and a
-    # 0.0.0.0 binding would offer it to every client that can route to this
-    # host. AOW_BIND_ADDR moves the boundary deliberately, and the README's
-    # Security section is the place that says what else has to be true first.
+    # Loopback is essential with anonymous Viewer access: a 0.0.0.0 binding
+    # would expose every dashboard and Prometheus query to the network.
+    # AOW_BIND_ADDR moves that boundary deliberately; see README Security.
     ports:
       - "${AOW_BIND_ADDR:-127.0.0.1}:3000:3000"   # Grafana
     networks: [frontend, backend]

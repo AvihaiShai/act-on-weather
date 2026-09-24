@@ -241,6 +241,61 @@ def test_added_file_that_sha256sums_does_not_list(bundle: Path) -> None:
     assert "./scripts/helpful.sh" in output(result)
 
 
+def test_promotion_record_dropped_in_is_tolerated(bundle: Path) -> None:
+    # release.yml writes promotion-record.json into the bundle and reseals
+    # SHA256SUMS over it, so on that path it is listed and checked. The bundle
+    # an operator actually ships is rebuilt by package-offline.sh, which does
+    # not write it -- it arrives separately, as the aow-promotion-<sha>
+    # workflow artifact, and docs/RELEASE.md tells the operator to put it in
+    # the folder and compare it. Before it was excluded, doing exactly what the
+    # runbook says failed verification with "files present that SHA256SUMS does
+    # not list" and aborted the install.
+    _write(bundle / "promotion-record.json", '{"release_commit": "' + COMMIT + '"}\n')
+    result = verify(bundle)
+    assert result.returncode == 0, output(result)
+    assert "Bundle verified" in result.stdout
+
+
+def test_only_root_promotion_record_is_exempt(bundle: Path) -> None:
+    _write(bundle / "scripts" / "promotion-record.json", "unlisted\n")
+    result = verify(bundle)
+    assert result.returncode != 0
+    assert "./scripts/promotion-record.json" in output(result)
+
+
+def test_promotion_record_is_still_checked_when_the_release_sealed_it(
+    bundle: Path,
+) -> None:
+    # The exclusion must not become a hole. A record the release sealed in is
+    # listed in SHA256SUMS, so `sha256sum -c` covers it like every other file
+    # and editing it after the seal still has to fail.
+    _write(bundle / "promotion-record.json", '{"release_commit": "' + COMMIT + '"}\n')
+    rewrite_sums(bundle)
+    _write(bundle / "promotion-record.json", '{"release_commit": "tampered"}\n')
+    result = verify(bundle)
+    assert result.returncode != 0
+    assert "./promotion-record.json: FAILED" in output(result)
+
+
+def test_file_manager_metadata_is_refused_and_named(bundle: Path) -> None:
+    # Copying the folder to removable media with Finder or Explorer rather than
+    # with tar or rsync leaves the file manager's own metadata in it. The
+    # release still refuses it -- a release folder holds what the release put
+    # there -- but the operator is told what those files are, because "files
+    # present that SHA256SUMS does not list" on a .DS_Store reads like a
+    # tampered bundle and is not one.
+    metadata = (".DS_Store", "._images.tar", "desktop.ini", "Thumbs.db")
+    for name in metadata:
+        _write(bundle / name, "metadata\n")
+    result = verify(bundle)
+    assert result.returncode != 0
+    text = output(result)
+    assert "does not list" in text
+    for name in metadata:
+        assert "./" + name in text
+    assert "file-manager metadata" in text
+
+
 def test_corrupted_model_fails_against_models_lock(bundle: Path) -> None:
     # Re-hashed, so this is not SHA256SUMS catching it: models.lock is
     # committed, so its digest was fixed before the bundle existed.

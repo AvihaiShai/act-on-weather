@@ -150,12 +150,11 @@ The policy for this system, and why:
   `record_history` behind them, none of which can be re-fetched from anywhere.
 * Size makes this cheap. A full backup of a five-city stack is a few megabytes.
 
-Pruning is manual, and that is a choice:
-
-```bash
-# Keep the 7 newest backup directories, delete the rest.
-ls -1d backups/*/ | sort | head -n -7 | xargs -r rm -rf
-```
+Pruning is manual. Before deleting a directory, check that the seven most
+recent **separate backup days** and four weekly backups remain, then remove
+only the older directories selected by that review. A simple "keep the seven
+newest directories" command would violate the weekly retention rule whenever
+daily backups are present.
 
 Nothing prunes automatically. This stack has no scheduler, and adding one would
 mean a component that can silently stop — at which point the operator believes
@@ -275,6 +274,17 @@ docker compose -p "$P" -f compose.yml exec -T api \
   host loss takes them with it unless you copy them off.
 * **The restore needs the images.** The manifest records digests; it does not
   contain images. On an air-gapped host they must already be loaded.
+* **On an offline release install, both commands need the bundle overlay.** The
+  bundle loads its images as `aow-bundle/<alias>:<commit>`, not as the
+  `aow/services:dev` and `aow/ui:dev` tags `compose.yml` names, so a plain run
+  would try to build or pull and fail with no network. From inside the release
+  folder:
+
+  ```bash
+  export AOW_IMAGE_VERSION="$(cat release-version.txt)"
+  AOW_COMPOSE_OVERLAY=compose.bundle.yml bash scripts/backup-state.sh
+  AOW_COMPOSE_OVERLAY=compose.bundle.yml bash scripts/restore-state.sh backups/<id>
+  ```
 * **This is proven on one machine.** The drill restores into a fresh Compose
   project on the same Docker daemon. Cross-host and cross-architecture restores
   are not exercised.
@@ -311,7 +321,12 @@ Then it destroys the project's volumes (`down -v`), restores, and verifies with
 `psql` from a separate session.
 
 **Measured on the development machine (Windows 11, Docker Desktop 4.92, WSL2
-backend, CPU only) on 2026-09-24, by the command above:**
+backend, CPU only) on 2026-09-24, by the command above.** This is the run taken
+*before* F9 merged. The drill was run again on the tree as merged and is the
+figure the README and `docs/EVIDENCE-observability-and-recovery.md` quote:
+**RPO 26 s, RTO 35 s, 120 s wall clock**, with the raw console output in that
+document. The table below is kept because it carries the backup-size breakdown
+the later run did not record; where the two differ, the later one is current.
 
 | Figure | Measured | What it is |
 |---|---|---|

@@ -11,19 +11,25 @@ PROBE          := -p aow-f3 -f compose.yml -f compose.model-probe.yml
 # Pinned in IMAGES.lock like every other image, and checked against it in CI.
 PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
-.PHONY: help stage stage-fetch stage-build preflight up up-demo down logs ps \
+.PHONY: help bootstrap stage stage-fetch stage-build preflight up up-demo down logs ps \
         test verify demo \
         grounding offline no-data-loss update reenrich questions refresh \
         refresh-check snapshot samples manifest redrive dlq clean \
         monitor monitor-down backup restore backup-restore
 
 help:
+	@echo "First run (needs the internet, once):"
+	@echo "  make bootstrap      everything below in one command: check Docker,"
+	@echo "                      create .env with generated passwords, stage,"
+	@echo "                      start, wait for health, print the URLs."
+	@echo "                      Safe to rerun. make bootstrap ARGS=\"--offline\""
+	@echo ""
 	@echo "Staging (needs the internet, once):"
 	@echo "  make stage          pull the pinned images, stage the model, build the services"
 	@echo "  make preflight      check .env and the staged model, without starting anything"
 	@echo ""
 	@echo "Running (no internet needed):"
-	@echo "  make up             start everything (39 verified events, no generated rows)"
+	@echo "  make up             start everything (55 verified events, no generated rows)"
 	@echo "  make up-demo        same, plus 45 labelled sample events in all five cities"
 	@echo "  make ps / logs      status / follow the logs"
 	@echo "  make down           stop"
@@ -55,6 +61,18 @@ help:
 	@echo "  make monitor        start Prometheus and Grafana (optional overlay)"
 	@echo "  make backup         back up Postgres, the outboxes and the broker topology"
 	@echo "  make restore DIR=backups/<id>  restore one into an isolated project"
+
+# -------------------------------------------------------------- first run --
+# The one command a new operator runs. It is not a new way to start the stack:
+# it runs the same docker commands the README documents, in the README's
+# order, and adds the checks a person otherwise does by eye -- is Docker here,
+# does it have the memory and disk, is .env real rather than a file full of
+# `change-me`, and is the stack actually healthy yet.
+#
+# Pass flags through ARGS, e.g. make bootstrap ARGS="--offline --timeout 600".
+# Rerunning it never rewrites .env, re-downloads the model or touches a volume.
+bootstrap:
+	bash scripts/bootstrap.sh $(ARGS)
 
 # ---------------------------------------------------------------- staging --
 stage: stage-fetch stage-build
@@ -100,7 +118,7 @@ up:
 
 # Demo mode. Adds data/snapshot/events.samples.jsonl -- 45 generated rows,
 # every one is_sample and titled "Sample: ..." -- so the planner and the agent
-# can be shown on days the 39 verified events do not cover.
+# can be shown on days the 55 verified events do not cover.
 # Going back to "make up" restarts the consumer, which deletes them.
 up-demo:
 	$(COMPOSE) $(DEMO) up -d

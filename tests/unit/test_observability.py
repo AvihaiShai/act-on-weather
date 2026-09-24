@@ -44,6 +44,7 @@ ALERTS = OBS / "prometheus" / "alerts.yml"
 DATASOURCE = OBS / "grafana" / "provisioning" / "datasources" / "prometheus.yml"
 DASHBOARD_PROVIDER = OBS / "grafana" / "provisioning" / "dashboards" / "dashboards.yml"
 DASHBOARD_DIR = OBS / "grafana" / "dashboards"
+HOME_DASHBOARD = OBS / "grafana" / "home.json"
 OVERLAY = ROOT / "compose.observability.yml"
 
 # ---------------------------------------------------------------------------
@@ -109,7 +110,7 @@ CORE_PANEL_TYPES = {"timeseries", "stat", "table", "gauge", "bargauge", "row", "
 # by default. `backend` being internal already makes all of them impossible;
 # these are defence in depth, and their absence would be a claim in the README
 # that the configuration does not back up.
-GRAFANA_MUST_BE_DISABLED = {
+GRAFANA_NO_OUTBOUND = {
     "GF_ANALYTICS_REPORTING_ENABLED": "false",
     "GF_ANALYTICS_CHECK_FOR_UPDATES": "false",
     "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES": "false",
@@ -121,8 +122,6 @@ GRAFANA_MUST_BE_DISABLED = {
     # even with every setting above disabled. Found in the container's logs.
     "GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED": "true",
     "GF_SECURITY_DISABLE_GRAVATAR": "true",
-    "GF_AUTH_ANONYMOUS_ENABLED": "false",
-    "GF_USERS_ALLOW_SIGN_UP": "false",
 }
 
 # A bare metric name at a token boundary. `{` and `(` are excluded after the
@@ -170,6 +169,12 @@ def dashboard_panels() -> list[tuple[str, dict]]:
             for nested in panel.get("panels", []) or []:
                 panels.append((path.name, nested))
     return panels
+
+
+def panel_query(filename: str, panel_id: int) -> str:
+    dashboard = json.loads((DASHBOARD_DIR / filename).read_text(encoding="utf-8"))
+    panel = next(panel for panel in dashboard["panels"] if panel["id"] == panel_id)
+    return panel["targets"][0]["expr"]
 
 
 def promql_expressions() -> list[tuple[str, str]]:
@@ -463,6 +468,24 @@ def test_the_dashboards_are_provisioned_from_the_mounted_directory():
     )
 
 
+def test_grafana_home_is_a_shared_operational_overview():
+    grafana = overlay()["services"]["grafana"]
+    assert grafana["environment"]["GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH"] == (
+        "/etc/grafana/home.json"
+    )
+    assert "./observability/grafana/home.json:/etc/grafana/home.json:ro" in grafana["volumes"]
+    home = json.loads(HOME_DASHBOARD.read_text(encoding="utf-8"))
+    # The static home file is not provisioned as a saved dashboard. A UID here
+    # makes Grafana request annotations for an unknown dashboard on every load.
+    assert "uid" not in home
+    panels = {panel["id"]: panel for panel in home["panels"]}
+    links = panels[1]["options"]["content"]
+    for uid in ("aow-service-health", "aow-pipeline", "aow-llm-observability"):
+        assert f"/d/{uid}" in links
+    assert len(home["panels"]) >= 8
+    assert 'ALERTS{alertstate="firing"}' in panels[9]["targets"][0]["expr"]
+
+
 @pytest.mark.parametrize("path", dashboard_files(), ids=lambda p: p.name)
 def test_every_dashboard_is_valid_json_with_a_stable_uid(path):
     doc = json.loads(path.read_text(encoding="utf-8"))
@@ -508,6 +531,37 @@ def test_every_panel_names_the_provisioned_datasource(filename, panel):
     assert panel.get("datasource", {}).get("uid") == "aow-prometheus"
 
 
+def test_single_value_panels_do_not_append_a_second_zero_series():
+    assert panel_query("service-health.json", 4) == 'max(up{job="llm"}) or vector(0)'
+    assert panel_query("llm-observability.json", 1) == 'max(up{job="llm"}) or vector(0)'
+    assert panel_query("pipeline.json", 6) == (
+        'sum(rabbitmq_detailed_queue_messages{queue="aow.dlq"}) or vector(0)'
+    )
+
+
+def test_idle_failure_panels_have_a_real_zero_baseline():
+    publish_failures = panel_query("pipeline.json", 3)
+    assert 'aow_outbox_entries{state="pending"}' in publish_failures
+    assert " or (0 *" in publish_failures
+    server_errors = panel_query("service-health.json", 6)
+    assert " or (0 *" in server_errors
+    assert "aow_http_requests_total[5m]" in server_errors
+
+
+def test_ingestion_count_and_consumer_age_use_the_responsible_process():
+    assert 'aow_ingestion_runs_total{job="aow-ingestor"}' in panel_query("pipeline.json", 14)
+    assert "increase(" not in panel_query("pipeline.json", 14)
+    assert 'aow_consumer_last_message_timestamp_seconds{job="aow-consumer"}' in panel_query(
+        "pipeline.json", 7
+    )
+
+
+def test_agent_failures_are_not_double_counted_as_responses_and_exceptions():
+    failures = panel_query("llm-observability.json", 3)
+    assert "aow_http_requests_total" in failures
+    assert "aow_http_exceptions_total" not in failures
+
+
 # ---------------------------------------------------------------------------
 # The overlay itself: the isolation property, asserted over the shipped file.
 
@@ -548,7 +602,7 @@ def test_prometheus_is_not_published_and_grafana_is_not_published_directly():
     assert "ports" not in services["grafana"]
 
 
-@pytest.mark.parametrize(("variable", "value"), sorted(GRAFANA_MUST_BE_DISABLED.items()))
+@pytest.mark.parametrize(("variable", "value"), sorted(GRAFANA_NO_OUTBOUND.items()))
 def test_grafana_phones_home_for_nothing(variable, value):
     """Each of these is a real outbound call Grafana makes by default. The
     network already makes them impossible; turning them off as well means
@@ -558,6 +612,15 @@ def test_grafana_phones_home_for_nothing(variable, value):
     assert (
         environment.get(variable) == value
     ), f"{variable} is {environment.get(variable)!r}, expected {value!r}"
+
+
+def test_monitoring_shortcuts_open_as_read_only_local_viewer():
+    environment = overlay()["services"]["grafana"]["environment"]
+    assert environment["GF_AUTH_ANONYMOUS_ENABLED"] == "true"
+    assert environment["GF_AUTH_ANONYMOUS_ORG_ROLE"] == "Viewer"
+    assert environment["GF_USERS_ALLOW_SIGN_UP"] == "false"
+    ports = overlay()["services"]["edge-observability"]["ports"]
+    assert all("${AOW_BIND_ADDR:-127.0.0.1}" in port for port in ports)
 
 
 def test_grafanas_admin_password_comes_from_env_and_has_no_default():

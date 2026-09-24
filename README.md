@@ -34,6 +34,44 @@ Everything below is one recipe. The commands are character-identical on
 Windows, macOS and Linux except the single line that creates `.env`. Run them
 in a terminal opened in this project's folder.
 
+### 0. Or do all of it with one command
+
+If your host has `bash` — Linux and macOS do; on Windows it is the Git Bash
+that came with the `git` you used to fetch this folder — steps 1 to 3 are also
+one command:
+
+```sh
+bash scripts/bootstrap.sh
+```
+
+It runs exactly the commands below, in the order below, and adds the checks a
+person otherwise does by eye: Docker is installed and its daemon is up, the
+Compose v2 plugin is there (the standalone `docker-compose` v1 is refused by
+name, because it cannot read the top-level `name:` key these files use), Docker
+has the memory and disk this asks for, `.env` exists with real passwords rather
+than `change-me`, and the stack has actually turned healthy. It ends by
+printing the URLs. `make bootstrap` is the same thing.
+
+It creates `.env` only if there is none, generating a distinct random password
+for every `change-me` inside the pinned `python:3.12-slim` image with no
+network — nothing is printed, and the passwords never pass through a shell
+variable, an argument or an environment variable. **An existing `.env` is never
+read, rewritten or replaced**; it is only checked for leftover placeholders.
+Rerunning the script is safe: it never regenerates a password, never
+re-downloads the model (it is re-hashed against `models.lock`) and never
+removes a volume.
+
+| flag | |
+|---|---|
+| `--offline` (`--skip-stage`) | skip the connected commands in step 2, and check instead that this machine is already staged — `.env` renders the Compose files, and the staged model still matches `models.lock`. Neither needs a network. |
+| `--no-start` | stop after staging. |
+| `--wait-only` | skip to the health wait, and poll a stack that is already up. |
+| `--timeout N` | seconds to wait for health (default 900 — the `llm` container reports unhealthy for about 3 minutes while it loads the model, and the script says so while it waits). |
+| `--help` | the full text. |
+
+Nothing requires it. If you would rather see each step, or you have no `bash`,
+the rest of this section is the same recipe typed out.
+
 ### 1. Settings
 
 On Linux and macOS:
@@ -145,14 +183,19 @@ bundle.
 
 ### Shorthand
 
-`make` is a convenience for hosts that have it, and nothing requires it — it
-is the one tool in this file that Docker does not supply. Each target is the
-Docker command next to it, and the Docker command is what works everywhere.
+`make` is a convenience for hosts that have it, and nothing requires it. Most
+targets are exactly the Docker command next to them, and the Docker command is
+what works everywhere. Four are the exception — `verify`, `backup`, `restore`
+and `backup-restore` shell out to a script in `scripts/`, so they need `bash`
+as well (Git Bash on Windows). Everything those scripts touch still runs inside
+containers: no host `psql`, `sqlite3` or Python.
 `make help` lists these plus the operational ones (`ps`, `logs`, `clean`,
-`samples`, `dlq`, `redrive`):
+`samples`, `dlq`, `redrive`, `verify`, `monitor`, `backup`, `restore`,
+`backup-restore`):
 
 | shorthand | what it actually runs |
 |---|---|
+| `make bootstrap` | `bash scripts/bootstrap.sh` — prerequisites, `.env`, the four staging commands, `up -d`, and a bounded wait for health. `make bootstrap ARGS="--offline"` passes flags through. |
 | `make stage` | the four staging commands above |
 | `make preflight` | `docker compose config --quiet`, then `… run --rm stage` — the two checks in [step 2](#2-stage-it--once-with-internet) |
 | `make up` / `make down` | `docker compose up -d` / `docker compose down` |
@@ -168,7 +211,7 @@ Docker command next to it, and the Docker command is what works everywhere.
 | `make refresh` | `docker compose -f compose.tools.yml run --rm refresh` |
 | `make refresh-check` | `docker compose -f compose.tools.yml run --rm refresh --check` |
 | `make snapshot` | `docker compose -f compose.yml -f compose.connected.yml run --rm --no-deps ingestor python -m services.ingestor.fetch_content` |
-| `make manifest` | `docker run --rm -v "$PWD:/work" -w /work python:3.12-slim@sha256:… python scripts/snapshot_manifest.py` |
+| `make manifest` | `docker run --rm -v "${PWD}:/work" -w /work python:3.12-slim@sha256:… python scripts/snapshot_manifest.py` |
 
 Both forms run the same scripts from this same working tree — `demos/*.sh` is
 one implementation, and the container is only a shell to run it in. The stack
@@ -188,8 +231,8 @@ not the documented route.
 
 ### Demo mode
 
-A default run stores the **39 hand-verified events** — 10 London, 10 Rome,
-9 Tel Aviv, 6 Reykjavík, 4 Lisbon — and answers "none on record" for any city, date
+A default run stores the **55 hand-verified events** — 10 London, 10 Rome,
+8 Tel Aviv, 13 Reykjavík, 14 Lisbon — and answers "none on record" for any city, date
 or category the feed does not cover. To see the trip planner and the agent
 working with a denser event calendar, switch to **demo mode**:
 
@@ -214,7 +257,7 @@ images and the model, a normal run needs no internet. A fresh clone alone is
 
 | | |
 |---|---|
-| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 620 places, 81 background articles, and **39 verified events** (+ 45 labelled samples in demo mode) |
+| **Collects** | 16-day daily forecasts for Rome, London, Lisbon, Tel Aviv and Reykjavík; 620 places, 81 background articles, and **55 verified events** (+ 45 labelled samples in demo mode) |
 | **Decides** | a deterministic suitability score per (city, day, activity) across **18 activities**, from rules in `data/activities.yml` |
 | **Words** | a local Qwen3-1.7B writes one or two sentences about each score |
 | **Answers** | an agent resolves the question in code and answers from stored rows only |
@@ -223,9 +266,12 @@ images and the model, a normal run needs no internet. A fresh clone alone is
 
 ### Tabs
 
-Seven, across the top of the page. Each one draws under the coverage strip in the
+Nine, across the top of the page. Each one draws under the coverage strip in the
 header, which carries the as-of stamp and the forecast window.
 
+* **Dashboard** — the opening view: the highest-scoring stored activity in each
+  city for one chosen day, under the standing caveat that a score rates the
+  weather and not whether anything is open or available.
 * **Forecast** — temperature and rainfall per city, with the stored rows behind it.
 * **Suitability** — a city × day × activity heatmap over all 18 activities, plus
   a box to ask about *any* activity you type, not just the ones with rules.
@@ -246,6 +292,9 @@ header, which carries the as-of stamp and the forecast window.
   correcting a stored record, and re-wording with the local model.
 * **Data coverage** — what is held, per record type and per city, which rows are
   labelled samples, and how far the wording queue has got.
+* **Monitoring** — how to start the opt-in Prometheus/Grafana overlay, and
+  direct links to the three provisioned dashboards. It renders no metrics
+  itself.
 
 The UI is Streamlit. Its own toolbar is switched off in
 `services/ui/.streamlit/config.toml` (`toolbarMode = "minimal"`): that toolbar's
@@ -532,7 +581,7 @@ which is absent from both Postgres and RabbitMQ cannot be replayed by this tool.
 | **Deterministic score, model phrases it** | the verdict is reproducible, testable and defensible; a model outage degrades the wording, never the content | **LLM decides suitability** — unrepeatable, untestable, and it would put a 1.7B model on the critical path |
 | **Router-first agent** | city, dates and coverage resolved in readable code; at most one model call to phrase retrieved rows. E1 answers in ~5 s | **model tool-calling** — 3–4 sequential generations on CPU (30–90 s), non-deterministic in front of a reviewer, and silent when it goes wrong |
 | **Qwen3-1.7B Q4_K_M** | runs on CPU at ~1.2 s per call, Apache-2.0, 1.2 GB on disk, reliable under a JSON-schema grammar | a 3–4 B model — better prose, but 3–4× the latency on the reviewer's likely CPU-only machine |
-| **Streamlit** | seven working tabs in the time a hand-written SPA would take to scaffold, and it bundles its own assets, so it works offline | a React SPA — more polish, but the brief weighs the pipeline more heavily |
+| **Streamlit** | nine working pages in the time a hand-written SPA would take to scaffold, and it bundles its own assets, so it works offline | a React SPA — more polish, but the brief weighs the pipeline more heavily |
 | **Docker Compose** | one command, identical on Linux, macOS and Windows | Kubernetes — the production path, described below, not the demo path |
 
 **Thinking mode is disabled on the model** (`enable_thinking: false`). Left on,
@@ -580,7 +629,7 @@ carries the as-of stamp that says how old it is.
 | Map backdrop | OpenStreetMap via Overpass | ODbL © OpenStreetMap contributors | a 20 km extract per city — streets, water, coastline, parks — staged by `services/ingestor/fetch_basemap.py` into `data/map/<city>.basemap.geojson.gz`; 1.2 MB for all five |
 | Map fallback shoreline | [Natural Earth 1:10m](https://www.naturalearthdata.com/downloads/10m-physical-vectors/) | public domain | bundled in `data/map/`; drawn only for a city with no staged extract. Source revision and checksum in `data/map/SOURCE.md` |
 | Background | Wikipedia REST summaries | CC BY-SA 4.0 | same script; the city article plus one article per venue, resolved through its Wikidata sitelink |
-| Events (verified) | venue and organiser listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. 39 rows across all five cities (london 10, rome 10, tel-aviv 9, reykjavik 6, lisbon 4), each recording when its listing page was last opened and expiring after `AOW_EVENT_RECHECK_DAYS`. **The only events a default run stores.** |
+| Events (verified) | venue and organiser listings | see each row's `source_url` | **hand-verified**, in `data/events.seed.jsonl`. 55 rows across all five cities (london 10, rome 10, tel-aviv 8, reykjavik 13, lisbon 14), each recording when its listing page was last opened and expiring after `AOW_EVENT_RECHECK_DAYS`. **The only events a default run stores.** |
 | Events (generated samples) | generated from the places snapshot | n/a | `data/events.samples.jsonl`, every row `is_sample` and titled *Sample: …*. **Demo mode only** (`make up-demo`). |
 
 **Which day an event is on.** Instants are stored as `timestamptz` and never
@@ -655,10 +704,10 @@ by its Wikidata P31 class rather than by its distance from a point.
 offline-stageable feed of concerts and fixtures for five cities, and fabricating
 them was not an option. So there are two event files, kept apart at every layer:
 
-* `data/events.seed.jsonl` — 39 **real** listings, each checked by hand
+* `data/events.seed.jsonl` — 55 **real** listings, each checked by hand
   against its own source URL. `is_sample: false`. These are the only events the
   system claims are real. Every city has at least one, but the depth is uneven
-  (london 10, rome 10, tel-aviv 9, reykjavik 6, lisbon 4), because that is how
+  (london 10, rome 10, tel-aviv 8, reykjavik 13, lisbon 14), because that is how
   far hand-verification got. **They are what a default run stores.**
 
   **Every row also records when it was last checked, and stops counting when
@@ -687,6 +736,61 @@ them was not an option. So there are two event files, kept apart at every layer:
   broker and the consumer like any other edit, and the expiry moves with it.
   `valid_until` is deliberately **not** patchable on its own — a hand-set
   expiry would let one row outlive the check that justifies it.
+
+  **Re-checking the feed: `scripts/event-recheck.sh`.** Doing that by hand, one
+  row at a time, does not scale past a few listings, so there is a tool. It
+  re-opens every stored listing's own page inside the same temporary egress
+  window the operator refresh uses, diffs what the page says against what is
+  stored, and **writes nothing**. Renewing is a separate, offline command a
+  human runs after reading the report.
+
+  It cannot honestly renew most of them, and the reason is worth stating.
+  Of the eleven venue sites this feed is built from, three — `harpa.is`,
+  `theo2.co.uk` and `gulbenkian.pt` — publish `schema.org` Event structured
+  data with a start date. The other eight publish none: no microdata, no
+  `<time datetime>`, not even an ISO date in the visible text. There the date
+  exists only as prose in the venue's own language, and "the page returned 200"
+  is a statement about the venue's web server, not about whether a concert is
+  still on.
+
+  **The text shortcuts are worse than no check at all.** `auditorium.com`
+  serves a scheduled concert's page carrying "EVENTO ANNULLATO — Ryan Adams" in
+  its related-events sidebar; `coliseulisboa.com` says *esgotado* (sold out) on
+  a show that is going ahead; `gulbenkian.pt` renders *Cancelado*, *Esgotado*
+  and the available state for every session and hides the inactive two with
+  Alpine's `x-cloak`, so an available concert's HTML contains "Cancelado"
+  twice. Any tool that flattens these pages to text — an LLM summariser
+  included — reports cancellations that are not there and drops live events.
+  So this tool reads raw markup only, and takes `cancelled` from exactly one
+  place: a `schema.org` `eventStatus`.
+
+  **The workflow therefore keeps a human in it.** The probe writes an
+  append-only evidence ledger — source URL, fetch instant, HTTP status,
+  SHA-256 of the bytes read, what was extracted and a verdict — and prints a
+  per-row diff. Only rows whose own page confirmed them can be renewed in a
+  batch (`apply --all-confirmed`). A row that was unreachable, bot-blocked,
+  ambiguous, changed, cancelled or withdrawn is reported as needing eyes and is
+  **never renewed on a timer**; an operator who opens the page can still renew
+  it, but must pass `--note`, which is filed in the ledger beside the fetch
+  that failed. The check date written is **the instant the page was read**,
+  never the instant the command ran, and the renewal travels `PATCH
+  /records/events/<id>` through the outbox, the broker and the consumer like
+  any other correction.
+
+  Measured against the 55 committed rows, on a live connected run:
+
+  | verdict | rows | |
+  |---|---|---|
+  | `confirmed` | 21 | the page's own structured data still states this date — the only renewable verdict |
+  | `unverifiable` | 28 | the site publishes nothing a machine can check |
+  | `changed` | 6 | 3 titles/venues we record differently from the page's headline; 3 where one JSON-LD node spans a multi-session run and we store one row per session |
+  | `cancelled` | 0 | |
+
+  That `cancelled` column is zero **because the first run of this tool found
+  two and they were removed.** Both dates of a Gulbenkian Prokofiev concert had
+  been hand-verified as scheduled the day before and came back
+  `schema.org/EventCancelled`. A venue can cancel a show after a person checked
+  it, which is the entire reason a re-check exists.
 * `data/events.samples.jsonl` — 45 rows generated by
   `services/ingestor/make_samples.py`. Every row is `is_sample: true`, its title
   begins with **"Sample:"**, and its `source` says in words that it is not a
@@ -705,7 +809,7 @@ check:
 
 | | |
 |---|---|
-| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (39) and `data/snapshot/events.samples.jsonl` (45) |
+| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (55) and `data/snapshot/events.samples.jsonl` (45) |
 | **Ingestor** | replays the sample file only when `AOW_DEMO_EVENTS` is set, so a default run never even *accepts* a generated row |
 | **Consumer** | the only role with write grants, so it is the last word: it drops a sample row that arrives while demo mode is off, whoever produced it, and on startup it deletes every `is_sample` row it finds |
 
@@ -718,7 +822,7 @@ saying which rows are real.
 The loader drops any row in the sample file that does not admit to being a
 sample, so the labelling is checked at the boundary rather than assumed. In demo
 mode the samples are marked in the UI, in the agent's prompt, in its footer, and
-counted separately in the coverage tab — which reports **"39 verified + 45
+counted separately in the coverage tab — which reports **"55 verified + 45
 samples"**, never a single total of 84.
 
 A city with no events on record produces "none on record", never a
@@ -759,8 +863,20 @@ One command, on Windows PowerShell, macOS Terminal or Linux, while connected:
 docker compose -f compose.tools.yml run --rm refresh
 ```
 
-`make refresh` is the shorthand. It runs [`scripts/refresh.sh`](scripts/refresh.sh),
-which:
+`make refresh` is the shorthand. On an **offline release install** the tools
+images come from the bundle rather than from a local build, so add the tools
+overlay and run it from inside the release folder:
+
+```sh
+AOW_IMAGE_VERSION="$(cat release-version.txt)" \
+  docker compose -f compose.tools.yml -f compose.tools.bundle.yml --env-file .env \
+  run --rm --pull never refresh
+```
+
+Without the overlay, Compose looks for the locally built `aow/demos:dev` tag,
+which a bundle host does not have, and tries to build or pull it.
+
+It runs [`scripts/refresh.sh`](scripts/refresh.sh), which:
 
 1. records what is stored now, per city — as-of and last day covered;
 2. creates a bridge network of its own, `<project>_refresh_egress`, and attaches
@@ -1002,7 +1118,13 @@ than on every push.
 
 ```sh
 make grounding                                    # the model gate
+
+# Linux / macOS / Git Bash:
 docker compose exec -T api python - < tests/integration/event_local_days.py
+
+# Windows PowerShell -- `<` is reserved and will not parse:
+Get-Content tests/integration/event_local_days.py -Raw |
+  docker compose exec -T api python -
 ```
 
 `make grounding` starts a second `llm` in its own Compose project (`aow-f3`),
@@ -1043,13 +1165,18 @@ successful `main` workflow run, check out that exact commit in a clean clone,
 stage the pinned model, and build the transport folder:
 
 ```sh
-RUN_ID=123456789  # replace with the successful main workflow run ID
-COMMIT=$(git rev-parse HEAD)
+RUN_ID=123456789          # the successful main workflow run ID
+COMMIT=<the 40-hex commit that run was for>
+git checkout "$COMMIT"    # package-offline.sh refuses any other HEAD
+git status --porcelain    # must be empty: it also refuses a dirty tree
 gh run download "$RUN_ID" -n "aow-images-$COMMIT" -D release
 docker compose --env-file .env.example pull postgres rabbitmq llm edge
 docker compose -f compose.tools.yml --env-file .env.example run --rm stage
 bash scripts/package-offline.sh release/images.lock
 ```
+
+It also refuses to overwrite an existing `dist/aow-<commit>/`; delete that
+folder first to repackage the same commit.
 
 **One precondition on the staging engine, and it is not cosmetic.** Docker's
 containerd image store keeps a per-store record of every manifest it has
@@ -1072,16 +1199,37 @@ model, Compose files, code, migrations, snapshot, an installer, and two files th
 supposed to be: `SHA256SUMS` over **every** file in the folder, and
 `images.bundle.lock`, which records the manifest digest each bundled image was
 tagged from. Copy the folder to the on-prem **Linux/amd64 Docker host**. There,
-fill in a new `.env` and run:
+put a `.env` in place and run:
 
 ```sh
 cd aow-<commit>
-cp .env.example .env           # set distinct passwords
+cp .env.example .env           # FIRST install only: set distinct passwords
 bash scripts/install-offline.sh
 ```
 
-The installer checks the bundle before it changes anything on the host:
-`SHA256SUMS` for every file, `models.lock` for the model, and
+**On an upgrade, do not write a new `.env`.** Copy the previous release
+folder's across unchanged:
+
+```sh
+cp ../aow-<previous-commit>/.env .env
+```
+
+`POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD` are written into the `pgdata` and
+`rabbitdata` volumes when those volumes are first created, and neither is ever
+re-applied. A new value in a later release folder therefore does not change the
+database or the broker — it only stops `migrate` and the queue clients
+authenticating against them, and because every service waits on
+`migrate: service_completed_successfully`, `install-offline.sh` aborts. It
+aborts *after* `docker load` has already replaced the images, which is the
+worst moment for it. (`POSTGRES_WRITER_PASSWORD` and `POSTGRES_READER_PASSWORD`
+are the exception: every migration run re-applies them with `ALTER ROLE`, so
+those two may change between releases.)
+
+The installer checks the bundle before it changes anything on the host. It
+runs one command, `scripts/verify-bundle.sh`, which re-checks `SHA256SUMS`,
+rejects any file that `SHA256SUMS` does not list, verifies the model against
+`models.lock`, anchors `images.bundle.lock` to the CI run artifact
+(`ci-images.lock`) and the committed `IMAGES.lock`, and finally calls
 `scripts/verify-bundle-images.sh`, which reads the manifest digests out of
 `images.tar` and compares them with `images.bundle.lock`. The two checks answer
 different questions. `SHA256SUMS` answers *did these bytes arrive intact*; it
@@ -1109,9 +1257,22 @@ things:
 ```sh
 cd ../aow-<previous-commit>
 bash scripts/install-offline.sh                       # 1. code and images back
+ls ../aow-<failed-commit>/backup/                     #    find the dump it took
 bash scripts/restore-offline.sh \
   ../aow-<failed-commit>/backup/<project>-<stamp>.sql # 2. data back, if needed
 ```
+
+The dump's name carries the UTC timestamp of the failed install
+(`<project>-<YYYYmmdd>T<HHMMSS>Z.sql`), so list the directory rather than
+trying to guess it. Both release folders must still hold the `.env` they were
+installed under: `restore-offline.sh` connects with the release folder's
+`POSTGRES_PASSWORD`, and a dump only replays under the credentials it was taken
+with.
+
+**Expect step 1 to take about eight minutes, not forty seconds, when a
+migration destroyed data.** The release smoke check waits out its full 480 s
+deadline before it reports the still-empty forecast. That wait is the failure
+being confirmed, not a hang, and it is the signal to run step 2.
 
 Step 1 reverts the images and the migration files. It does not revert what the
 failed migration already did to the database — a migration that dropped or
@@ -1197,20 +1358,44 @@ dashboard server on their laptop never pays for them.
 
 ```sh
 make monitor     # docker compose -f compose.yml -f compose.observability.yml up -d
-                 # Grafana http://127.0.0.1:3000  (admin / GRAFANA_ADMIN_PASSWORD)
+                 # Hover over Monitoring in the app for three dashboard shortcuts
 ```
 
 Both images are pinned by digest in `IMAGES.lock` and travel in the offline
 bundle, so turning monitoring on for the first time on an air-gapped host
 downloads nothing.
 
+The three shortcuts open Grafana as a read-only Viewer on this machine. This
+uses Grafana's anonymous Viewer mode because a username and password in a URL
+do not sign in to its browser UI and would expose the admin password in browser
+history. The admin account (`admin` / `GRAFANA_ADMIN_PASSWORD` from `.env`) is
+still required to change settings. Keep port 3000 bound to loopback: a Viewer
+can query all metrics in Grafana's Prometheus data source.
+
+Grafana's **Home** page is a shared monitoring overview: application and model
+reachability, broker and outbox backlog, dead letters, active alerts, and
+shortcuts to the three detailed dashboards. It is loaded from
+`observability/grafana/home.json` for every Viewer. Grafana's **Starred** list
+is a personal preference, so it does not provide shared favorites for anonymous
+visitors.
+
 **What is measured.** Request count, error count and latency for the API and the
 agent; queue and dead-letter depth; per-producer outbox backlog and the age of
 the oldest unpublished record; consumer throughput by outcome; enrichment
-backlog and model-call latency; ingestion freshness. Eleven alert rules cover
+backlog and model-call latency; time since an ingestor success. Eleven alert rules cover
 service death, model unavailability, queue backlog, dead letters, a stuck
 outbox, stale ingestion, server errors, latency and enrichment failure. Each one
 carries an annotation saying what to do about it.
+
+Idle request-latency panels can show **No data** when no matching request
+occurred in their five-minute calculation window; a latency of zero would
+claim a measurement that was never made. Publish failures instead show zero
+for each readable producer outbox until a failure occurs. The dead-letter count
+comes from RabbitMQ and remains nonzero until the quarantined messages are
+resolved; use `make dlq` to inspect them before any redrive. Ingestion attempts
+are counted since the ingestor process started. The source as-of dates in the
+app's **Data coverage** page are the source-data freshness check: replaying an
+old snapshot is a recent ingest, but it does not make the weather current.
 
 **The labels cannot grow without bound.** HTTP metrics are labelled with the
 route *template* — `/weather/{city}`, one series for every city — and a request
@@ -1218,7 +1403,7 @@ matching no route is labelled `<unmatched>`, so a scanner walking random URLs
 costs one series rather than one per URL. Methods and routing keys are folded to
 known sets for the same reason, and a test asserts it.
 
-**Nothing monitoring-related is published.** Prometheus and Grafana sit on the
+**Only Grafana is published, on loopback.** Prometheus and Grafana sit on the
 `internal: true` backend with no route out; a second nginx straddles the
 boundary and publishes Grafana on loopback, which is the same reason `edge`
 exists. The RabbitMQ management UI, the RabbitMQ metrics endpoint and Prometheus
@@ -1243,7 +1428,10 @@ stack accepted.
 
 ```sh
 make backup                        # Postgres, all three outboxes, broker topology
-make restore DIR=backups/<id>      # into an isolated project, never over the live one
+make restore DIR=backups/<id>      # into the isolated `aow-restore` project.
+                                   # Stop the live stack first, or exclude `edge`:
+                                   # it publishes 8080/8000 and will collide.
+                                   # See the runbook, section 6.
 make backup-restore                # the whole drill: back up, destroy, restore, verify
 ```
 
@@ -1287,7 +1475,7 @@ you can run.
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
 | M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive, outbox↔`ingest_log` reconciliation | `docker compose -f compose.tools.yml run --rm demos no-data-loss`; the CI gate in `scripts/ci-integration.sh` |
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh (`scripts/refresh.sh`, reported at `GET /refresh/last`), re-enrichment | `docker compose -f compose.tools.yml run --rm demos update`; the [operator refresh drills](#operator-refresh-drills) against an isolated project, for the egress window and the failure path |
-| S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
+| S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
 | B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |
 | B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, including a dedicated LLM view, all offline | `make monitor`, then Grafana at `http://127.0.0.1:3000`; [evidence](docs/EVIDENCE-observability-and-recovery.md) |
@@ -1339,7 +1527,10 @@ started this project:
 
 ```sh
 docker run --rm aow/tests:dev pytest tests/unit/test_compose_ports.py -v
+# Linux / macOS / Git Bash:
 docker compose config | grep -A 4 'ports:'   # host_ip: 127.0.0.1, twice
+# Windows PowerShell:
+docker compose config | Select-String -Context 0,4 'ports:'
 ```
 
 The release bundle can be checked on the offline host without starting
@@ -1359,7 +1550,7 @@ Makefile, `ASSIGNMENT.md`, `TECHNICAL_DECISIONS.md` and `docs/ARCHITECTURE.md`
 tables as a unit test; this is the standalone form, and what CI runs:
 
 ```sh
-docker run --rm -v "$PWD:/work" -w /work \
+docker run --rm -v "${PWD}:/work" -w /work \
   python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 \
   python scripts/snapshot_manifest.py --check
 ```
@@ -1461,10 +1652,36 @@ Stated, not implied:
   floor, so none of them can ever be reported as a confident recommendation;
   the capped reason is carried in the row and the wording says what is not
   measured. A day at the beach is exempt: that is a judgement about shore
-  weather, which is exactly what is measured. Staging a marine provider —
-  Open-Meteo publishes one — would lift the cap, and it was cut deliberately:
-  it means a second source in the offline bundle and in the connected refresh
-  path, which is more surface than the claim is worth here.
+  weather, which is exactly what is measured.
+
+  **As of `rule_version` 4 the rule is stronger than the cap: no scoring rule
+  may infer a sea state from a land measurement at all.** Surfing used to carry
+  a `min_wind_kmh: 12`, justified as "a flat, windless day has no swell", and a
+  calm day was told *"only 8km/h of wind, too flat for this"* — a verdict on
+  the waves built out of a wind reading taken on shore, which walked straight
+  past the ceiling that was meant to stop it. Checked against a marine model
+  for the same cities and days, it failed in both directions: Lisbon on
+  2026-10-03 had a stored land wind of 10.9 km/h and so was penalised as too
+  flat, while the swell was 1.58 m at 8.8 s; Rome on 2026-09-25 had 16.9 km/h,
+  comfortably past the threshold and unpenalised, while the swell was 0.40 m at
+  3.6 s. It was removed rather than retuned, because no threshold on land wind
+  is a measurement of swell.
+
+  **Staging a marine provider would narrow this gap rather than close it**, and
+  the obvious candidate was probed rather than assumed. Open-Meteo's keyless
+  marine endpoint answers for all four coast reference points in
+  `data/cities.yml` with real wave, swell and sea-surface-temperature values —
+  the near-shore grid does resolve them. But it forecasts **10 days against the
+  16 this system stores**, so six days in sixteen would still be capped; and it
+  answers from its own model cell **2.9 km to 13.2 km** from the named point,
+  which is a second "not measured where you think" caveat stacked on the
+  forecast-point distance. Against that, a complete path means a snapshot file
+  and manifest entry, a table and migration, a consumer write path, the
+  connected refresh, scoring and tests — and `scripts/snapshot_manifest.py`
+  requires every snapshot entity to cover every configured city, which marine
+  data for a set including inland London cannot do. The cap is the honest
+  option; the measured numbers are recorded in `services/ingestor/providers.py`
+  so the next person weighs them instead of re-deriving them.
 * **A coastal city's forecast point is not necessarily its coast.** Each
   coastal city names a real point on its coast in `data/cities.yml`, and the
   consumer stores the great-circle distance from the forecast point to it, so
@@ -1481,16 +1698,21 @@ Stated, not implied:
   in Tel Aviv?” is answered with an explicit “I do not have a verified surf
   spot,” never with a beach. A sourced surf-spot layer, carrying the same
   `source` and `as_of` as every other row, is what would close this.
-* **The verified event set is 39 rows, and it is still thin and uneven.**
-  Every city has at least four listings (london 10, rome 10, tel-aviv 9,
-  reykjavik 6, lisbon 4), but it is a hand-checked snapshot of a few venues per
-  city over a few weeks, not a feed. **Lisbon is the thin one**: the Coliseu
-  dos Recreios and the MEO Arena publish first-party listing pages that can be
-  read and re-read, and most other Lisbon venues do not, so that is where
-  hand-verification stopped. A default run answers "none on record" for many
-  dates and categories, and the trip planner has few events to place.
-  `make up-demo` fills the gap with labelled generated rows for
-  demonstration; it does not close it.
+* **The verified event set is 55 rows, and it is a sample rather than a feed.**
+  Every city has at least eight listings (london 10, rome 10, tel-aviv 8,
+  reykjavik 13, lisbon 14), but it is a hand-checked snapshot of a handful of
+  venues per city over about three weeks. **How many rows a city has measures
+  how many of its venues were read, not how busy the city is** — Lisbon went
+  from 4 to 16 in one audit purely by adding the Fundação Calouste Gulbenkian's
+  agenda to the Coliseu dos Recreios and the MEO Arena, and Hot Clube,
+  Capitólio, LAV, São Carlos and the fado houses are still unread. The
+  unevenness is by **category** too, and that is the sharper limit: 47 of the
+  55 rows are `concert`, `sport` exists only in London, and `market`,
+  `festival` and `exhibition` have **no verified row anywhere** — the router
+  can reach those categories, the data cannot answer them. A default run
+  answers "none on record" for many dates and categories, and the trip planner
+  has few non-concert events to place. `make up-demo` fills the gap with
+  labelled generated rows for demonstration; it does not close it.
 * **The feed goes out of date on a timer, and that is the intended
   behaviour.** Every listing expires `AOW_EVENT_RECHECK_DAYS` (default 21)
   after it was last checked, so a snapshot left alone eventually reports zero
@@ -1644,7 +1866,10 @@ The rest of what would change:
   would be strictly worse than the demo, because the cluster has other tenants.
 * Healthchecks become readiness and liveness probes, with the model load
   covered by a `startupProbe`.
-* Prometheus scrapes the services (B2, not attempted here), and Loki takes the
+* Prometheus already scrapes the services here (B2 — see
+  [Monitoring](#monitoring)); in a cluster it becomes a `ServiceMonitor`
+  scraped by the platform's own Prometheus, with Alertmanager routing, and
+  Loki takes the
   logs.
 
 ---

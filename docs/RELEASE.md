@@ -17,8 +17,8 @@ commit on main, CI green
   - re-verifies the published image digests against the registry
   - builds the offline bundle (scripts/package-offline.sh)
   - verifies it (scripts/verify-bundle-images.sh)
-  - installs the bundle into a throwaway Compose project, --pull never,
-    and lets its own last step run the smoke test (scripts/install-offline.sh)
+  - starts a second empty Docker engine and installs the bundle there,
+    --pull never, then runs the installer smoke test
   - writes promotion-record.json into the bundle, reseals SHA256SUMS
   - uploads the promotion record + manifests (NOT the multi-GB bundle)
         |
@@ -41,7 +41,8 @@ succeeds for this exact commit, on the day it is promoted, before anyone
 copies anything. But the workflow does not upload `images.tar` or the GGUF
 weights as a workflow artifact:
 
-- `images.tar` is roughly 1.9 GB and the model is another 1.28 GB. GitHub
+- `images.tar` is roughly 1.2 GB and the model is another 1.28 GB, for a
+  2.4 GB bundle. GitHub
   Actions artifact storage is billed per GB-day; carrying multi-GB binaries
   through it release after release is a cost with no reader, since the bundle
   is going to a machine Actions cannot reach anyway.
@@ -86,7 +87,11 @@ so its output cannot satisfy the bundle's digest lock.
    future run's token can read it (a repo-admin PAT swapped in for
    `secrets.GITHUB_TOKEN`, for instance), it instead records `{"verified":
    true, "required_status_checks": [...], "enforce_admins": ...}` straight
-   from the API response.
+   from the API response. A separate authenticated operator read on
+   2026-09-25 confirmed that `main` currently requires `lint`, `unit`,
+   `guard` and `build-and-scan`, with admin enforcement enabled. That read
+   does not change older promotion records: their workflow-token reads
+   returned HTTP 403 and correctly say `verified: false`.
 5. Downloads that run's `aow-images-<sha>` artifact and checks its recorded
    commit matches.
 6. **Independently re-resolves** the `services` and `ui` image digests from
@@ -106,9 +111,12 @@ so its output cannot satisfy the bundle's digest lock.
    defect seen on a clean runner; the manifest digests remain unchanged.
    Verifies the completed archive a second, explicit time: `bash
    scripts/verify-bundle-images.sh dist/aow-<sha>`.
-9. **Installs the bundle and proves it serves data**, with no pulls, in a
-   disposable Compose project (`bash dist/aow-<sha>/scripts/install-offline.sh`,
-   unmodified). See "What the install exercise proves" below.
+9. Starts a second Docker 29.8.1 daemon with the containerd image store,
+   checks that its engine ID differs from the packaging daemon's and that it
+   has zero images and volumes, then **installs the bundle with no pulls** in
+   a disposable Compose project. It sets `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`
+   and calls `bash dist/aow-<sha>/scripts/install-offline.sh` unmodified.
+   See "What the install exercise proves" below.
 10. Writes `dist/aow-<sha>/promotion-record.json` and reseals
     `dist/aow-<sha>/SHA256SUMS` to cover it.
 11. Uploads `promotion-record.json`, `images.lock`, `images.bundle.lock`,
@@ -136,15 +144,16 @@ the record itself, which is added by the reseal step that follows).
 
 ## What the install exercise proves, and what it does not
 
-Step 9 above installs the bundle this same job just built into a throwaway
-Compose project (`COMPOSE_PROJECT_NAME=aow-release-<run id>`, fresh volumes,
-generated passwords, torn down afterward with `down --volumes
---remove-orphans` whether it passed or failed) and brings the stack up with
-`--no-build --pull never` -- that flag is `install-offline.sh`'s own, not a
-second mechanism added here, so a missing image is a hard failure, not a
-silent pull. Its own last line then runs the smoke test
-(`scripts/release-smoke.py`) against the running stack, so release.yml does
-not invoke it separately.
+Step 9 now directs the installer to a second daemon via `DOCKER_HOST`, with a
+different engine ID and no images or volumes before `docker load`. Its
+containerd store cannot use layers left in the packaging daemon. It uses a
+throwaway Compose project (`COMPOSE_PROJECT_NAME=aow-release-<run id>`),
+generated passwords and cleanup with `down --volumes --remove-orphans`.
+`install-offline.sh` itself runs `--no-build --pull never` and its own
+`scripts/release-smoke.py`; the workflow does not duplicate either command.
+The source for this gate is in `release.yml`, but no release run has yet
+validated the new second-daemon step. Earlier hosted release runs installed
+on the packaging daemon, so their passes cannot be cited as evidence for it.
 
 That smoke test asserts more than liveness, but not a deep functional check:
 it confirms `/health` is ok, `/coverage` reports the `weather` entity has
@@ -156,46 +165,49 @@ edge proxy. It does not exercise agent tool-calling, does not check an LLM
 recommendation was written, and does not render the UI. Read
 `scripts/release-smoke.py` directly for the exact checks.
 
-**This does not duplicate F10's air-gap rig**, and is not trying to. That rig
-is a *separate Docker engine* -- its own `docker-ce` daemon and image store,
-holding no images at all before the install -- with `nftables` dropping DNS,
-raw-IP TCP, HTTPS and ICMP, verified from inside a container on a routable
-network. It is **not** a physically separate machine and not a separate VM,
-and it is not a certification that the stack runs on hardware that has never
-seen a network; `docs/RELEASE-PROOF.md` §2 states exactly what it does and
-does not establish, and that section is the authority on it rather than this
-paragraph. What it has that a GitHub-hosted runner cannot have is an engine
-with **no image cache to fall back on and no reachable egress**, which is the
-difference that matters here: the runner has internet throughout this job, and
-its own `docker pull` during packaging leaves the layers in its store. A
-bundle whose archive was missing every layer would still install on this
-runner for that reason -- which is not hypothetical, it is the defect F10
-found. What step 9 proves instead is narrower and cheaper to
-run on every release: *the exact tar this job just built and verified boots
-the stack and the stack holds real data, using no image the bundle did not
-already carry.* That is worth checking every time even though it is not an
-air-gap proof; the air-gap proof is F10's `scripts/prove-offline.sh`, run by
-the operator on the offline host as documented below.
+The second daemon is still on the connected hosted runner. The source-level
+gate checks a clean image store and `--pull never`, but it does not cut host
+egress or prove a physical transfer. F10's manual rig in
+`docs/RELEASE-PROOF.md` §2 used a separate Docker engine with nftables
+blocking DNS, raw-IP TCP and HTTPS, tested from a container on a routable
+network. That rig was not separate physical hardware either. A successful
+future run of step 9 would add repeatable clean-engine install evidence for
+the exact tar built by that run; it would not replace the manual no-egress
+test or a drill on physically disconnected hardware.
 
 ## Operator procedure: staging machine
 
 Once a release is promoted (the workflow above succeeded), reproduce the
 actual bundle on a machine that can reach the internet and has a
-Linux/amd64 Docker engine:
+Linux/amd64 Docker engine with the containerd image store enabled. Download
+`images.lock` from the promotion artifact into `release/`, and check out the
+exact promoted commit with no tracked changes. The model must also be staged
+before packaging:
 
 ```bash
 git checkout <sha>                       # the exact commit the promotion record names
-bash scripts/package-offline.sh release/images.lock   # release/images.lock: the file
-                                                        # from the aow-promotion-<sha>
-                                                        # artifact, or re-download it
-                                                        # from the ci.yml run named in
-                                                        # promotion-record.json
+git status --porcelain                   # inspect and clear tracked changes
+docker info --format '{{json .DriverStatus}}'  # confirm io.containerd.snapshotter.v1
+docker compose -f compose.tools.yml --env-file .env.example run --rm stage
+bash scripts/package-offline.sh release/images.lock
 ```
 
+`package-offline.sh` also refuses to overwrite an existing `dist/aow-<sha>/`.
+It packages the committed tree, so untracked source changes are not shipped.
 This reproduces `dist/aow-<sha>/` with the same pinned images and model,
-verified against the same `images.lock` the release workflow checked. Compare
-`dist/aow-<sha>/promotion-record.json`'s `images` block against what you
-built, if you want a second confirmation beyond the script's own checks.
+verified against the same `images.lock` the release workflow checked. The rebuilt folder does **not** contain `promotion-record.json`: only
+`release.yml` writes one, into its own copy of the bundle, which is deleted
+with the runner. Download it from the `aow-promotion-<sha>` workflow artifact
+and drop it into `dist/aow-<sha>/` if you want a second confirmation beyond the
+script's own checks -- `scripts/verify-bundle.sh` tolerates it there as the one
+file the documented procedure legitimately adds.
+
+Compare its `images` block against what you built. Compare the **locks**, not
+the tar: `images.bundle.lock` and `models.lock` are content-addressed and must
+match exactly, but `SHA256SUMS` will not, because `docker save` output is not
+bit-reproducible across engines -- something this project measured rather than
+assumed (see `docs/RELEASE-PROOF.md`, where packaging the same release on a
+classic-store engine re-serialised all eight image digests).
 The archive completion step uses the existing `docker login ghcr.io`
 credentials (including Docker credential helpers), or anonymous access when
 the package is public. `GHCR_USER` and `GHCR_TOKEN` can override the Docker
@@ -214,9 +226,17 @@ host would defeat the point of it being air-gapped.
 From inside the copied `dist/aow-<sha>/` folder:
 
 ```bash
-sha256sum -c SHA256SUMS                  # bytes arrived intact, including promotion-record.json
-bash scripts/verify-bundle-images.sh .   # images.tar matches images.bundle.lock, by manifest digest
-cp .env.example .env                     # then set real passwords in .env
+bash scripts/verify-bundle.sh .          # the whole gate: SHA256SUMS, no unlisted
+                                         # file, models.lock, images.bundle.lock
+                                         # anchored to ci-images.lock and the
+                                         # committed IMAGES.lock, and images.tar
+                                         # checked by manifest digest
+# if the packaging run's SHA256SUMS digest reached you out of band, pin it:
+AOW_SHA256SUMS=sha256:<digest> bash scripts/verify-bundle.sh .
+cp .env.example .env                     # FIRST install only: set real passwords.
+                                         # On an upgrade, copy the previous
+                                         # release folder's .env across instead --
+                                         # see the README's offline-install section.
 bash scripts/install-offline.sh          # docker load, migrate, start, smoke-test
 bash scripts/prove-offline.sh            # run the packaged offline proof
 ```

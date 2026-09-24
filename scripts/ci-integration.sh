@@ -42,6 +42,10 @@ dc exec -T api python - < tests/integration/event_local_days.py
 # past, watches it leave the default read while staying counted, and re-checks
 # it. It runs before the M11 drills below so it shares their fresh project.
 dc exec -T api python - < tests/integration/event_freshness.py
+# F9 follow-up: a re-check renews a listing only when its own page verified it.
+# The probe needs egress and is not run here; this drives the apply path, which
+# is the half that can silently extend a listing's life if it regresses.
+dc exec -T api python - < tests/integration/event_recheck.py
 ingestor_audit="$(dc exec -T ingestor python -m services.common.reconcile)"
 python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert r["mode"] == "audit" and r["scanned"] > 0, r' "$ingestor_audit"
 echo "ingestor reconciliation audit: $ingestor_audit"

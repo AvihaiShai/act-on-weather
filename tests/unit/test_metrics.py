@@ -167,11 +167,14 @@ def test_handler_exception_is_counted_by_class_and_re_raised():
         "type": "RuntimeError",
     }
     before = sample("aow_http_exceptions_total", **labels)
+    failure_labels = {"service": SERVICE, "method": "GET", "route": "/boom", "status": "500"}
+    responses_before = sample("aow_http_requests_total", **failure_labels)
 
     with pytest.raises(RuntimeError, match="deliberate failure"):
         client.get("/boom")
 
     assert sample("aow_http_exceptions_total", **labels) == before + 1
+    assert sample("aow_http_requests_total", **failure_labels) == responses_before + 1
     # The failure is still a failure: instrumentation observes, it does not
     # swallow. And the exception message is nowhere in the exposition.
     assert b"deliberate failure" not in generate_latest()

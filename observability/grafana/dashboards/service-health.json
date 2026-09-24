@@ -114,7 +114,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=\"llm\"} or vector(0)",
+          "expr": "max(up{job=\"llm\"}) or vector(0)",
           "instant": true
         }
       ],
@@ -172,13 +172,13 @@
       "id": 6,
       "type": "timeseries",
       "title": "Server-error ratio by service and route (share of requests returning 5xx)",
-      "description": "A ratio rather than a count, for the same reason AowServerErrors is written as one: a raw 5xx count is large on a busy service that is mostly fine and small on an idle service that is failing everything. AowServerErrors fires above 0.05 sustained for ten minutes.",
+      "description": "5xx responses divided by requests for each active route. A route with traffic and no 5xx shows 0%; a route with no requests in the five-minute window has no ratio. Unhandled exceptions are counted as 500 responses. AowServerErrors fires above 5% sustained for ten minutes.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service, route) (rate(aow_http_requests_total{status=~\"5..\"}[5m])) / sum by (service, route) (rate(aow_http_requests_total[5m]))",
+          "expr": "(sum by (service, route) (rate(aow_http_requests_total{status=~\"5..\"}[5m])) / sum by (service, route) (rate(aow_http_requests_total[5m]))) or (0 * (sum by (service, route) (rate(aow_http_requests_total[5m])) > 0))",
           "legendFormat": "{{service}} {{route}}"
         }
       ],
@@ -266,30 +266,28 @@
     },
     {
       "id": 9,
-      "type": "timeseries",
-      "title": "Unhandled exceptions by class (exceptions/second)",
-      "description": "The first place to look when the error-ratio panel goes red, because it names the cause rather than the symptom: an OperationalError is Postgres, a TimeoutError is usually the model server, a ValidationError is a caller sending the wrong shape and is arguably not our fault at all.",
+      "type": "table",
+      "title": "Unhandled exceptions since service start, by class",
+      "description": "Cumulative exceptions recorded by each running service, grouped by route and class. An empty table means no unhandled exceptions since the current processes started. A nonzero row can be historical; compare it with the 5xx ratio to see whether errors are happening now.",
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 31 },
       "datasource": { "type": "prometheus", "uid": "aow-prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service, route, type) (rate(aow_http_exceptions_total[5m]))",
+          "expr": "sum by (service, route, type) (aow_http_exceptions_total)",
+          "instant": true,
+          "format": "table",
           "legendFormat": "{{service}} {{route}} {{type}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
-          "min": 0,
-          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never", "stacking": { "mode": "normal" } }
+          "unit": "short",
+          "min": 0
         },
         "overrides": []
       },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      }
+      "options": { "showHeader": true }
     }
   ]
 }

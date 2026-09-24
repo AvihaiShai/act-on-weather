@@ -21,6 +21,15 @@ height, swell period or water temperature, so no answer it gives may imply
 otherwise. `sea_state_unmeasured` in data/activities.yml marks the activities
 that claim would apply to, and `score_ceiling` stops their score climbing into
 a band that would read as a recommendation.
+
+The rule is about inference, not only about wording. A land measurement may
+not be re-read as a sea measurement anywhere -- not in a score, not in a
+label, and not in a reason string. The one place that had crept past it was a
+`min_wind_kmh` on surfing, which called a calm day flat; it was removed at
+rule_version 4 after a marine model disagreed with it on both sides. A
+suitability score for a sea activity is a score for the air above the shore,
+and the only defensible way to say more is to ingest a marine source --
+probed, costed and declined for now in services/ingestor/providers.py.
 """
 
 from __future__ import annotations

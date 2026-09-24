@@ -14,6 +14,12 @@ One rule is not a penalty but a ceiling. An activity whose quality depends on
 something this system never measures -- the sea, for surfing, swimming,
 fishing and a boat ride -- carries `score_ceiling` and can never reach the
 `good` band, however perfect the land forecast is. See `_apply_ceiling`.
+
+Every input here is a land measurement: temperature, rain, wind, sun, UV. No
+rule in this module may turn one of those into a statement about the water.
+That is a stronger rule than the ceiling and it is the one that was broken --
+a `min_wind_kmh` on surfing read a calm day as a flat sea, and the reason it
+wrote said so in the answer. It is gone as of rule_version 4.
 """
 
 from __future__ import annotations
@@ -187,17 +193,18 @@ def score_activity(activity: str, cfg: dict[str, Any], weather: dict[str, Any]) 
         penalty += int(min(25, (prob - max_prob) * 0.5))
         reasons.append(f"{prob:.0f}% chance of rain")
 
+    # Wind is penalised in one direction only. There used to be a `min_wind_kmh`
+    # branch here, carried by surfing alone, that penalised a calm day as "too
+    # flat for this" -- a verdict on the waves inferred from a wind reading
+    # taken on land. It contradicted the ceiling immediately below it and it
+    # did not survive being checked against a marine model; see the surfing
+    # block in data/activities.yml (rule_version 4) for the two days that
+    # falsified it. Nothing here infers a sea state from a land measurement.
     max_wind = cfg.get("max_wind_kmh")
-    min_wind = cfg.get("min_wind_kmh")
     wind = _num(weather, "wind_kmh")
     if wind is not None and max_wind is not None and wind > max_wind:
         penalty += int(min(30, (wind - max_wind) * 1.5))
         reasons.append(f"wind {wind:.0f}km/h, over the {max_wind}km/h limit")
-    # Surfing is the one activity that wants wind rather than tolerating it:
-    # a flat, windless day has no swell, and calling that ideal would be wrong.
-    elif wind is not None and min_wind is not None and wind < min_wind:
-        penalty += int(min(30, (min_wind - wind) * 2.5))
-        reasons.append(f"only {wind:.0f}km/h of wind, too flat for this")
 
     max_uv = cfg.get("max_uv")
     uv = _num(weather, "uv_index")

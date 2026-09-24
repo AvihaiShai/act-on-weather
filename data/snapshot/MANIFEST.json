@@ -2,18 +2,18 @@
   "entities": {
     "events": {
       "by_city": {
-        "lisbon": 4,
+        "lisbon": 14,
         "london": 10,
-        "reykjavik": 6,
+        "reykjavik": 13,
         "rome": 10,
-        "tel-aviv": 9
+        "tel-aviv": 8
       },
       "checked_at": "2026-09-24T18:00:00+00:00",
       "cities": 5,
       "file": "data/snapshot/events.jsonl",
-      "lines": 39,
-      "sha256": "f84835ca53ecd85c7a26776282163ef0dd6ea9d12ca79545b33c505068e2af4c",
-      "stored": 39,
+      "lines": 55,
+      "sha256": "4855d5ca733b1f7b8c00cbf466236921bca93a299355179e6a3abb4fffa8d7c4",
+      "stored": 55,
       "valid_until": "2026-10-15T18:00:00+00:00"
     },
     "events.samples": {
