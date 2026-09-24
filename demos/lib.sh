@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Shared helpers for the demo scripts. Sourced, not run.
+# Shared helpers for the demo scripts and for scripts/refresh.sh. Sourced,
+# not run. One implementation of "talk to this stack": the same project
+# selection, the same .env handling and the same psql/outbox helpers, so an
+# operator command and a proof cannot disagree about which stack they mean.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

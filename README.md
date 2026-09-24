@@ -104,7 +104,8 @@ everywhere:
 | `make update` | `… run --rm demos update` |
 | `make reenrich` | `… run --rm demos reenrich` |
 | `make demo` | `… run --rm demos all` |
-| `make refresh` | `docker compose -f compose.yml -f compose.connected.yml up -d ingestor` then `docker compose exec ingestor python -m services.ingestor.refresh` |
+| `make refresh` | `docker compose -f compose.tools.yml run --rm refresh` |
+| `make refresh-check` | `docker compose -f compose.tools.yml run --rm refresh --check` |
 | `make snapshot` | `docker compose -f compose.yml -f compose.connected.yml run --rm --no-deps ingestor python -m services.ingestor.fetch_content` |
 
 Both forms run the same scripts from this same working tree — `demos/*.sh` is
@@ -171,8 +172,10 @@ header, which carries the as-of stamp and the forecast window.
   Streets, water and parks are staged with the coastline and bundled locally,
   so pan and zoom work without map tiles.
 * **Ask the agent** — chat, with a panel showing exactly which rows the answer used.
-* **Update data** — all three M12 update paths in one place: connected refresh,
-  correcting a stored record, and re-wording with the local model.
+* **Update data** — all three M12 update paths in one place: the operator
+  refresh (per-city freshness and the command that changes it; the page
+  states that it does not fetch), correcting a stored record, and re-wording
+  with the local model.
 * **Data coverage** — what is held, per record type and per city, which rows are
   labelled samples, and how far the wording queue has got.
 
@@ -310,7 +313,7 @@ Eleven containers. `postgres`, `rabbitmq`, `migrate` (one-shot), `llm`,
 |---|---|---|
 | `backend` | everything | `internal: true` — Docker itself gives it no gateway |
 | `frontend` | `edge` only | Docker cannot publish a port from an internal network, so exactly one container straddles the boundary |
-| `egress` | nobody, by default | `compose.connected.yml` attaches the ingestor for a refresh |
+| `egress` | nobody, by default | the operator refresh attaches the ingestor to it for the length of one fetch, then detaches it again and asserts it detached |
 
 Only 8080 and 8000 are published, and both only on `127.0.0.1`. Not the
 database, not the broker, not the management UI, not the model server.
@@ -522,9 +525,47 @@ All three are on the **Update data** tab in the UI, which is where a reviewer
 should look first: it names each path, says which work air-gapped, and shows
 the exact command for the one that cannot.
 
-To refresh a normal (non-demo) run from Windows PowerShell, macOS Terminal, or
-Linux, use these commands while connected to the internet. The last command
-returns the ingestor to the offline network after it accepts the new forecast:
+### The operator refresh
+
+One command, on Windows PowerShell, macOS Terminal or Linux, while connected:
+
+```sh
+docker compose -f compose.tools.yml run --rm refresh
+```
+
+`make refresh` is the shorthand. It runs [`scripts/refresh.sh`](scripts/refresh.sh),
+which:
+
+1. records what is stored now, per city — as-of and last day covered;
+2. attaches **only the ingestor container** to the `egress` network;
+3. runs the fetch inside it, into the same outbox every other record uses;
+4. **closes that window again and asserts it closed**, from a `trap`, so a
+   failed fetch, a `Ctrl-C` or a crash mid-way ends the same way a success does;
+5. follows the accepted message ids to the broker and to `ingest_log`;
+6. prints per-city success or failure, the as-of before and after, the accepted
+   message ids, and how many of them are stored versus still in flight.
+
+It exits non-zero when any city fails (`2`), when the egress window could not be
+closed (`3`) — the one outcome that needs a human — or when the rows were
+accepted but nothing reached the database in time (`4`).
+
+```sh
+# open and close the window without fetching: the drill for
+# "does this always put the ingestor back?". Needs no internet.
+docker compose -f compose.tools.yml run --rm refresh --check
+
+# one city, a shorter horizon, and a shorter wait for the consumer
+docker compose -f compose.tools.yml run --rm refresh --city rome --days 7 --wait 60
+```
+
+The window is opened with `docker network connect` and closed with
+`docker network disconnect`, rather than by recreating the container under
+`compose.connected.yml`. That adds and removes one interface on one container:
+no restart mid-refresh, no re-accepting the whole snapshot, and nothing that
+depends on which filesystem the command was typed on.
+
+Typed by hand it is three commands, and the **third** is the one that matters —
+it is what puts the ingestor back:
 
 ```sh
 docker compose -f compose.yml -f compose.connected.yml up -d ingestor
@@ -532,7 +573,18 @@ docker compose exec ingestor python -m services.ingestor.refresh
 docker compose up -d ingestor
 ```
 
-`make refresh` is the shorthand for the first two commands.
+The wrapper exists because a step an operator has to remember is a step that
+gets skipped, and because a failed fetch or a closed terminal skips it too.
+
+`OPEN_METEO_URL` points the fetch at an internal mirror instead of the public
+API, for a site that has a mirror but no route to the internet.
+
+**There is no refresh button in the UI, on purpose.** A button would need
+either the Docker socket inside the UI container or an unauthenticated endpoint
+that runs host commands; both are a worse problem than the one they solve. The
+**Update data → Operator refresh** tab therefore shows what it can show
+honestly: per-city freshness straight from the database, the exact command, and
+a plain statement that displaying the command has not fetched anything.
 
 A user edit is accepted, not applied: `202`, never `200`. The UI says so too.
 There is exactly one write path into this database.
@@ -732,7 +784,7 @@ you can run.
 | M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build and save a plan in the UI |
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
 | M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive | `docker compose -f compose.tools.yml run --rm demos no-data-loss` |
-| M12 | Update stored information | `PATCH /records/...`, a connected refresh, re-enrichment | `docker compose -f compose.tools.yml run --rm demos update` |
+| M12 | Update stored information | `PATCH /records/...`, the operator refresh (`scripts/refresh.sh`), re-enrichment | `docker compose -f compose.tools.yml run --rm demos update`; `… run --rm refresh --check` for the egress window |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`, `scripts/package-offline.sh`, `scripts/install-offline.sh` | `gh run list`; offline release installer |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
 | B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |

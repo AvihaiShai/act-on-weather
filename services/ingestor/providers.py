@@ -11,6 +11,7 @@ rewrite; the README records the comparison.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Protocol
 
@@ -18,7 +19,13 @@ import requests
 
 log = logging.getLogger(__name__)
 
-OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+# Overridable for the same reason MODEL_BASE_URL is: an on-prem site refreshes
+# from an internal mirror rather than from the public internet. It is also what
+# the forced-failure drill points at an unreachable address to prove that a
+# refresh which fetches nothing still closes the egress window.
+# `or`, not a default argument: an empty override means "not set", never an
+# empty URL -- a blank value would otherwise fail every city at once.
+OPEN_METEO_URL = os.environ.get("OPEN_METEO_URL") or "https://api.open-meteo.com/v1/forecast"
 
 DAILY_FIELDS = [
     "temperature_2m_max",
