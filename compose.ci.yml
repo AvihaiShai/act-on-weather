@@ -12,4 +12,33 @@ services:
   api:
     image: ${AOW_CI_SERVICES_IMAGE:-aow/services:ci}
   ui:
-    image: aow/ui:ci
+    image: ${AOW_CI_UI_IMAGE:-aow/ui:ci}
+
+  # The headless-browser gate (F11). Not started by `up`: scripts/ci-ui-gate.sh
+  # brings up the stack above, then runs this one with `run --rm --no-deps`,
+  # the same shape compose.model-probe.yml uses for `probe`.
+  #
+  # `network_mode: service:edge` -- not `networks: [frontend]` -- because it
+  # has to be the browser Streamlit itself would accept. Streamlit's
+  # WebSocket handler rejects a connection whose Origin host is not
+  # localhost/127.0.0.1/the configured server address
+  # (streamlit/web/server/server_util.py:is_url_from_allowed_origins); a
+  # container reached by its Compose service name ("edge") fails that check
+  # even though nothing is actually cross-origin. Sharing `edge`'s network
+  # namespace means `uitest` reaches it at plain `localhost:8080`, which is
+  # exactly the origin a real reviewer's browser sends, and it needs no
+  # published host port to do it -- so this also can't collide with another
+  # Compose project's 8080/8000 on a shared machine.
+  uitest:
+    build:
+      context: .
+      dockerfile: tests/ui/Dockerfile
+    image: ${AOW_CI_UITEST_IMAGE:-aow/tests:ui-ci}
+    mem_limit: 1g
+    environment:
+      UI_BASE_URL: http://localhost:8080
+      API_BASE_URL: http://localhost:8000
+    network_mode: "service:edge"
+    depends_on:
+      edge:
+        condition: service_healthy

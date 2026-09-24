@@ -9,3 +9,8 @@ ghcr.io/ggml-org/llama.cpp@sha256:fb8f521cdfee1b763a6ef0d6633922e780c1393c03b499
 # Tooling only -- never part of the running stack. Base for demos/Dockerfile,
 # the container that runs the proofs on any OS (see compose.tools.yml).
 docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+# CI only -- never part of the running stack. Base for tests/ui/Dockerfile,
+# the headless-browser gate (F11). Ships Chromium/Firefox/WebKit prebuilt at
+# /ms-playwright, so the pinned digest is what keeps the browser gate from
+# ever downloading a browser binary at run time.
+mcr.microsoft.com/playwright/python@sha256:acc6300abda1a16dba3a0d39583c8be53e619a3f23d4a0eeeb8de0a9275c47ac
