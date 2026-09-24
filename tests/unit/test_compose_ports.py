@@ -18,7 +18,10 @@ shipped files rather than over a running stack:
     with no `.env` at all is still bound,
   * `.env.example` -- what an operator copies before their first run -- ships
     that same loopback value,
-  * and `edge` stays the only service that publishes anything.
+  * and the only services that publish anything are the boundary proxies --
+    `edge` for the UI and the API, `edge-observability` for Grafana -- so the
+    database, the broker, the model server and Prometheus stay off the host
+    network entirely.
 
 Widening the boundary is still possible (`AOW_BIND_ADDR`), and is still the
 operator's deliberate act. What this test forbids is doing it by accident.
@@ -141,12 +144,59 @@ def test_env_example_ships_a_loopback_address():
     assert values == ["127.0.0.1"], f"expected one loopback AOW_BIND_ADDR, found {values}"
 
 
-def test_edge_is_the_only_service_that_publishes_anything():
-    """The topology the README states: one container straddles the boundary.
+# The complete list of services allowed to publish a port, and why each one
+# is on it. Both are nginx reverse proxies holding no state, no credentials
+# and no outbound client, and both exist for the same single reason: Docker
+# cannot publish a port from an `internal: true` network, so something has to
+# straddle the boundary.
+#
+#   edge               -- the UI (8080) and the API (8000), from compose.yml.
+#   edge-observability -- Grafana (3000), from compose.observability.yml.
+#
+# Adding a name here is a deliberate act with a paragraph attached. Anything
+# else acquiring a `ports:` key is a regression, and the assertion below is an
+# equality rather than a subset so that it catches one.
+PROXIES_THAT_MAY_PUBLISH = {"edge", "edge-observability"}
+
+# Services that must never publish, named individually rather than left to the
+# equality above. The equality says "only the proxies"; this says *what it
+# would mean* if one of these were the exception -- and a failure that names
+# the database is more useful than one that names a set difference.
+MUST_NEVER_PUBLISH = {
+    "postgres": "the database, holding every stored record",
+    "rabbitmq": "the broker, including its unauthenticated Prometheus exporter on 15692",
+    "llm": "the model server, which answers generation requests with no auth at all",
+    "prometheus": "the metrics store, whose expression browser can read every series",
+    "grafana": "reachable through edge-observability; a second, direct binding would bypass it",
+}
+
+
+def test_only_the_boundary_proxies_publish_anything():
+    """The topology the README states: reverse proxies straddle the boundary,
+    and nothing else touches the host network.
+
     A `ports:` key appearing on postgres, rabbitmq or llm would put the
     database, the broker or the model server on the host network -- each of
-    which is a larger hole than the one this file exists to close."""
-    assert {service for _, service, _ in published_ports()} == {"edge"}
+    which is a larger hole than the one this file exists to close. The same
+    now goes for prometheus and grafana: they sit on `backend`, which is
+    `internal: true`, and that is what makes the air-gap claim about Grafana
+    -- a program that phones home for update checks by default -- something
+    Docker enforces rather than something we merely configured."""
+    assert {service for _, service, _ in published_ports()} == PROXIES_THAT_MAY_PUBLISH
+
+
+@pytest.mark.parametrize(("service", "why"), sorted(MUST_NEVER_PUBLISH.items()))
+def test_the_stateful_services_publish_nothing(service, why):
+    """Stated per service, over every compose file, so the failure message
+    names the thing that would be exposed."""
+    offenders = [
+        f"{filename}: {entry}" for filename, name, entry in published_ports() if name == service
+    ]
+    assert not offenders, (
+        f"'{service}' publishes {offenders}. It must not: it is {why}. "
+        f"Reach it through a proxy on `frontend`, or from inside the stack with "
+        f"`docker compose exec`."
+    )
 
 
 @pytest.mark.parametrize(

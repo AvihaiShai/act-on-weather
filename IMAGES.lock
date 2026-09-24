@@ -14,3 +14,10 @@ docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
 # /ms-playwright, so the pinned digest is what keeps the browser gate from
 # ever downloading a browser binary at run time.
 mcr.microsoft.com/playwright/python@sha256:acc6300abda1a16dba3a0d39583c8be53e619a3f23d4a0eeeb8de0a9275c47ac
+# Monitoring, pinned by compose.observability.yml. That overlay is opt-in: a
+# run without `-f compose.observability.yml` pulls neither image. Both are
+# multi-arch index digests, like every pin above. A single-platform manifest
+# digest here would pin every reviewer to our architecture, and cannot be
+# exported into an offline bundle.
+prom/prometheus@sha256:76947e7ef22f8a698fc638f706685909be425dbe09bd7a2cd7aca849f79b5f64
+grafana/grafana@sha256:74144189b38447facf737dfd0f3906e42e0776212bf575dc3334c3609183adf7

@@ -14,13 +14,15 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'EOF'
-Proofs. Each one runs against the stack that is already up.
+Proofs. Each one runs against the stack that is already up, except
+backup-restore, which builds an isolated project of its own.
 
   offline        M6  -- air-gapped operation, and the no-guessing rule
   questions      M7/M8 -- agent breadth, including what it refuses
   no-data-loss   M11 -- consumer, database, broker and poison-message drills
   update         M12 -- an edit through the queue, with its history
   reenrich       the local model is a presentation layer, not a dependency
+  backup-restore B3  -- back up, destroy the volumes, restore, verify
   all            every one of the above, in order
 
 Run one with:
@@ -35,6 +37,11 @@ run_one() {
     update)       bash demos/03_update.sh ;;
     reenrich)     bash demos/04_reenrich.sh ;;
     questions)    bash demos/05_questions.sh ;;
+    # Not in `all`, deliberately. Every proof above runs against the stack that
+    # is already up; this one builds an isolated project of its own and
+    # destroys its volumes, which takes ~2 minutes and would be a surprising
+    # thing for `all` to do to a reviewer who just wanted the answers.
+    backup-restore) bash demos/06_backup_restore.sh ;;
     *)
       echo "unknown proof: $1" >&2
       echo >&2

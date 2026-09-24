@@ -84,7 +84,7 @@ jobs:
           # `change-me` -- but without -q the offending line goes to stdout,
           # so the one run that matters, the failing one, would write a real
           # password into a build log that outlives it.
-          if grep -E '^(POSTGRES_PASSWORD|POSTGRES_WRITER_PASSWORD|POSTGRES_READER_PASSWORD|RABBITMQ_PASSWORD)=' .env.example \
+          if grep -E '^(POSTGRES_PASSWORD|POSTGRES_WRITER_PASSWORD|POSTGRES_READER_PASSWORD|RABBITMQ_PASSWORD|GRAFANA_ADMIN_PASSWORD)=' .env.example \
                | grep -qvE '=change-me$'; then
             echo "::error::.env.example contains a non-placeholder password"; exit 1
           fi
@@ -114,8 +114,14 @@ jobs:
 
           # compose.tools.yml too: the staging and proof containers are pulled
           # on the reviewer's machine like any other, so a moving tag there
-          # would break the same offline guarantee.
-          for path in (Path("compose.yml"), Path("compose.tools.yml")):
+          # would break the same offline guarantee. compose.observability.yml
+          # for the same reason -- it is opt-in, but an opt-in overlay with a
+          # moving tag is still a runtime pull on somebody's air-gapped host.
+          for path in (
+              Path("compose.yml"),
+              Path("compose.tools.yml"),
+              Path("compose.observability.yml"),
+          ):
               service, image, built = None, None, False
               for line in path.read_text().splitlines():
                   match = re.fullmatch(r"  ([a-z][a-z0-9_-]*):", line)
@@ -176,7 +182,8 @@ jobs:
           used = set()
           errors = []
           sources = [
-              Path("compose.yml"), Path("compose.tools.yml"), Path("Makefile"),
+              Path("compose.yml"), Path("compose.tools.yml"),
+              Path("compose.observability.yml"), Path("Makefile"),
               Path("services/Dockerfile"), Path("services/ui/Dockerfile"),
               Path("tests/Dockerfile"), Path("demos/Dockerfile"),
               # CI-only (F11). compose.ci.yml itself is deliberately NOT
@@ -217,6 +224,7 @@ jobs:
           # the reviewer's machine and nowhere else.
           docker compose -f compose.yml -f compose.connected.yml --env-file .env.example config --quiet
           docker compose -f compose.yml -f compose.demo.yml --env-file .env.example config --quiet
+          docker compose -f compose.yml -f compose.observability.yml --env-file .env.example config --quiet
           # Rendered on its own: it is never combined with compose.yml, and its
           # one external network is not resolved at config time.
           docker compose -f compose.tools.yml --env-file .env.example config --quiet

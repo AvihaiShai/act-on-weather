@@ -1,0 +1,342 @@
+# Alerting rules for the act-on-weather stack.
+#
+# ============================ why there is no Alertmanager ==================
+#
+# Prometheus evaluates these rules and exposes the result as the `ALERTS`
+# series. Nothing routes them anywhere, and that is a decision rather than an
+# omission.
+#
+# Alertmanager's entire job is to deduplicate, group, silence and DELIVER --
+# to email, to a chat webhook, to PagerDuty. This system runs on one
+# air-gapped host. There is no mail relay it could reach, no webhook endpoint
+# that would answer, and no second operator to page: the person who would
+# receive the alert is the person sitting at the machine. Adding Alertmanager
+# here would mean shipping a 60 MB container, a routing tree and a set of
+# receivers that all point at nothing, and then writing a README section
+# explaining that none of it delivers anything. That is decoration, and
+# decoration in an infrastructure submission is worse than an honest gap: it
+# invites the reviewer to believe a delivery path exists.
+#
+# So the rules are surfaced where the operator already is. The service-health
+# dashboard has a "Firing alerts" panel driven by
+# `ALERTS{alertstate="firing"}`, and the same thing is available without a
+# browser:
+#
+#   docker compose -f compose.yml -f compose.observability.yml exec prometheus \
+#     wget -qO- 'http://127.0.0.1:9090/api/v1/alerts'
+#
+# Alertmanager belongs on the production path, and the README's Kubernetes /
+# OpenShift section is where it is described: there, the cluster has a mail
+# relay or a webhook target, alerts have somewhere to go, and silences during
+# a maintenance window stop being a theoretical need.
+#
+# ============================ what makes a rule here ========================
+#
+# Every rule below has three things, and a rule missing any of them should not
+# be merged (tests/unit/test_observability.py enforces all three):
+#
+#   * a `for:` -- so a single failed scrape, a restart or one slow request
+#     does not fire. Every threshold in this file was chosen to be quiet
+#     during a normal `docker compose up` and a normal ingestion cycle.
+#   * a `severity` label -- `critical` means data is at risk or the system is
+#     not answering; `warning` means degraded but the guarantees hold.
+#   * an annotation that says WHAT TO DO. An alert that only restates its own
+#     expression tells the operator nothing they could not read off the
+#     dashboard. Where there is a command that helps, the command is in the
+#     text.
+#
+# Thresholds are sized for this stack: five cities, a 16-day forecast, one
+# consumer, one CPU-bound model. They are stated as numbers rather than hidden
+# in recording rules, because a reviewer should be able to disagree with one
+# by reading it.
+
+groups:
+  # =========================================================================
+  - name: aow-availability
+    # Slower than the global 15s: nothing in this group has a `for:` under two
+    # minutes, so evaluating it four times a minute would change nothing.
+    interval: 30s
+    rules:
+      - alert: AowServiceDown
+        # `up` is written by Prometheus itself, so this fires when a target
+        # cannot be scraped at all -- the container is gone, crash-looping, or
+        # its metrics server never started. It does not depend on the service
+        # being healthy enough to report its own failure.
+        expr: up{job=~"aow-.*"} == 0
+        # Two minutes covers a `docker compose restart` and an image pull on a
+        # slow disk. Anything longer than that is not a restart.
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} has not been scrapeable for 2 minutes"
+          description: >-
+            Prometheus cannot reach {{ $labels.instance }}. Check
+            `docker compose ps` and `docker compose logs --tail=100
+            {{ $labels.job }}`; a container in a restart loop usually means a
+            bad .env value or a database that has not finished migrating. No
+            data is lost while a service is down -- producers spool to their
+            outbox volume and the queue holds what was already published --
+            but nothing new is being accepted, so fix it before the next
+            refresh rather than after.
+
+      - alert: AowModelUnavailable
+        expr: up{job="llm"} == 0
+        # Five minutes, not two: the model server takes up to three minutes to
+        # load weights on first boot (compose.yml sets a 180s start_period for
+        # exactly this), and a restart must not page anyone.
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The local model server is not answering"
+          description: >-
+            WEATHER DATA IS UNAFFECTED. The enricher is deliberately off the
+            critical path: it polls recommendations with status 'pending'
+            rather than sitting in the ingest flow, so forecasts continue to
+            be fetched, published and stored while the model is down. What the
+            user sees is recommendations showing `pending` and the agent
+            falling back to ungrounded phrasing being refused rather than
+            guessed. Check `docker compose logs --tail=100 llm`; the usual
+            causes are the model file missing from ./models (run `make stage`
+            while connected) and the container being OOM-killed by its 3 GB
+            mem_limit. Once it is back, `make reenrich` words the backlog --
+            nothing has to be re-fetched.
+
+  # =========================================================================
+  - name: aow-delivery
+    interval: 30s
+    rules:
+      - alert: AowQueueBacklog
+        # Per-queue depth, from the broker's own detailed exporter. See the
+        # comment in prometheus.yml: the aggregated /metrics endpoint reports
+        # `rabbitmq_queue_messages` with no queue label, which would sum the
+        # ingest queue and the dead-letter queue together and be useless for
+        # both of these rules.
+        expr: rabbitmq_detailed_queue_messages{queue="aow.ingest"} > 500
+        # A full five-city, 16-day refresh publishes a few thousand messages
+        # in a burst and the consumer drains it in well under a minute. Ten
+        # minutes above 500 is not a burst; it is a consumer that is stuck or
+        # gone.
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "aow.ingest has held more than 500 messages for 10 minutes"
+          description: >-
+            The broker is accepting faster than the consumer is committing.
+            NOTHING IS LOST while this is true -- the queue is durable and
+            quorum-typed, and the consumer acks only after the database
+            commit -- but stored data is falling behind what has been
+            accepted. Check `docker compose logs --tail=100 consumer` first:
+            the usual cause is Postgres refusing connections, which shows up
+            here rather than as an error anyone sees. If the consumer is
+            healthy and simply behind, watch
+            aow_messages_consumed_total on the Pipeline dashboard; if the rate
+            is zero it is stuck on one message, and `make dlq` will show
+            whether it has started quarantining.
+
+      - alert: AowDeadLetters
+        expr: rabbitmq_detailed_queue_messages{queue="aow.dlq"} > 0
+        # Five minutes rather than immediately: a message can be in flight to
+        # the DLQ during a normal redrive, and a rule that fires on its own
+        # remediation is noise.
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} message(s) quarantined in aow.dlq"
+          description: >-
+            At least one message was rejected enough times to be dead-lettered
+            -- a schema the consumer does not accept, or a payload that fails
+            validation. These are parked, not lost. Inspect them with
+            `make dlq`, which lists what is quarantined and why. If the cause
+            was transient (the database was down, a migration had not run),
+            `make redrive` puts them back on the exchange and they are
+            processed normally; writes are idempotent, so a message that
+            actually did land the first time cannot be double-counted. If the
+            payload is genuinely malformed, fix the producer before redriving
+            or it will simply come back here.
+
+      - alert: AowOutboxStuck
+        # The M11 signal, and the most important rule in this file. Everything
+        # above is about data that has already reached the broker. This is
+        # about data that has NOT: a record the system accepted, fsynced to a
+        # producer's outbox volume, and has not managed to publish. The
+        # guarantee starts at that fsync, so this gauge is the only place a
+        # reviewer can watch the guarantee being kept or broken.
+        expr: aow_outbox_oldest_pending_age_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} has an accepted record unpublished for over 5 minutes"
+          description: >-
+            An accepted record is stranded in {{ $labels.service }}'s outbox.
+            It is durable -- the outbox is a named volume and the row is
+            fsynced before the caller is told 'accepted' -- so this is not
+            data loss, it is the window in which loss would become possible if
+            the volume were also destroyed. Almost always the broker: check
+            `docker compose ps rabbitmq` and
+            `docker compose logs --tail=100 rabbitmq`. The producer retries
+            with backoff on its own and will drain the spool without help once
+            the broker is back; no operator action republishes it, and none
+            should. If RabbitMQ is healthy, look for an authentication failure
+            in the producer's log -- a wrong RABBITMQ_PASSWORD in .env gives
+            exactly this shape.
+
+      - alert: AowOutboxPublishFailing
+        # Distinct from the rule above, and it fires earlier. AowOutboxStuck
+        # needs a record to have been stranded for five minutes; this shows a
+        # producer failing to publish at all, which is visible from the first
+        # retry. Worth having both: the first says "something is wrong now",
+        # the second says "and it has now cost us".
+        expr: sum by (service) (rate(aow_outbox_publish_failures_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is failing to publish to the broker"
+          description: >-
+            Publish attempts from {{ $labels.service }} have been failing for
+            five minutes. Nothing is lost yet: failed publishes leave the row
+            pending in the outbox and are retried. Treat this as the early
+            warning for AowOutboxStuck and check the broker now --
+            `docker compose logs --tail=100 rabbitmq` -- rather than waiting
+            for records to age past five minutes.
+
+      - alert: AowConsumerRejecting
+        expr: sum by (routing_key) (rate(aow_messages_consumed_total{result="rejected"}[10m])) > 0
+        # Fifteen minutes. A single rejection is a poison message and shows up
+        # as AowDeadLetters; this rule is for a SUSTAINED rejection rate,
+        # which means a producer is emitting a shape the consumer will not
+        # take -- a schema change deployed on one side only.
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The consumer has been rejecting {{ $labels.routing_key }} messages for 15 minutes"
+          description: >-
+            This is not one bad message -- it is a steady stream of them, so
+            suspect a producer and consumer that disagree about a schema
+            (check schema_version in the envelope) rather than corrupt data.
+            `make dlq` shows the rejected payloads with the validation error
+            that rejected them. Do not redrive until the producer is fixed:
+            the same messages will be rejected again and the only result is a
+            larger dead-letter queue.
+
+  # =========================================================================
+  - name: aow-freshness
+    interval: 1m
+    rules:
+      - alert: AowIngestionStale
+        # `time()` minus the last success. The gauge is 0 before the first
+        # ever success, which makes this expression enormous and fires the
+        # alert -- deliberately: a stack that has never ingested anything is
+        # exactly as unable to answer a question as one that stopped a week
+        # ago, and the operator should hear about it on the first day rather
+        # than never.
+        expr: time() - aow_ingestion_last_success_timestamp_seconds > 86400
+        # Half an hour, so this cannot fire while a stack is still starting up
+        # and working through its first ingestion.
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful ingestion from {{ $labels.source }} for over a day"
+          description: >-
+            Stored data is more than 24 hours old, so the system will
+            increasingly answer 'no data for that date' rather than being
+            wrong -- which is the designed behaviour, not a bug. On an
+            air-gapped host this may simply be true and expected: new weather
+            requires connectivity. If the host can reach the internet, run
+            `make refresh`, which opens the egress window on the ingestor,
+            fetches, and closes it again. If it cannot, this alert is
+            information, not a fault; the UI and the agent already show the
+            as-of timestamp of everything they serve.
+
+  # =========================================================================
+  - name: aow-service-quality
+    interval: 30s
+    rules:
+      - alert: AowServerErrors
+        # A RATIO, not a raw rate. A raw threshold on 5xx counts would fire on
+        # a busy service and stay quiet on an idle one that is failing every
+        # single request, which is backwards.
+        expr: >-
+          sum by (service, route) (rate(aow_http_requests_total{status=~"5.."}[5m]))
+          /
+          sum by (service, route) (rate(aow_http_requests_total[5m]))
+          > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} is failing {{ $labels.route }} ({{ $value | humanizePercentage }} of requests)"
+          description: >-
+            More than 5% of requests to {{ $labels.route }} have returned 5xx
+            for ten minutes. Start with
+            `docker compose logs --tail=200 {{ $labels.service }}` and the
+            aow_http_exceptions_total panel on the Service health dashboard,
+            which breaks the failures down by exception class -- an
+            OperationalError there means Postgres, a TimeoutError means the
+            model server. If the route is a write path (POST
+            /recommendations, POST /itineraries, PATCH /records/...), check
+            AowOutboxStuck as well: a write that 500s has not been accepted,
+            so the caller must retry, and nothing spools on their behalf.
+
+      - alert: AowHighLatency
+        # p95 rather than an average: the average over a stack with a CPU
+        # model in it is dominated by whichever endpoint happens to be busy,
+        # and hides the tail that a user actually experiences.
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum by (service, route, le) (rate(aow_http_request_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} {{ $labels.route }} p95 is {{ $value | humanizeDuration }}"
+          description: >-
+            Five seconds at p95 on a route that is not a model call means
+            something is queueing -- usually Postgres under a missing index,
+            or the API waiting on the agent. Note that the agent's chat route
+            is expected to be slow on CPU (a 1.7B model generating an answer
+            is seconds, not milliseconds), so if the route here is the agent's
+            ask endpoint and the model is healthy, this may be the machine
+            rather than a fault; the threshold is set at 5s precisely so that
+            a normal grounded answer does not trip it. Compare against
+            aow_enrichment_duration_seconds on the Pipeline dashboard: if both
+            have risen together, the model server is contended and
+            LLM_PARALLEL is the knob.
+
+      - alert: AowEnrichmentFailing
+        # Deliberately NOT the same as AowModelUnavailable. That one is 'the
+        # model is not there'. This one is 'the model is there and is
+        # returning output we cannot use' -- a wording that fails validation
+        # or contradicts the deterministic score it was asked to phrase. The
+        # two have completely different fixes, so they are two rules.
+        expr: >-
+          sum(rate(aow_enrichment_requests_total{result="invalid"}[15m]))
+          /
+          sum(rate(aow_enrichment_requests_total[15m]))
+          > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The model is returning unusable output for {{ $value | humanizePercentage }} of enrichment requests"
+          description: >-
+            The model server is UP -- this is not AowModelUnavailable -- but
+            more than a fifth of its replies are being rejected by the
+            grounding check, so those recommendations stay 'pending' rather
+            than being stored with wrong wording. That refusal is the correct
+            behaviour and no bad data has been written. Check that LLM_MODEL
+            and LLM_MODEL_FILE in .env still name the same model (a mismatched
+            chat template produces exactly this), and check
+            `docker compose logs --tail=100 enricher` for the rejected
+            completions. If a model was swapped, the prompt in
+            services/enricher may need its template adjusted before `make
+            reenrich` is worth running.

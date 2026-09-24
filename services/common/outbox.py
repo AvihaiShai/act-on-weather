@@ -129,6 +129,21 @@ class Outbox:
         ).fetchone()
         return {"total": row["total"] or 0, "pending": row["pending"] or 0}
 
+    def oldest_pending_accepted_at(self) -> str | None:
+        """When the oldest record still owed to the broker was accepted.
+
+        `counts()` says how much is owed; this says how long it has been owed,
+        which is the difference between a broker that is briefly slow and
+        records that are stranded. It is what the pipeline-health alert reads
+        (services/common/metrics.py), and it answers in one indexed lookup:
+        the `outbox_unpublished` partial index is ordered by seq, so the first
+        row it offers is the answer.
+        """
+        row = self.conn.execute(
+            "SELECT accepted_at FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 1"
+        ).fetchone()
+        return row["accepted_at"] if row is not None else None
+
     def status_of(self, message_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT message_id, routing_key, accepted_at, published_at, attempts, last_error"

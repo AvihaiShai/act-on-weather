@@ -1,0 +1,35 @@
+# Where Grafana finds the dashboards, and how it treats them.
+#
+# The JSON files in observability/grafana/dashboards/ are bind-mounted
+# read-only at /var/lib/grafana/dashboards and loaded from disk on start. They
+# are hand-written rather than exported from a running Grafana, which is the
+# reason they are short enough to read: an export carries several hundred
+# lines of UI state -- panel ids, legend sort orders, collapsed rows, the
+# schema migrations of every version the file has passed through -- none of
+# which anyone reviewing this repository needs to see.
+
+apiVersion: 1
+
+providers:
+  - name: aow
+    orgId: 1
+    # No folder: two dashboards do not need a hierarchy, and a folder name is
+    # one more thing that has to match between this file and a bookmark.
+    folder: ""
+    type: file
+    # Dashboards are defined here, so a change made in the browser must not
+    # win over the file. With this false, Grafana refuses the save and says
+    # why -- which is better than accepting an edit that the next restart
+    # silently reverts.
+    allowUiUpdates: false
+    # A dashboard deleted from this directory is deleted from Grafana too.
+    # Without it, a renamed dashboard leaves its previous version behind
+    # forever, and nothing in the repository explains where the stale copy
+    # came from.
+    disableDeletion: false
+    options:
+      path: /var/lib/grafana/dashboards
+      # Mirror the directory layout into folders. There are no subdirectories
+      # today; this makes adding one behave the obvious way rather than
+      # flattening everything into the root.
+      foldersFromFilesStructure: true

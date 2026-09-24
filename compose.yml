@@ -70,6 +70,25 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
     volumes:
       - rabbitdata:/var/lib/rabbitmq
+      # Declares, in the repository, which plugins the broker must run:
+      # rabbitmq_management (the HTTP API, inside the stack only -- 15672 is
+      # not published) and rabbitmq_prometheus (the exporter on 15692, the
+      # only honest source of per-queue depth, since a crashed consumer
+      # cannot report how far behind it is).
+      #
+      # Both plugins are already enabled by this pinned image -- verified, its
+      # own /etc/rabbitmq/enabled_plugins reads
+      # `[rabbitmq_management,rabbitmq_prometheus].` -- so this mount does not
+      # switch the exporter on. It pins the dependency: a later image bump
+      # that drops one fails here instead of leaving compose.observability.yml
+      # scraping a closed port and every queue-depth alert silently never
+      # firing.
+      #
+      # rabbitmq_management is named alongside it because the mount REPLACES
+      # the image's file rather than adding to it. Listing only the exporter
+      # would quietly disable the management API, and that surfaces much later
+      # as a 404 from a diagnostic command rather than as a start-up error.
+      - ./observability/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     networks: [backend]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
