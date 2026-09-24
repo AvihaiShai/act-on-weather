@@ -208,6 +208,15 @@ Three things are worth keeping from how this was found:
    never held in the bare form, and an empty one for an image it has. The variable is
    store state, not the engine and not the manifest media type.
 
+   **`docker rmi <tag>` does not clear it.** Removing the tag — even `-f`, even removing
+   both the tag and the digest reference — leaves the record in place and the archive
+   still comes back empty. It clears only when the image is removed **by image ID**, or by
+   a prune. This is the detail that produced the misdiagnosis: three consecutive attempts,
+   each preceded by an `rmi` that looked thorough, all returned 10,240 bytes, which reads
+   as "this image cannot be exported" rather than "this store still remembers it".
+   Anyone reproducing this has to purge by ID or they will reach the same wrong
+   conclusion.
+
    **Who is affected:** only a machine that pulled the pre-fix bare manifests — which
    means the machines used to investigate this, and not a reviewer's. A fresh machine and
    a CI runner are both clean by construction. A long-lived staging host that ever pulled
@@ -293,6 +302,13 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
   to the publish path. The symptom being real is not evidence that the cause has been
   found, and a fix applied to the wrong variable would have looked like it worked, because
   republishing anything also repopulates the store.
+
+  The misdiagnosis had a clean positive control (an OCI-index image exported correctly)
+  and a clean negative (ours did not), and still drew the wrong line between them, because
+  the two samples differed in **two** ways at once — media type and store history — and
+  only one was varied. What settled it was a positive control that held media type fixed
+  and varied store history alone: a *freshly published* image of the same media type on
+  the same engine.
 - Timings are from single runs, not averages.
 - `release-smoke.py` asserts **data** for weather and scores but only **liveness** for
   agent, llm, ui and edge. It is a partial gate and `docs/RELEASE.md` says so.
