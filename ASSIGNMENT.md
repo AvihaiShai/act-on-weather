@@ -154,14 +154,14 @@ These are readings of the brief. Where the brief leaves something open, the note
 
 ## 5. Design choices (ours, not required by the brief)
 
-The brief does not require any of these. They are our decisions, recorded here so the README and the plan can point at one list. Items marked TBD are not decided yet. The reasoning, alternatives, current working selections, and validation gates are in [TECHNICAL_DECISIONS.md](TECHNICAL_DECISIONS.md).
+The brief does not require any of these. They are our decisions, recorded here so the README and the plan can point at one list. This section was written before the build; where the build settled a TBD or departed from an item, the item says so. The reasoning, alternatives, current working selections, and validation gates are in [TECHNICAL_DECISIONS.md](TECHNICAL_DECISIONS.md).
 
 **Runtime and packaging**
 
 - **Zero-internet runtime.** Stricter than the brief's "without full internet access": after a one-time connected staging step (container images, model weights, dependencies, UI assets and a data snapshot), the whole stack starts and answers questions with no internet at all. We document the staging step and exactly what keeps working offline. Reason: partial access is unspecified and cannot be tested, while zero internet can be demonstrated.
 - **Docker Compose is the run path**, one command per mode, identical on Linux, macOS and Windows. Kubernetes/OpenShift appears in the README as a production path, not as code.
-- **CPU by default**; the GPU is an optional Compose override file, never required.
-- **Local model.** The brief requires only that the model be local and open-weights (M3). Which model and which size is ours to choose — TBD, decided in planning after measuring CPU latency.
+- **CPU by default**; a GPU was to be an optional Compose override, never required. **Not built:** the stack ships CPU-only, there is no GPU override file, and nothing asks for one. `LLM_THREADS` is the only tuning knob.
+- **Local model.** The brief requires only that the model be local and open-weights (M3). Which model and which size is ours to choose — **settled:** Qwen3-1.7B Q4_K_M (Apache-2.0, 1.2 GB), served by llama.cpp, after measuring CPU latency.
 
 **Data flow and integrity**
 
@@ -193,4 +193,4 @@ The brief does not require any of these. They are our decisions, recorded here s
 **Security and repository hygiene**
 
 - Secrets live only in a gitignored `.env`; a `.env.example` is committed.
-- Pinned image versions (digests where practical), containers run as non-root where the image allows, no published ports beyond the UI, API and Grafana, and an image scan in CI.
+- Pinned image versions (digests where practical), containers run as non-root where the image allows, no published ports beyond the UI, API and Grafana, and an image scan in CI. **As built:** digests everywhere, uid 10001 where the base image allows, an image scan in CI — and only two published ports, the UI and the API, both bound to `127.0.0.1`, because the Grafana of B2 was not built.

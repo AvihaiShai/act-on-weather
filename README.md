@@ -17,8 +17,18 @@ outside that window and the system says it has no forecast instead of guessing.
 
 **The only thing you need on the host is Docker** — Docker Desktop on Windows
 or macOS, Docker Engine with the Compose plugin on Linux. No `make`, no `curl`,
-no `python`, nothing to install beyond that. Give Docker at least **8 GB of
-memory** and a few GB of free disk, and start it before you begin.
+no `python`, no `bash`; nothing to install beyond Docker and the `git` that
+fetched this folder. Start Docker before you begin.
+
+| what it needs | how much, and why |
+|---|---|
+| **Compose v2** | the `docker compose` subcommand, with a space. The standalone `docker-compose` v1 cannot read the top-level `name:` key these files use. Verified on Docker Engine 29.8 with Compose v5.5.1. |
+| **Memory** | **8 GB for Docker.** `compose.yml` caps every container and the caps total 6.7 GB, 3 GB of it the model server. On Docker Desktop that is the VM's limit, not the host's; on Linux it is simply free RAM. |
+| **Disk** | **about 6 GB** — ~2.2 GB of pulled images, ~0.4 GB more for the two tooling bases (`python:3.12-slim`, `docker:28-cli`), the 1.2 GB model, and ~1.7 GB of images built here. Another ~1.2 GB if you also build the test image. These are the sizes `docker images` reports, so shared layers make the real figure a little lower. |
+| **CPU** | CPU-only, and that is the only mode: no GPU override ships and nothing here asks for one. `LLM_THREADS` in `.env` (default 4) is the knob. |
+| **Internet** | for [step 2](#2-stage-it--once-with-internet) only. Step 3 and everything after it run with the network off. |
+| **Published ports** | 8080 (UI) and 8000 (API), on `127.0.0.1` only. Nothing else is published — not the database, not the broker, not the model server. |
+| **Architecture** | verified on linux/amd64. Every pinned digest is a multi-arch manifest list that includes linux/arm64, so Apple Silicon pulls native images, but that combination is untested here. The [offline release bundle](#offline-release-and-installation) is amd64-only by design and refuses anything else. |
 
 Everything below is one recipe. The commands are character-identical on
 Windows, macOS and Linux except the single line that creates `.env`. Run them
@@ -61,6 +71,21 @@ docker compose -f compose.tools.yml build demos
 To stage from an internal mirror rather than the public internet, set
 `MODEL_BASE_URL` in `.env`. The checksum check is identical either way.
 
+**Check the staging before you start the stack.** Three commands, none of which
+starts a container that stays up, changes a volume or needs a network:
+
+```sh
+docker compose config --quiet                         # .env is present and complete
+docker compose config --images                        # every image a run will need
+docker compose -f compose.tools.yml run --rm stage    # the model, re-hashed
+```
+
+The first fails by name on any password still missing from `.env`, which is the
+one way a fresh clone usually goes wrong. The third re-hashes a model that is
+already there instead of fetching it, so it answers "is the staged file the one
+`models.lock` describes?" offline. `make preflight` is the first and the third
+in one command; see [Shorthand](#shorthand).
+
 ### 3. Run it — no internet needed
 
 ```sh
@@ -88,13 +113,16 @@ Stop it with `docker compose down`, and start it again later with
 
 ### Shorthand
 
-`make` is a convenience for hosts that have it, and nothing requires it. Each
-target is the Docker command next to it, and the Docker command is what works
-everywhere:
+`make` is a convenience for hosts that have it, and nothing requires it — it
+is the one tool in this file that Docker does not supply. Each target is the
+Docker command next to it, and the Docker command is what works everywhere.
+`make help` lists these plus the operational ones (`ps`, `logs`, `clean`,
+`samples`, `dlq`, `redrive`):
 
 | shorthand | what it actually runs |
 |---|---|
 | `make stage` | the four staging commands above |
+| `make preflight` | `docker compose config --quiet`, then `… run --rm stage` — the two checks in [step 2](#2-stage-it--once-with-internet) |
 | `make up` / `make down` | `docker compose up -d` / `docker compose down` |
 | `make up-demo` | `docker compose -f compose.yml -f compose.demo.yml up -d` |
 | `make test` | `docker build -q -f tests/Dockerfile -t aow/tests:dev .` then `docker run --rm aow/tests:dev` |
@@ -122,7 +150,9 @@ driving Docker *is* the proof. It is why the proof runner is a `docker compose
 run` you type on purpose and never part of `up`, and why it lives in
 `compose.tools.yml` rather than in `compose.yml`. Nothing in the running stack
 has the socket. If you would rather not grant it, run the same scripts directly
-on a host with bash: `bash demos/01_offline.sh`.
+on a host that has bash, curl and python3: `bash demos/01_offline.sh`. That is
+the one path in this project that needs more than Docker, and it is a fallback,
+not the documented route.
 
 ### Demo mode
 
@@ -638,7 +668,7 @@ check:
 
 | | |
 |---|---|
-| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (7) and `data/snapshot/events.samples.jsonl` (45) |
+| **Snapshot** | two files, never merged: `data/snapshot/events.jsonl` (26) and `data/snapshot/events.samples.jsonl` (45) |
 | **Ingestor** | replays the sample file only when `AOW_DEMO_EVENTS` is set, so a default run never even *accepts* a generated row |
 | **Consumer** | the only role with write grants, so it is the last word: it drops a sample row that arrives while demo mode is off, whoever produced it, and on startup it deletes every `is_sample` row it finds |
 
@@ -917,10 +947,13 @@ rot quietly. It fails the build if a pulled image or a Dockerfile base is not
 pinned by digest; if a pinned digest disagrees with `IMAGES.lock`, so the lock
 cannot become documentation of a release nobody runs; if any workflow action is
 on a movable tag rather than a commit SHA, since those actions run with this
-workflow's token; and if any count in the README or the Makefile disagrees with
+workflow's token; and if any count in the README, the Makefile, `ASSIGNMENT.md`,
+`TECHNICAL_DECISIONS.md` or `docs/ARCHITECTURE.md` disagrees with
 `data/snapshot/MANIFEST.json`, which `scripts/snapshot_manifest.py` derives
-from the snapshot files. That last one is not hypothetical: a README quoting
-289 of them shipped against a snapshot holding 620.
+from the snapshot files — totals and the per-city split alike, and it also
+fails when a sentence it was watching has been reworded out from under it.
+That last one is not hypothetical: an earlier README put the place count at
+289 while the snapshot already held 620.
 
 ### The grounding gate, before a release
 
@@ -959,6 +992,11 @@ publish. The local model is too large for a useful per-PR full-stack run; the
 integration test exercises the queue and database path without it.
 
 ### Offline release and installation
+
+This is the one path that asks the staging machine for more than Docker: `git`,
+the GitHub CLI (`gh`, signed in), and `bash` with `sha256sum`. Git Bash supplies
+the last two on Windows, and the engine must be Linux/amd64 — see [Known
+limitations](#known-limitations). The quick start above needs none of this.
 
 The repository is private, so sign in to GHCR on a connected staging machine
 with permission to read its packages. Download `aow-images-<commit>` from the
@@ -1237,7 +1275,10 @@ sha256sum -c models.lock                 # the model
 bash scripts/verify-bundle-images.sh .   # images.tar against images.bundle.lock
 ```
 
-The numbers this file quotes about the snapshot come from the snapshot:
+The numbers this file quotes about the snapshot — and the ones in the
+Makefile, `ASSIGNMENT.md`, `TECHNICAL_DECISIONS.md` and `docs/ARCHITECTURE.md`
+— come from the snapshot. `tests/unit/test_readme_counts.py` runs the same
+tables as a unit test; this is the standalone form, and what CI runs:
 
 ```sh
 docker run --rm -v "$PWD:/work" -w /work \

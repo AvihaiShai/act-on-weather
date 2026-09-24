@@ -1,20 +1,37 @@
 """Derive the snapshot's headline numbers from the snapshot itself.
 
 The README and the Makefile tell a reviewer how much data ships in
-``data/snapshot/``. Those numbers were written by hand once and went stale:
-a README saying "289 places" shipped against a snapshot holding 620, which is
-the kind of error that costs more trust than the data is worth.
+``data/snapshot/``. Those numbers were written by hand once and went stale: a
+README putting the place count at 289 shipped against a snapshot holding 620,
+which is the kind of error that costs more trust than the data is worth.
 
 So the numbers get a source. ``python scripts/snapshot_manifest.py`` writes
 ``data/snapshot/MANIFEST.json`` from the files; ``--check`` rebuilds it, fails
 if the committed manifest has drifted from the files, and then fails if any
-count quoted in the README or the Makefile disagrees with it. CI runs the
-``--check`` form, so a snapshot change that leaves the prose behind cannot
-merge.
+count quoted in the documentation disagrees with it. CI runs the ``--check``
+form and ``tests/unit/test_readme_counts.py`` runs the same tables, so a
+snapshot change that leaves the prose behind cannot merge.
+
+What ``--check`` verifies, in order:
+
+1. every file an entity names is present, and no unclaimed file is sitting in
+   ``data/snapshot/`` pretending to be part of the reviewed data;
+2. the committed manifest matches the files -- sha256, line count, unique-id
+   count, city count, and the forecast window;
+3. the manifest lists no entity that nothing produces any more;
+4. every entity covers every city configured in ``data/cities.yml``, so a
+   snapshot that silently lost a city fails here rather than in the UI;
+5. the snapshot files still match the seeds they were built from;
+6. every count and every per-city breakdown quoted in ``DOCUMENTS`` agrees
+   with the data, and every pattern in the tables below still matches
+   something, so a reworded sentence cannot quietly switch the guard off.
 
 Counts are reported as **unique ids**, not lines. The consumer upserts on the
 record id, so a file with a duplicated id stores fewer rows than it has lines,
 and the number a reviewer can verify against ``/coverage`` is the unique one.
+
+Deliberately stdlib-only: CI runs it on a bare runner with no ``pip install``,
+which is also why ``data/cities.yml`` is read with a regex rather than PyYAML.
 """
 
 from __future__ import annotations
@@ -28,6 +45,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SNAPSHOT = ROOT / "data" / "snapshot"
 MANIFEST = SNAPSHOT / "MANIFEST.json"
+CITIES = ROOT / "data" / "cities.yml"
 
 # Entity name -> the file it ships in. The name is what the prose checks below
 # refer to, and what /coverage calls the same data.
@@ -49,33 +67,97 @@ MIRRORED = {
 # Every way the documentation states one of these numbers. \s+ rather than a
 # space because Markdown prose wraps, and a count split over two lines is still
 # a count. Each pattern captures the numbers in the order its entities are
-# listed.
+# listed, and each one must match somewhere or it is a guard that has stopped
+# guarding -- see `unused` in prose_problems().
 PROSE = [
+    # Headline totals.
     (r"\b(\d+)\s+places\b", ("places",)),
     (r"\b(\d+)\s+background\s+articles\b", ("facts",)),
+    (r"\b(\d+)-day\s+daily\s+forecasts\b", ("weather.days",)),
+    # The verified events, whose count is the one most often repeated.
     (r"\b(\d+)\s+verified\s+events\b", ("events",)),
+    (r"\b(\d+)\s+hand-verified\s+events\b", ("events",)),
+    (r"\b(\d+)\s+verified\s+listings\b", ("events",)),
+    (r"\b(\d+)\s+\*{0,2}real\*{0,2}\s+listings\b", ("events",)),
+    (r"\b(\d+)\s+rows\s+across\s+all\s+five\s+cities\b", ("events",)),
+    (r"\bverified\s+event\s+set\s+is\s+(\d+)\s+rows\b", ("events",)),
+    (r"\bThere\s+are\s+(\d+),\s+covering\s+all\s+five\s+cities\b", ("events",)),
+    # The generated samples, which must never be added to the verified rows.
     (r"\b(\d+)\s+labelled\s+sample\s+events\b", ("events.samples",)),
     (r"\b(\d+)\s+labelled\s+samples\b", ("events.samples",)),
+    (r"\b(\d+)\s+\*{0,2}generated\s+sample\s+events\b", ("events.samples",)),
+    (r"\b(\d+)\s+generated\s+events\b", ("events.samples",)),
+    (r"\b(\d+)\s+generated\s+rows\b", ("events.samples",)),
+    (r"\b(\d+)\s+rows\s+generated\s+by\b", ("events.samples",)),
+    (r"\b(\d+)\s+rows,\s+every\s+one\s+\S*is_sample\b", ("events.samples",)),
+    # Both numbers at once, which is the form the coverage tab reports.
     (r"\b(\d+)\s+verified\s+\+\s+(\d+)\s+samples\b", ("events", "events.samples")),
-    (r"\b(\d+)-day\s+daily\s+forecasts\b", ("weather.days",)),
+    # The files themselves, annotated with their row counts.
+    (r"`data/snapshot/events\.jsonl`\s*\((\d+)\)", ("events",)),
+    (r"`data/snapshot/events\.samples\.jsonl`\s*\((\d+)\)", ("events.samples",)),
 ]
 
-DOCUMENTS = ("README.md", "Makefile")
+# Prose that breaks one entity down per city. The totals above are covered;
+# this is for the split drifting away from the total, which is easy to miss
+# because the breakdown is written out four times. Group names are city slugs
+# with `-` spelled `_`, since a regex group name cannot contain a hyphen.
+BREAKDOWNS = [
+    (
+        r"\(london\s+(?P<london>\d+),\s+reykjavik\s+(?P<reykjavik>\d+),"
+        r"\s+rome\s+(?P<rome>\d+),\s+lisbon\s+(?P<lisbon>\d+),"
+        r"\s+tel-aviv\s+(?P<tel_aviv>\d+)\)",
+        "events",
+    ),
+    (
+        r"(?P<london>\d+)\s+London,\s+(?P<reykjavik>\d+)\s+Reykjavík,"
+        r"\s+(?P<rome>\d+)\s+Rome,\s+(?P<lisbon>\d+)\s+Lisbon,"
+        r"\s+(?P<tel_aviv>\d+)\s+Tel\s+Aviv",
+        "events",
+    ),
+]
+
+# Every tracked document that quotes one of these numbers. A document with no
+# counts in it costs nothing to include and becomes a tripwire the day someone
+# adds one.
+DOCUMENTS = (
+    "README.md",
+    "Makefile",
+    "ASSIGNMENT.md",
+    "TECHNICAL_DECISIONS.md",
+    "docs/ARCHITECTURE.md",
+)
 
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def line_of(text: str, at: int) -> int:
+    """The 1-based line number of offset `at`, for an error a reader can jump to."""
+    return text[:at].count("\n") + 1
+
+
+def rows_of(path: Path) -> list[dict]:
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+
+
+def city_slugs() -> list[str]:
+    """The configured city slugs, read out of data/cities.yml without PyYAML."""
+    return re.findall(r"^\s*-\s+slug:\s*(\S+)\s*$", CITIES.read_text(encoding="utf-8"), re.M)
+
+
+def missing_files() -> list[str]:
+    """Entity files the manifest describes that are not on disk."""
+    return [f"data/snapshot/{name}" for name in ENTITIES.values() if not (SNAPSHOT / name).exists()]
+
+
 def build() -> dict:
     entities = {}
     for name, filename in ENTITIES.items():
         path = SNAPSHOT / filename
-        rows = [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        rows = rows_of(path)
         entry = {
             "file": f"data/snapshot/{filename}",
             "sha256": digest(path),
@@ -170,13 +252,50 @@ def counts(manifest: dict) -> dict[str, int]:
     return values
 
 
-def check() -> int:
-    built = build()
-    errors = []
+def per_city() -> dict[str, dict[str, int]]:
+    """Unique ids per city, per entity, straight from the files.
 
+    Not from the manifest: the manifest records how many cities an entity
+    covers, not the split, and its format is what the committed file already
+    is. Step 2 of --check has pinned these files by sha256 before any caller
+    gets here.
+    """
+    split: dict[str, dict[str, int]] = {}
+    for name, filename in ENTITIES.items():
+        rows = rows_of(SNAPSHOT / filename)
+        # Same rule as build(): unique ids where the entity has them, rows
+        # otherwise. Weather is keyed by (city, date) and carries no id, so
+        # counting a missing field would collapse every day into one.
+        keyed = "id" in rows[0]
+        seen: dict[str, set[str]] = {}
+        for index, row in enumerate(rows):
+            seen.setdefault(row["city_id"], set()).add(row["id"] if keyed else str(index))
+        split[name] = {city: len(ids) for city, ids in seen.items()}
+    return split
+
+
+def snapshot_problems() -> list[str]:
+    """Everything that can be wrong with the files and the committed manifest."""
+    errors: list[str] = []
+
+    gone = missing_files()
+    if gone:
+        # Nothing below can run without them, and a traceback would be a worse
+        # way to learn that the snapshot is incomplete.
+        return [f"missing snapshot file: {name}" for name in gone]
+
+    claimed = {MANIFEST.name} | set(ENTITIES.values())
+    for stray in sorted(p.name for p in SNAPSHOT.iterdir() if p.name not in claimed):
+        errors.append(
+            f"data/snapshot/{stray} is not listed in ENTITIES; "
+            "either add it or take it out of the snapshot"
+        )
+
+    built = build()
     if not MANIFEST.exists():
-        print(f"{MANIFEST} is missing; run: python scripts/snapshot_manifest.py", file=sys.stderr)
-        return 1
+        errors.append(f"{MANIFEST} is missing; run: python scripts/snapshot_manifest.py")
+        return errors
+
     committed = json.loads(MANIFEST.read_text(encoding="utf-8"))
     if committed != built:
         errors.append(
@@ -187,33 +306,93 @@ def check() -> int:
             was = committed.get("entities", {}).get(name)
             if was != entry:
                 errors.append(f"  {name}: manifest {was} != files {entry}")
+        for name in sorted(set(committed.get("entities", {})) - set(built["entities"])):
+            errors.append(f"  {name}: in the manifest, but nothing produces it any more")
+
+    configured = set(city_slugs())
+    for name, split in per_city().items():
+        absent = sorted(configured - set(split))
+        extra = sorted(set(split) - configured)
+        if absent:
+            errors.append(
+                f"{name}: no rows for {', '.join(absent)}, which data/cities.yml configures"
+            )
+        if extra:
+            errors.append(
+                f"{name}: rows for {', '.join(extra)}, which data/cities.yml does not list"
+            )
 
     for source, mirror in MIRRORED.items():
         errors.extend(mirror_errors(ROOT / source, ROOT / mirror))
 
-    expected = counts(built)
-    for document in DOCUMENTS:
+    return errors
+
+
+def prose_problems(manifest: dict, documents: tuple[str, ...] = DOCUMENTS) -> list[str]:
+    """Every count and breakdown in `documents` that disagrees with the data."""
+    errors: list[str] = []
+    expected = counts(manifest)
+    split = per_city()
+    unused = {pattern for pattern, _ in PROSE} | {pattern for pattern, _ in BREAKDOWNS}
+    present = [name for name in documents if (ROOT / name).is_file()]
+
+    for document in present:
         text = (ROOT / document).read_text(encoding="utf-8")
+
+        def line_of(text: str, at: int) -> int:
+            return text[:at].count("\n") + 1
+
         for pattern, names in PROSE:
             for match in re.finditer(pattern, text):
+                unused.discard(pattern)
                 for quoted, name in zip(match.groups(), names, strict=True):
                     if int(quoted) != expected[name]:
-                        line = text[: match.start()].count("\n") + 1
                         errors.append(
-                            f"{document}:{line}: says {quoted} for {name}, "
-                            f"snapshot has {expected[name]} -- {match.group(0)!r}"
+                            f"{document}:{line_of(text, match.start())}: says {quoted} for "
+                            f"{name}, snapshot has {expected[name]} -- {match.group(0)!r}"
                         )
 
+        for pattern, name in BREAKDOWNS:
+            for match in re.finditer(pattern, text):
+                unused.discard(pattern)
+                for group, quoted in match.groupdict().items():
+                    city = group.replace("_", "-")
+                    actual = split[name].get(city, 0)
+                    if int(quoted) != actual:
+                        errors.append(
+                            f"{document}:{line_of(text, match.start())}: says {quoted} "
+                            f"{name} in {city}, snapshot has {actual}"
+                        )
+
+    for pattern in sorted(unused):
+        errors.append(
+            f"no document matches {pattern!r} any more; the wording changed and this "
+            "guard went quiet -- update the pattern or delete the row"
+        )
+    return errors
+
+
+def check() -> int:
+    errors = snapshot_problems()
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
+
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    errors = prose_problems(manifest)
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+
     print(
         "snapshot manifest matches the files, and every count in "
-        + " and ".join(DOCUMENTS)
+        + ", ".join(DOCUMENTS)
         + " matches it:"
     )
-    for name, value in sorted(expected.items()):
+    for name, value in sorted(counts(manifest).items()):
         print(f"  {name} = {value}")
+    for name, split in sorted(per_city().items()):
+        print(f"  {name} by city = {', '.join(f'{c} {n}' for c, n in sorted(split.items()))}")
     return 0
 
 
