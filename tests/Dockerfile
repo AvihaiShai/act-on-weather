@@ -29,6 +29,10 @@ COPY pytest.ini ruff.toml ./
 COPY compose*.yml .env.example ./
 COPY data/ ./data/
 COPY services/ ./services/
+# scripts/refresh_report.py assembles the report the operator refresh files for
+# the UI, so it is exercised like any other code rather than only by running the
+# command. It is also what `ruff check scripts` lints in CI.
+COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 
 RUN useradd -u 10001 -m appuser && chown -R appuser /app

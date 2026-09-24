@@ -196,13 +196,16 @@ def london_app(monkeypatch) -> AppTest:
     assert london, "the committed snapshot has no London places"
 
     def fake_get(url, params=None, timeout=None, **kwargs):
-        path = urlparse(url).path
-        key = path.strip("/").split("/")[0]
-        if key == "places":
+        path = urlparse(url).path.strip("/")
+        if path.split("/")[0] == "places":
             return FakeResponse(london)
-        if key not in FIXTURES:
-            raise AssertionError(f"the UI called {path}, which the fixture does not cover")
-        return FakeResponse(FIXTURES[key])
+        # Whole path first, then its first segment -- the same two-step lookup
+        # test_ui.py uses, because endpoints like /refresh/last and
+        # /itineraries/{id} have shapes of their own in the fixture.
+        for key in (path, path.split("/")[0]):
+            if key in FIXTURES:
+                return FakeResponse(FIXTURES[key])
+        raise AssertionError(f"the UI called /{path}, which the fixture does not cover")
 
     def fake_request(method, url, json=None, timeout=None, **kwargs):
         return FakeResponse({"accepted": True, "message_id": "test-message-id"})

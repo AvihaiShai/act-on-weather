@@ -177,9 +177,10 @@ header, which carries the as-of stamp and the forecast window.
   so pan and zoom work without map tiles.
 * **Ask the agent** — chat, with a panel showing exactly which rows the answer used.
 * **Update data** — all three M12 update paths in one place: the operator
-  refresh (per-city freshness and the command that changes it; the page
-  states that it does not fetch), correcting a stored record, and re-wording
-  with the local model.
+  refresh (per-city freshness, **what the last run of the command actually
+  did**, and the command itself — three numbered sections, because the first
+  two answer different questions; the page states that it does not fetch),
+  correcting a stored record, and re-wording with the local model.
 * **Data coverage** — what is held, per record type and per city, which rows are
   labelled samples, and how far the wording queue has got.
 
@@ -310,7 +311,8 @@ Eleven containers. `postgres`, `rabbitmq`, `migrate` (one-shot), `llm`,
 |---|---|---|
 | `backend` | everything | `internal: true` — Docker itself gives it no gateway |
 | `frontend` | `edge` only | Docker cannot publish a port from an internal network, so exactly one container straddles the boundary |
-| `egress` | nobody, by default | the operator refresh attaches the ingestor to it for the length of one fetch, then detaches it again and asserts it detached |
+| `egress` | nobody, by default | declared for `make snapshot` and the manual refresh sequence, which overlay `compose.connected.yml`. A plain `docker compose up -d` never even creates it |
+| `<project>_refresh_egress` | nobody, between refreshes | the operator refresh creates it, attaches the ingestor for the length of one fetch, then detaches the ingestor **and deletes the network**, and asserts both. It does not exist at any other time, which is a stronger thing to check than an absent attachment |
 
 Only 8080 and 8000 are published, and both only on `127.0.0.1`. Not the
 database, not the broker, not the management UI, not the model server.
@@ -658,13 +660,25 @@ docker compose -f compose.tools.yml run --rm refresh
 which:
 
 1. records what is stored now, per city — as-of and last day covered;
-2. attaches **only the ingestor container** to the `egress` network;
+2. creates a bridge network of its own, `<project>_refresh_egress`, and attaches
+   **only the ingestor container** to it;
 3. runs the fetch inside it, into the same outbox every other record uses;
-4. **closes that window again and asserts it closed**, from a `trap`, so a
-   failed fetch, a `Ctrl-C` or a crash mid-way ends the same way a success does;
+4. **closes that window again and asserts it closed** — detaches the ingestor,
+   deletes the network, and checks both — from a `trap`, so a failed fetch, a
+   `Ctrl-C` or a crash mid-way ends the same way a success does. A `SIGKILL`
+   beats any trap, so before opening the window it also starts a detached
+   [guard](scripts/refresh_window_guard.sh) that closes the window after
+   `REFRESH_WINDOW_MAX_S` (default 600) no matter what happens to the command.
+   A normal run closes its own window in seconds and the guard exits having
+   done nothing;
 5. follows the accepted message ids to the broker and to `ingest_log`;
 6. prints per-city success or failure, the as-of before and after, the accepted
-   message ids, and how many of them are stored versus still in flight.
+   message ids, and how many of them are stored versus still in flight;
+7. files that same report at **`GET /refresh/last`**, so the UI can show what
+   the last run did and not only how fresh the stored data is. Also from the
+   `trap`, so an interrupted run records how far it got. `--check` files
+   nothing: it changes nothing, and overwriting the last real refresh with a
+   window test would lose the more useful of the two.
 
 It exits non-zero when any city fails (`2`), when the egress window could not be
 closed (`3`) — the one outcome that needs a human — or when the rows were
@@ -699,13 +713,46 @@ gets skipped, and because a failed fetch or a closed terminal skips it too.
 
 `OPEN_METEO_URL` points the fetch at an internal mirror instead of the public
 API, for a site that has a mirror but no route to the internet.
+`AOW_PROJECT` names the stack to act on; it defaults to `aow`, which is the
+project `docker compose up -d` creates, so an operator never sets it. It exists
+so the same shipped command can be run against a second, isolated stack —
+`AOW_PROJECT=aow-drill docker compose -f compose.tools.yml run --rm refresh` —
+without editing `compose.tools.yml`, which is how the drills below are run.
 
-**There is no refresh button in the UI, on purpose.** A button would need
-either the Docker socket inside the UI container or an unauthenticated endpoint
-that runs host commands; both are a worse problem than the one they solve. The
-**Update data → Operator refresh** tab therefore shows what it can show
-honestly: per-city freshness straight from the database, the exact command, and
-a plain statement that displaying the command has not fetched anything.
+**There is no refresh button in the UI, on purpose.** A button would need either
+the Docker socket inside the UI container or an unauthenticated endpoint that
+runs host commands; both are a worse problem than the one they solve. What the
+UI does have is the **read-only** other half: `GET /refresh/last` serves the
+report the command files, and nothing over HTTP can create one. The only write
+route with `refresh` in its name does not exist, and a test asserts that.
+
+So **Update data → Operator refresh** shows three things and keeps them apart:
+
+1. **What is stored right now** — per-city as-of, coverage end and age, from the
+   database.
+2. **What the last run of that command did** — outcome, exit code, per-city
+   fetched/failed with the provider's error, as-of before and after, the
+   accepted ids, how many were stored, and whether the egress window closed.
+3. **The command**, with a plain statement that showing it has not fetched
+   anything.
+
+(1) and (2) are separate sections because they answer different questions and
+can disagree in the way that matters: stored data can look minutes old because
+an *earlier* run worked while the most recent one failed outright. The freshness
+table alone cannot show that, and the first version of this tab showed only the
+freshness table. The drill in
+[Operator refresh drills](#operator-refresh-drills) is exactly that state.
+
+The report is one JSON file on the `refresh_state` volume — writable in the
+ingestor, mounted **read-only** in the api — and not a database row.
+[`services/common/refresh_state.py`](services/common/refresh_state.py) gives the
+reason: every record the system *collects* goes outbox → queue → consumer →
+Postgres with the consumer as the only writer, but a refresh whose provider
+refused every city accepts no messages at all, so there is nothing to publish
+and nothing to store. The run an operator most needs to see is the one the
+normal path cannot report. The cost is stated as plainly: last write wins, no
+history, and it is gone if the volume is removed. It is operator telemetry, not
+data.
 
 A user edit is accepted, not applied: `202`, never `200`. The UI says so too.
 There is exactly one write path into this database.
@@ -975,7 +1022,7 @@ you can run.
 | M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build, save and reopen a plan in the UI |
 | M10 | Good data visualization | forecast chart, city×day×activity heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
 | M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ + redrive, outbox↔`ingest_log` reconciliation | `docker compose -f compose.tools.yml run --rm demos no-data-loss`; the CI gate in `scripts/ci-integration.sh` |
-| M12 | Update stored information | `PATCH /records/...`, the operator refresh (`scripts/refresh.sh`), re-enrichment | `docker compose -f compose.tools.yml run --rm demos update`; `… run --rm refresh --check` for the egress window |
+| M12 | Update stored information | `PATCH /records/...`, the operator refresh (`scripts/refresh.sh`, reported at `GET /refresh/last`), re-enrichment | `docker compose -f compose.tools.yml run --rm demos update`; the [operator refresh drills](#operator-refresh-drills) against an isolated project, for the egress window and the failure path |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml`; release tooling in `scripts/`: `package-offline.sh`, `verify-bundle-images.sh`, `install-offline.sh`, `restore-offline.sh` | `gh run list`; [Offline release and installation](#offline-release-and-installation), including the upgrade-and-rollback drill |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
 | B1 | Full tests for all components | **partial** — unit tests plus a CI Compose integration test; the full model and UI flows remain demo checks | `docker run --rm aow/tests:dev`; CI integration job |
@@ -1044,6 +1091,67 @@ docker run --rm -v "$PWD:/work" -w /work \
 `make offline`, `make demo`, `make test`, `make manifest` and the rest are
 shorthands for these; see [Shorthand](#shorthand). The proof runner mounts the
 Docker socket, for the reason given there.
+
+### Operator refresh drills
+
+The claim that matters about [the operator refresh](#the-operator-refresh) is
+that the one container given a route out always loses it again. That is checked
+against a **separate, isolated stack**, so the drill can force a failure without
+touching a running demo — and with the shipped command, driven only by
+`AOW_PROJECT`, because a proof that needs a modified `compose.tools.yml` is not a
+proof of the command that ships.
+
+Bring up a second stack under its own project name (its own networks and its own
+volumes), then point the command at it:
+
+```sh
+docker compose -p aow-drill up -d            # a second, isolated stack
+
+# 1. the window opens and closes, with no fetch and no internet
+AOW_PROJECT=aow-drill docker compose -f compose.tools.yml run --rm refresh --check
+
+# 2. a real refresh
+AOW_PROJECT=aow-drill docker compose -f compose.tools.yml run --rm refresh
+
+# 3. a refresh the provider refuses: the window must still close
+AOW_PROJECT=aow-drill OPEN_METEO_URL=http://127.0.0.1:9/forecast \
+  docker compose -f compose.tools.yml run --rm refresh
+
+# 4. kill -9 the command itself: the guard must close the window without help.
+#    A short deadline makes the bound observable.
+AOW_PROJECT=aow-drill REFRESH_WINDOW_MAX_S=30 OPEN_METEO_URL=http://198.51.100.1/forecast \
+  docker compose -f compose.tools.yml run --rm --name drill-kill refresh &
+sleep 5 && docker kill -s KILL drill-kill
+#    then watch, and run nothing else: the network disappears on its own
+docker network inspect aow-drill_refresh_egress
+
+docker compose -p aow-drill down -v          # and take it away again
+```
+
+After **every** one of those, including the failure, the boundary is checked from
+outside the command that made the claim:
+
+```sh
+# the ingestor is back on the internal network, and on nothing else
+docker inspect -f '{{range $n,$_ := .NetworkSettings.Networks}}{{$n}} {{end}}' \
+  aow-drill-ingestor-1          # -> aow-drill_backend
+
+# and the temporary network is gone, not merely detached
+docker network inspect aow-drill_refresh_egress   # -> Error: ... not found
+```
+
+Drill 3 is also what the Update tab is built for. The provider refused every
+city, so the stored forecast still carries the as-of that the *previous* run gave
+it and the freshness table reads "1 min old, covers the week ahead" for all five
+cities — while the last-run report on the same page reads
+**The provider refused at least one city · exit code 2** with the connection
+error per city. One of those two answers is the state of the data and the other
+is the outcome of the last run, and the page is laid out so they cannot be
+mistaken for each other.
+
+Exit codes are part of the interface, so they are worth asserting on: `0`, `2`
+for a refused city, `3` for a window that would not close, `4` for rows accepted
+but not stored.
 
 ---
 
@@ -1134,9 +1242,30 @@ Stated, not implied:
   That dump is automatic, but its retention is not: nothing prunes `backup/`,
   and a host that runs out of disk there will fail the next upgrade at the dump
   step rather than half-way through it.
-* **The proof runner holds the Docker socket** while a drill runs. It is a
-  deliberate, explicit invocation and nothing in the running stack has the
-  socket, but it is real host access and is named here rather than buried.
+* **The proof runner holds the Docker socket** while a drill runs, and so does
+  the operator refresh. Both are deliberate, explicit invocations and nothing in
+  the running stack has the socket, but it is real host access and is named here
+  rather than buried.
+* **The egress window's lifetime is bounded, not instantaneous.** A `SIGKILL` of
+  the refresh beats its `trap` — nothing survives `kill -9` — so the window does
+  not depend on one. A detached guard closes it after `REFRESH_WINDOW_MAX_S`
+  (default **600 s**) whatever happened to the command, and the next run also
+  detects and closes an inherited window. What remains is the gap itself: after a
+  `kill -9`, the ingestor keeps its route out for up to the deadline. Shorten the
+  deadline and a slow refresh loses its window mid-fetch, which fails safe but
+  fails; 600 s is the trade, and it is a knob. Two smaller residuals: if
+  `REFRESH_GUARD_IMAGE` is not built the guard cannot start, and the run says so
+  and records `deadline_seconds: null` rather than pretending; and a `SIGKILL` of
+  the guard itself puts the window back to "closed by the next run".
+  `docker network inspect <project>_refresh_egress` returning "not found" is the
+  check, and it is the one a reviewer should run.
+* **The last-run report is one file, last write wins.** `GET /refresh/last`
+  serves the most recent run and no history, and it lives on a volume: remove the
+  volume and the record is gone. It is also written by the wrapper, so a refresh
+  performed by typing the three manual commands by hand records nothing, and the
+  page then shows an older run or none. It is operator telemetry rather than
+  data, and it is deliberately not in the database —
+  [The operator refresh](#the-operator-refresh) gives the reason.
 * **The bonus items (B1–B3) are partial**: CI covers the queue/database/API
   integration path, but not the full model and UI flows. There is no
   Prometheus/Grafana stack; `llm` exposes llama.cpp's own `--metrics`.

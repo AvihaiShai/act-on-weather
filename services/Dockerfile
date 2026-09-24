@@ -13,12 +13,15 @@ RUN pip install --no-cache-dir -r /tmp/req/requirements.txt
 COPY services/ /app/services/
 COPY data/ /app/data/
 
-# Non-root. /outbox is created here and owned by the same uid, so that Docker
-# gives a fresh named volume mounted there the same ownership -- otherwise the
-# outbox would be root-owned and the service could not accept anything.
+# Non-root. /outbox and /refresh are created here and owned by the same uid, so
+# that Docker gives a fresh named volume mounted there the same ownership --
+# otherwise the volume would be root-owned and the service could not write to
+# it. /outbox is the delivery guarantee; /refresh is where the operator refresh
+# files the report of its last run. A missing mkdir here fails only on a first
+# run with a fresh volume, which is the run a reviewer does.
 RUN useradd -u 10001 -m appuser \
- && mkdir -p /outbox \
- && chown -R appuser /app /outbox
+ && mkdir -p /outbox /refresh \
+ && chown -R appuser /app /outbox /refresh
 USER 10001
 
 CMD ["python", "-m", "services.consumer.main"]
