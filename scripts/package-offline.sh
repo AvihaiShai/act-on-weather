@@ -92,9 +92,17 @@ docker compose --env-file .env.example pull postgres rabbitmq llm edge
 # operator passes `-f compose.observability.yml`.
 obs="-f compose.yml -f compose.observability.yml"
 # shellcheck disable=SC2086  # deliberate word splitting: two -f flags
-docker compose $obs --env-file .env.example pull prometheus grafana
+docker compose $obs --env-file .env.example pull prometheus grafana edge-observability
 # shellcheck disable=SC2086
 images="$(docker compose $obs --env-file .env.example config --images)"
+
+# edge and edge-observability are both nginx and share one bundle alias. That
+# is only sound while they pin the same reference, and nothing else would
+# notice if a later edit gave them different bytes -- the bundle would simply
+# run the observability edge on the main edge's image. Fail here instead.
+nginx_refs="$(printf '%s\n' "$images" | awk '/^nginx:/ {print}' | LC_ALL=C sort -u)"
+[ "$(printf '%s\n' "$nginx_refs" | grep -c .)" -eq 1 ] \
+  || { echo "edge and edge-observability use different nginx images" >&2; exit 1; }
 docker compose -f compose.tools.yml --env-file .env.example pull stage
 docker compose -f compose.tools.yml --env-file .env.example build demos
 stage_ref="$(docker compose -f compose.tools.yml --env-file .env.example config --images | awk '/^python:.*@sha256:/ {print; exit}')"
