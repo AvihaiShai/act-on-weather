@@ -33,8 +33,8 @@ Listed first, because a matrix that silently corrects its own source is not evid
 
 | Claim | Status | Evidence |
 |---|---|---|
-| Git repo with all code and configuration | **PASS** | Public repo; 8 compose files, `.env.example`, `IMAGES.lock`, `models.lock`, `ruff.toml`, `pytest.ini`, `edge/nginx.conf`, `db/migrations/` all tracked |
-| CI/CD definitions present and running | **PASS** | `ci.yml` (8 jobs), `release.yml`; every run on `main` green |
+| Git repo with all code and configuration | **PASS** | Public repo; 10 Compose files, `.env.example`, `IMAGES.lock`, `models.lock`, `ruff.toml`, `pytest.ini`, `edge/nginx.conf`, `db/migrations/` all tracked |
+| CI/CD definitions present and running | **PASS** | `ci.yml` (8 jobs), `release.yml`; the current `main` push run is green, including publish |
 | README present and substantive | **PASS** | `README.md`, plus `docs/ARCHITECTURE.md`, `TECHNICAL_DECISIONS.md`, `docs/RELEASE.md` |
 | README counts are not stale | **PASS** | `scripts/snapshot_manifest.py --check` runs in `guard` on every PR |
 | No secrets committed | **PASS** | `guard` rejects a tracked `.env` and any non-placeholder password in `.env.example`; gitleaks runs on every PR; secret scanning and push protection enabled at the repo level |
@@ -45,14 +45,15 @@ S1 is a low bar and the repository clears it. Nothing here is open.
 
 ## 2. B1 — partial, and honest about which parts
 
-"Full tests for all components." 1146 unit tests run under `--network none` on every PR.
+"Full tests for all components." The latest main unit job collected 1170 tests:
+1168 passed and 2 skipped under `--network none`.
 Per component:
 
 | Component | Automated coverage today | Level |
 |---|---|---|
 | ingestor | unit + real broker/DB outage drills 4–5 driving its own outbox | **integration** |
-| consumer | real integration (smoke, reconnect, 5 drills); unit coverage of `handle()` routing is shallow | **partial** |
-| enricher | 1 unit test; container never started in CI | **partial** |
+| consumer | real integration (smoke, reconnect, 5 drills); direct `handle()` tests route every declared key and distinguish stored, duplicate, rejected and retry outcomes | **integration + unit** |
+| enricher | outbox recovery unit test; real container starts in `build-and-scan` and its backlog metric matches a separate reader query (480 pending rows in run `36049766709`) | **partial**: model wording is exercised in the RC gate, not this per-PR probe |
 | agent | 193 unit tests with a fake LLM, **plus** 8 adversarial cases against the real model | **integration (RC)** |
 | api | unit + real integration; every drill accepts through it | **integration** |
 | ui | unit render tests **plus** a real headless-browser gate | **integration** |
@@ -64,8 +65,9 @@ Per component:
 | backup / restore | full-stack drill destroying all volumes, asserting accepted IDs survive | **integration (RC)** |
 | packaging / installer | bundle built, verified, installed and smoked in `release.yml` | **integration (release)** |
 
-**Still open:** the enricher container is never started in CI, and `handle()`'s routing
-table has no direct unit test. Both are recorded rather than papered over.
+The two previously missing direct checks were added in PR #37. The enricher probe
+proves startup, reader access and backlog reporting; it does not claim a model
+reply, since the per-PR integration stack does not start llama.cpp.
 
 ---
 
@@ -75,17 +77,17 @@ All timings from real GitHub-hosted runners, not estimates.
 
 | Gate | What it asserts | When | Proof |
 |---|---|---|---|
-| `lint` | ruff check + format | every PR | ~10s, green on every run |
-| `unit` | 1146 tests, `--network none` | every PR | ~1m11s |
-| `guard` | no hosted-LLM SDK; no committed secret; gitleaks; every compose image, Dockerfile base and workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR | ~9s |
-| `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | ~3m30s–4m11s |
-| `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | 1m30s–1m35s; last run 153 same-origin, 0 external |
-| `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | **153s**, `PASS: 8 adversarial cases stayed grounded` |
-| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | **110s**; measured RPO 24–26s, RTO 31–35s |
-| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `8bcb21c` |
+| `lint` | ruff check + format | every PR | green on current `main` run `36057664448` |
+| `unit` | 1168 passed, 2 skipped, `--network none` | every PR | run `36057664448` |
+| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR and push | main guard run `36057664448` scanned 2.08 MB of committed content |
+| `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
+| `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | run `36057664448`: 155 same-origin, 0 external requests |
+| `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | run `36055211121`: **82s**, 8/8 grounded; upgraded cache action ran on a cache miss |
+| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | run `36055211121`: **104s**, measured RPO 19s, RTO 20–21s |
+| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `5bb498f` (run `36057664448`) |
 
 **Why `model-grounding` and `restore-drill` are release-candidate rather than per-PR:**
-not cost — 153s and 110s are cheap next to `build-and-scan`. Blast radius. The restore
+not cost — 82s and 104s in the latest run are cheap next to `build-and-scan`. Blast radius. The restore
 drill destroys volumes, and a stateful full-stack drill is the wrong default for every
 dependabot bump. One "expensive or stateful" tier, not two conventions. They run on
 `workflow_dispatch`, a `release-candidate` label, or a `release/*` branch.
@@ -115,6 +117,62 @@ machine and not published by CI. A reader must not infer uniform provenance from
 that does not have it. Branch protection is read **live** at release time and recorded as
 `verified: false` with a reason if the read fails, rather than carrying a constant that
 would keep asserting a setting nobody checked.
+
+The first complete hosted release run, [`36048802334`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36048802334),
+completed on `b6b38f9`: bundle build, archive verification, no-pull install,
+data smoke, promotion record and artifact upload all passed. Disk free space was
+**86 GB before packaging, 78 GB after packaging, and 78 GB after install**;
+the bundle occupied **2.4 GB**. This replaces the earlier disk estimate with a
+measurement from the runner actually used. The uploaded record revealed a
+separate defect: it wrote `model.sha256` as `"#"` and used the comment in
+`models.lock` as the model filename. PR #37 made the parser require one valid
+sha256sum entry and match the bundle's independently generated model checksum.
+The first run's record remains historical evidence of that failure. Release
+[`36052133435`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36052133435)
+then targeted merged commit `804b5df` with the updated artifact actions. Its
+first attempt stopped during model staging at exit 137 after about 705 MiB;
+the unchanged retry completed the full bundle, verification, no-pull install,
+smoke and upload. The downloaded artifact records the correct model path and
+SHA `d2387ca2…d9bc7b5`, matching `models.lock` and the bundle's checksum;
+`SHA256SUMS` also covers the promotion record itself. All 12 recorded release
+gates are present. The record still says branch protection `verified: false`
+because the workflow token's live read received HTTP 403.
+
+PR #40 raised the **one-shot** model-staging container's memory cap from
+256 MiB to 2 GiB after the unexplained exit 137. The identical rerun and a
+local full download at 256 MiB both passed, so the cap change is headroom,
+not a proven root-cause repair. Staging exits before the runtime services
+start. Hosted release [`36055978771`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36055978771)
+exercised this configuration on merged commit `862a08f`: staging, bundle
+build and verification, no-pull install, and the data smoke all passed;
+the runner had **78 GB free after install**. Its downloaded promotion artifact
+has 12 distinct recorded gates. The model path and SHA match `models.lock`
+and the bundle checksum, `SHA256SUMS` seals the record, and the recorded CI
+run is the exact commit's successful push run `36055198116`. The live branch
+protection read remains explicitly unverified (HTTP 403), as in the earlier
+record.
+
+After PR #42 added the committed-tree secret scan, release
+[`36057235570`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36057235570)
+targeted its merged commit `2f92999`. The same build, verification, no-pull
+install and data smoke passed. Runner disk free was **86 GB before packaging,
+78 GB after packaging, and 78 GB after install**. The uploaded record was
+downloaded and checked for its 12 distinct gates, exact successful push CI run
+`36056250209`, model path and SHA against `models.lock` and the bundle, and
+its own SHA256SUMS entry. The live protection read again returned HTTP 403
+and is recorded as unverified.
+
+After PR #44 extended the pinning guard to `.yaml` files, release
+[`36058384682`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36058384682)
+targeted merged commit `5bb498f` and its green push CI run `36057664448`.
+Staging, bundle verification, no-pull install, and the API, forecast, scores,
+agent, model, UI and edge smoke all passed; disk free was **86 GB before
+packaging and 78 GB after packaging and install**. The downloaded promotion
+artifact has 12 distinct gates, a model digest matching `models.lock` and the
+bundle checksum, all 10 image aliases matching the bundle lock, and a
+`SHA256SUMS` entry sealing the record. It contains proof manifests, not the
+multi-gigabyte bundle. Branch protection remains explicitly unverified in
+the record because the live read returned HTTP 403.
 
 ### The two install claims are not the same claim
 
@@ -212,9 +270,10 @@ Two caveats stated rather than hidden:
 - `required_approving_review_count: 0` — a PR is mandatory, an approval is not, because on
   a single-maintainer repository requiring one deadlocks.
 
-**So the enforced property is "every commit on `main` arrived by pull request and passed
-four checks", not "every commit was reviewed."** The release documentation should say the
-former.
+Since protection was enabled, merges to `main` require a PR with four green
+check contexts; an approving review is not required. The resulting `main`
+commit is tested independently by push CI, which `release.yml` requires to
+succeed for that exact SHA before it packages a release.
 
 Also enabled, all previously off: secret scanning, push protection, Dependabot security
 updates, vulnerability alerts, and `sha_pinning_required` (which refuses unpinned actions
@@ -323,6 +382,15 @@ now a separate job, so that token scope exists only on push-to-main. Every job c
 `timeout-minutes` and a concurrency group (`main` excluded from `cancel-in-progress`: a
 cancelled run there would leave a commit's image manifest unpublished).
 
+That exclusion alone did not protect a *pending* run: GitHub replaced the
+pending push-to-main run `36053918189` when a manual RC run entered the same
+concurrency group. PR #41 gives each `main` run a unique group while retaining
+superseded-run cancellation for PR branches. The affected push CI was rerun
+successfully. On merged commit `862a08f`, push run `36055198116` and manual
+RC run `36055211121` both progressed without replacing each other; the push
+run published its image artifact. This matters because release gating requires
+a successful push-to-main run and `aow-images-<sha>` for that exact commit.
+
 **Issue #4 (Node 20 annotations) is closed**, and both halves of the reasoning that first
 kept it open are kept here, because one of them was wrong. The wrong half was its premise
 that our own four pins were the source: `actions/cache@0400d5f6` appears nowhere in
@@ -335,7 +403,7 @@ silence an annotation is how a gate stops gating.
 So the sweep was taken as two attributable changes rather than one. #39 moved the core and
 artifact actions (`checkout` v7.0.1, `setup-python` v7.0.0, `upload-artifact` v7.0.1,
 `download-artifact` v8.0.1, `cache` v6.1.0); #38 moved the two scanners, in a commit each.
-What was checked before closing:
+Evidence for the sweep and its follow-up:
 
 - **The annotation is gone.** Run `36050580394` (`804b5df`) carries six Node 20 warnings;
   run `36055198116` (`862a08f`) carries none. `model-grounding` and `restore-drill` are
@@ -348,8 +416,10 @@ What was checked before closing:
   `checkout` v6.0.1. All node24, and that is the bottom of the tree.
 - **Trivy still gates.** The bundled binary moved to v0.70.0 and all three scans report
   zero, so the newer scanner surfaced no new HIGH/CRITICAL to suppress.
-- **Gitleaks v3 is a runtime migration** — no input, output or behaviour change — and
-  the canary committed with it proves the pinned binary still detects a generated token.
+- **Gitleaks detects a positive control.** The v3 action runs the pinned CLI,
+  and the canary committed with the upgrade proves that binary detects a
+  generated token. The committed-tree scan below separately proves it reads
+  the source being released.
 - **The artifact chain survived the majors.** `if-no-files-found` and `retention-days` are
   unchanged in `upload-artifact` v7, and the least-common-ancestor rule still puts
   `images.lock` at the artifact root, so `package-offline.sh` finds what it expects. The
@@ -376,6 +446,10 @@ security updates. Dependabot's first security PR failed `unit` in 21s: `requests
 pinned in both `services/common` and `services/ui`, `tests/Dockerfile` installs them into
 one interpreter, and a single-directory bump is `ResolutionImpossible`. The update was
 correct in isolation and unbuildable in place — a defect in the tree, not the bot.
+Grouped PR #21 raised `requests` consistently in all three requirements files,
+passed the new security scanners and every per-PR gate, and was merged; the
+open Dependabot alert count fell from six to zero. The older single-directory
+PR #10 was closed as superseded.
 
 ---
 
@@ -384,9 +458,6 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
 | Item | Why it is not a gate |
 |---|---|
 | Air-gap install certification | A hosted runner has internet throughout. Requires a separate engine with egress dropped; manual by construction. **Executed** — see §4 |
-| Action major upgrades | Taken in #38/#39 and verified in §8. Future majors stay a human decision: Dependabot keeps the two scanners ungrouped so a new finding is attributable to one bump |
-| Enricher container coverage | Not started in CI; recorded, not closed |
-| `consumer.handle()` routing unit tests | Covered only where integration happens to exercise a key |
 
 ## 10. Known limits of this matrix
 
@@ -407,7 +478,10 @@ correct in isolation and unbuildable in place — a defect in the tree, not the 
 - Timings are from single runs, not averages.
 - `release-smoke.py` asserts **data** for weather and scores but only **liveness** for
   agent, llm, ui and edge. It is a partial gate and `docs/RELEASE.md` says so.
-- `release.yml` has been validated step-by-step against real registry and API responses,
-  but a full end-to-end release run on a hosted runner had not completed at the time of
-  writing; the bundle build's disk arithmetic (~5.4–5.9 GB against ~14 GB free) is
-  calculated, not measured.
+- The first full hosted release run completed on `b6b38f9` but its promotion
+  record's model field was malformed. PR #37 repaired the writer; the corrected
+  artifact was inspected from the successful retry of run `36052133435` (§4).
+  Its first attempt exited 137 while staging the model. A local reproduction
+  at the same 256 MiB container limit passed, so the cause remains unproven.
+  PR #40 increased staging headroom, but a successful run cannot by itself
+  establish which resource caused the original kill.
