@@ -107,6 +107,62 @@ def build() -> dict:
     return {"entities": entities}
 
 
+# The one column the ingestor is allowed to add on its way from a source file
+# to the snapshot. `valid_until` is derived from the row's own `checked_at` by
+# `config.event_valid_until`, deliberately rather than being written into the
+# source file: the expiry belongs to the freshness policy, not to the listing,
+# so changing the configured window has to move every row together. Everything
+# else must match, because "the snapshot is the seed" is the property that
+# stops a hand-edited snapshot shipping past review.
+DERIVED_IN_SNAPSHOT = {"valid_until"}
+
+
+def rows_of(path: Path) -> list[dict]:
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+
+
+def mirror_errors(source: Path, mirror: Path) -> list[str]:
+    """Where a snapshot file has drifted from the file it is built out of.
+
+    Compared row by row rather than byte for byte, so the derived column above
+    is allowed through and nothing else is. A byte comparison was simpler and
+    right until the ingestor started deriving an expiry; loosening it to "the
+    files are roughly similar" would have given up the check, so instead it
+    names exactly which key may appear and reports any other difference with
+    the id of the row it is in.
+    """
+    rel = f"{source.relative_to(ROOT)} and {mirror.relative_to(ROOT)}".replace("\\", "/")
+    seed = {row["id"]: row for row in rows_of(source)}
+    shipped = {row["id"]: row for row in rows_of(mirror)}
+    if set(seed) != set(shipped):
+        missing = sorted(set(seed) - set(shipped))
+        extra = sorted(set(shipped) - set(seed))
+        return [f"{rel} hold different rows; missing {missing}, unexpected {extra}"]
+
+    errors = []
+    for row_id, want in seed.items():
+        got = dict(shipped[row_id])
+        for key in DERIVED_IN_SNAPSHOT:
+            if key not in got:
+                errors.append(f"{rel}: {row_id} is missing the derived {key}")
+            elif key not in want:
+                # Derived on the way through, so there is nothing to compare it
+                # against. A source that already carries the column -- the
+                # generated sample file does -- is compared on it like any
+                # other key, because there the value is the producer's own and
+                # a difference really would mean the two files were built
+                # separately.
+                got.pop(key)
+        if got != want:
+            differing = sorted(set(got) ^ set(want)) or sorted(
+                k for k in want if got.get(k) != want.get(k)
+            )
+            errors.append(f"{rel}: {row_id} differs on {differing}")
+    return errors
+
+
 def counts(manifest: dict) -> dict[str, int]:
     """The numbers the prose is allowed to quote, keyed as the patterns name them."""
     values = {name: entry["stored"] for name, entry in manifest["entities"].items()}
@@ -133,10 +189,7 @@ def check() -> int:
                 errors.append(f"  {name}: manifest {was} != files {entry}")
 
     for source, mirror in MIRRORED.items():
-        if digest(ROOT / source) != digest(ROOT / mirror):
-            errors.append(
-                f"{source} and {mirror} differ; the snapshot was rebuilt from a different seed"
-            )
+        errors.extend(mirror_errors(ROOT / source, ROOT / mirror))
 
     expected = counts(built)
     for document in DOCUMENTS:

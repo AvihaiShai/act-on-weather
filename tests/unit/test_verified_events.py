@@ -30,8 +30,12 @@ discover that the venue cancelled the show a week later, so the only honest
 thing it can do is record when the reading was taken and stop presenting it as
 a schedule once it is too old. `checked_at` is that day, `valid_until` is when
 it stops counting, and the derivation between them belongs to
-`config.event_valid_until` so that no committed row can disagree with the
-configured window.
+`config.event_valid_until` so that no two producers implement it differently.
+
+The committed `valid_until` is the default window applied at `make snapshot`
+time, and the running stack does not depend on it: the ingestor re-derives it
+on accept from the window actually configured, so a deployment that re-checks
+weekly does not inherit the expiry of the machine that built the file.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import yaml
 
-from services.common import config, schemas
+from services.common import schemas
 
 ROOT = Path(__file__).resolve().parents[2]
 SEED = ROOT / "data/events.seed.jsonl"
@@ -67,6 +71,11 @@ CITIES = {
 EVENT_TYPES = set(
     yaml.safe_load((ROOT / "data/event_types.yml").read_text(encoding="utf-8"))["event_types"]
 )
+
+# The window `make snapshot` builds the committed file with, and therefore the
+# only one the committed file can be checked against. Deliberately a literal
+# here and not `config.EVENT_RECHECK_DAYS`: see the test that uses it.
+DEFAULT_WINDOW = 21
 
 
 def ids(rows: list[dict]) -> list[str]:
@@ -96,9 +105,8 @@ def test_the_snapshot_is_the_seed_plus_its_derived_expiry():
 
     `valid_until` is the one column it may add, and it is derived rather than
     written into the seed on purpose: the expiry is a property of the freshness
-    policy, not of the listing, so changing AOW_EVENT_RECHECK_DAYS moves every
-    row together and no committed row can quietly disagree with the window the
-    running system is configured for."""
+    policy, not of the listing, so no committed row can opt out of the recheck
+    window by carrying an expiry of its own."""
     shipped = {row["id"]: dict(row) for row in SHIPPED}
     assert set(shipped) == {row["id"] for row in VERIFIED}
     for row in VERIFIED:
@@ -108,15 +116,22 @@ def test_the_snapshot_is_the_seed_plus_its_derived_expiry():
 
 
 @pytest.mark.parametrize("row", read(SNAPSHOT), ids=ids(read(SNAPSHOT)))
-def test_the_shipped_expiry_is_the_configured_window_after_the_check(row):
+def test_the_shipped_expiry_is_the_default_window_after_the_check(row):
     """The derivation, checked against the policy rather than against a literal.
 
     This is the assertion that would catch a hand-edited snapshot: a row whose
     expiry was extended without re-opening its listing page would pass every
     other test in this file, and would be exactly the thing the freshness
-    policy exists to prevent."""
-    expected = config.event_valid_until(datetime.fromisoformat(row["checked_at"]))
-    assert datetime.fromisoformat(row["valid_until"]) == expected
+    policy exists to prevent.
+
+    Asserted against the *default* window rather than `config.EVENT_RECHECK_DAYS`
+    on purpose. The committed file is an artifact, built once; the constant is
+    whatever the machine running the suite happens to be configured with, and
+    coupling the two would fail 39 tests over data that is not wrong. The
+    running stack does not depend on the shipped value either -- the ingestor
+    re-derives it on accept from the window actually in force."""
+    checked = datetime.fromisoformat(row["checked_at"])
+    assert datetime.fromisoformat(row["valid_until"]) == checked + timedelta(days=DEFAULT_WINDOW)
 
 
 def test_no_verified_id_is_also_a_sample_id():

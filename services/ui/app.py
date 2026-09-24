@@ -129,7 +129,11 @@ def header(cov, health) -> None:
         samples = int(row.get("samples") or 0)
         verified = int(row.get("rows") or 0) - samples
         chip = f"{verified} verified + {samples} samples" if samples else f"{verified} verified"
-        expired = int((cov.get("event_freshness") or {}).get("expired") or 0)
+        freshness = cov.get("event_freshness") or {}
+        # Generated rows age out on the same rule, so an expired sample is
+        # counted here too. Without it a demo run past its recheck window would
+        # show a chip that simply stopped mentioning the samples at all.
+        expired = int(freshness.get("expired") or 0) + int(freshness.get("samples_expired") or 0)
         if expired:
             chip += f", {expired} expired"
         return chip
@@ -1604,6 +1608,13 @@ def page_coverage(cov) -> None:
         "window. Expired rows are kept and counted here rather than deleted: a feed "
         "that has gone out of date and a city nobody ever checked are different "
         "problems, and only a connected refresh fixes the first."
+        + (
+            f" {int(freshness.get('samples_expired') or 0)} generated sample row(s) have "
+            "also aged out; they age on the same rule, and regenerating them with "
+            "`make samples` is what moves them."
+            if int(freshness.get("samples_expired") or 0)
+            else ""
+        )
         + (
             f" The oldest current reading was taken {fmt_ts(freshness.get('oldest_check'))}"
             f" and the first one expires {fmt_ts(freshness.get('next_expiry'))}."

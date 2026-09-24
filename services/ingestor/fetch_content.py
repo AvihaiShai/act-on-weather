@@ -944,14 +944,32 @@ def load_sample_events(samples: Path) -> list[dict[str, Any]]:
     A row in the sample file that does not admit to being a sample is dropped
     here rather than trusted: the labelling is a property of the data, so it is
     checked at the boundary and not merely assumed.
+
+    The expiry is re-derived here for the same reason it is on a verified row:
+    it belongs to the freshness policy, not to the file. A generated row has no
+    listing page, so its `checked_at` is the moment it was generated -- which
+    is exactly how long it deserves to be trusted for, since it describes a
+    window of dates that is itself fixed. Without this the committed
+    `valid_until` would be frozen at whenever `make samples` last ran, and
+    changing AOW_EVENT_RECHECK_DAYS would move the verified feed while leaving
+    demo mode on the old window.
     """
     sampled = []
     for row in read_jsonl(samples):
         if not row.get("is_sample"):
             log.error("dropping %s: it is in the sample file but not marked is_sample", row["id"])
             continue
-        sampled.append(row)
-    log.info("events: %d labelled sample rows", len(sampled))
+        checked = row.get("checked_at")
+        if not checked:
+            log.error("dropping sample %s: no checked_at to derive an expiry from", row["id"])
+            continue
+        valid_until = config.event_valid_until(datetime.fromisoformat(checked))
+        sampled.append({**row, "valid_until": valid_until.isoformat()})
+    log.info(
+        "events: %d labelled sample rows, each valid for %d days after it was generated",
+        len(sampled),
+        config.EVENT_RECHECK_DAYS,
+    )
     return sampled
 
 

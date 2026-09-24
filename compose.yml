@@ -33,6 +33,14 @@ x-queue-env: &queue_env
   RABBITMQ_USER: ${RABBITMQ_USER:-aow}
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # How long a checked event listing counts as current. It belongs here rather
+  # than in one service's block because three of them act on it: the ingestor
+  # derives each row's expiry from it on accept, the consumer re-derives it
+  # when an operator patches a listing's check date, and the readers report
+  # what is current against what has aged out. A value set on only one of them
+  # would mean the stack disagreeing with itself about what "still current"
+  # means. See services/common/config.py.
+  AOW_EVENT_RECHECK_DAYS: ${AOW_EVENT_RECHECK_DAYS:-21}
 
 services:
   postgres:

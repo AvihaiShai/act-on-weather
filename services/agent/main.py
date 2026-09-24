@@ -549,6 +549,13 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
                         "day_count": (e["ends_on"] - e["starts_on"]).days + 1,
                         "source_url": e["source_url"],
                         "is_sample": e["is_sample"],
+                        # The day somebody last opened this row's listing page.
+                        # It travels with the event rather than only appearing
+                        # in the coverage panel, because a saved itinerary is
+                        # read later and on its own: a line saying a concert is
+                        # on is a note of a web page, and how old that note is
+                        # belongs next to it.
+                        "checked_at": e["checked_at"].isoformat(),
                     }
                     for e in events_by_day.get(key, [])
                 ],

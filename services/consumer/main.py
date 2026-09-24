@@ -274,13 +274,37 @@ def score_defaults(cur: psycopg.Cursor, p: schemas.WeatherDaily) -> None:
         )
 
 
-def upsert_by_id(cur: psycopg.Cursor, table: str, columns: list[str], payload: dict) -> None:
+def upsert_by_id(
+    cur: psycopg.Cursor,
+    table: str,
+    columns: list[str],
+    payload: dict,
+    *,
+    also_when: str = "",
+) -> None:
+    """Idempotent upsert, keyed on the record id.
+
+    The `WHERE EXCLUDED.as_of > <table>.as_of` guard is what makes a replay
+    free: the same snapshot delivered twice writes nothing the second time, so
+    a redelivered message cannot bump a revision or file a spurious history row.
+
+    `also_when` widens that guard for a column whose value is *derived* rather
+    than collected, and which can therefore legitimately change while the
+    record itself has not. An event's `valid_until` is the case this exists
+    for: it comes from the configured recheck window, so lowering
+    AOW_EVENT_RECHECK_DAYS and re-ingesting has to move every stored expiry.
+    Under the as-of guard alone it moved none of them, and the configured
+    window and the stored window would disagree with nothing to say so.
+    """
     placeholders = ", ".join(f"%({c})s" for c in columns)
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c != "id")
+    guard = f"EXCLUDED.as_of > {table}.as_of"
+    if also_when:
+        guard = f"({guard} OR {also_when})"
     cur.execute(
         f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
         f" ON CONFLICT (id) DO UPDATE SET {updates}, ingested_at = now()"
-        f" WHERE EXCLUDED.as_of > {table}.as_of",
+        f" WHERE {guard}",
         payload,
     )
 
@@ -479,7 +503,17 @@ def apply_patch(cur: psycopg.Cursor, p: schemas.RecordPatch) -> None:
         # which is also why `valid_until` is not patchable on its own.
         checked = fields["checked_at"]
         if isinstance(checked, str):
-            checked = datetime.fromisoformat(checked)
+            try:
+                checked = datetime.fromisoformat(checked)
+            except ValueError as exc:
+                # Poison, not a retry. `fields` is the one request body left
+                # open, so this is the first place a caller-supplied string is
+                # parsed rather than handed to the database, and a value that
+                # is not a timestamp will never become one: requeuing it would
+                # spin forever instead of dead-lettering with a reason.
+                raise Poison(f"checked_at is not a timestamp: {checked!r}") from exc
+        if not isinstance(checked, datetime):
+            raise Poison(f"checked_at is not a timestamp: {checked!r}")
         fields["valid_until"] = config.event_valid_until(checked)
 
     assignments = ", ".join(f"{k} = %({k})s" for k in fields)
@@ -510,7 +544,18 @@ def upsert_event(cur: psycopg.Cursor, p) -> None:
     if getattr(p, "is_sample", False) and not config.DEMO_EVENTS:
         log.warning("dropping generated sample event %s: demo mode is off", p.id)
         return
-    upsert_by_id(cur, "events", EVENT_COLS, p.model_dump())
+    # `valid_until` is derived from the configured recheck window rather than
+    # collected, so a re-ingest that carries a different expiry for an
+    # otherwise unchanged row has to be allowed through. Replaying the same
+    # snapshot under the same window still writes nothing, because then neither
+    # half of the guard is true.
+    upsert_by_id(
+        cur,
+        "events",
+        EVENT_COLS,
+        p.model_dump(),
+        also_when="EXCLUDED.valid_until IS DISTINCT FROM events.valid_until",
+    )
 
 
 HANDLERS = {

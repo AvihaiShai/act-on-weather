@@ -35,7 +35,6 @@ looks like it re-checked a listing and does nothing at all.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import pathlib
@@ -174,21 +173,35 @@ assert sum(c["verified_events_expired"] for c in coverage["by_city"]) == freshne
 # The advertised event window is measured over current rows only, so it cannot
 # promise dates nothing will be returned for.
 events_entity = next(e for e in coverage["entities"] if e["entity"] == "events")
-assert events_entity["rows"] == freshness["current"] + freshness["samples"], events_entity
+# Both halves of that row are the current ones, so the identity holds in demo
+# mode too -- where `samples` and `samples_current` diverge once the generated
+# rows age out on the same rule.
+assert events_entity["rows"] == freshness["current"] + freshness["samples_current"], events_entity
+assert (
+    freshness["samples"] == freshness["samples_current"] + freshness["samples_expired"]
+), freshness
 
 # ------------------------------------ 5. re-checking it brings it back ----
 
 # Deliberately not a hand-set expiry: `valid_until` is not patchable, and the
 # only thing that extends a row's life is re-opening its listing page.
-with contextlib.suppress(urllib.error.HTTPError):
-    # Rejected at the API if it validates there; otherwise the consumer
-    # dead-letters it as an unpatchable column. Either way the row stays stale,
-    # which is the property being asserted.
-    patch(EVENT_ID, {"valid_until": "2099-01-01T00:00:00+00:00"})
-assert EVENT_ID not in ids(current()), "a hand-set expiry revived a stale row"
+# The API accepts any `fields` map -- the allow-list lives with the consumer's
+# UPDATE, next to the columns it names -- so this is accepted here and rejected
+# there, as poison.
+forbidden = patch(EVENT_ID, {"valid_until": "2099-01-01T00:00:00+00:00"})
 
+# Then the legitimate re-check, straight after it. This ordering is the whole
+# trick: asserting "the row is still stale" immediately after the forbidden
+# patch would prove nothing, because the consumer is asynchronous and the read
+# would win that race whether `valid_until` were patchable or not. Both
+# messages travel the same queue in order, so once the *second* one has been
+# applied the first one has certainly been handled -- and can be checked.
 patch(EVENT_ID, {"checked_at": SHIPPED_CHECKED_AT})
 wait_until(lambda: EVENT_ID in ids(current()), "the re-checked row to come back")
+
+assert not get(f"/outbox/{forbidden}")[
+    "stored"
+], "the forbidden patch was stored; valid_until must not be patchable on its own"
 
 [restored] = [r for r in current() if r["id"] == EVENT_ID]
 assert restored["is_current"] is True, restored
@@ -196,6 +209,10 @@ assert restored["valid_until"] == row["valid_until"], (
     "the expiry did not move with the check date",
     restored["valid_until"],
     row["valid_until"],
+)
+assert not restored["valid_until"].startswith("2099"), (
+    "the hand-set expiry was applied after all",
+    restored["valid_until"],
 )
 # The correction is a correction like any other: it is in the history, with a
 # revision, because it went through the queue and the consumer's trigger.

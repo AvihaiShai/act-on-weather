@@ -44,10 +44,16 @@ import psycopg
 # in an air-gapped run can notice that the venue cancelled the show afterwards.
 # So the row keeps its provenance and its place in the coverage counts, but
 # once its reading has expired it stops being returned as something that is
-# scheduled. `events()` filters on it by default; the coverage panel and the
-# API's `include_expired` are the two callers that deliberately do not, because
-# "we hold four London listings that nobody has re-checked since 24 September"
-# is a more useful thing to show a reader than an empty list.
+# scheduled.
+#
+# `events()` filters on it by default, and so does the events row of
+# COVERAGE_SQL, because an expired listing three weeks out would otherwise
+# stretch the advertised window past the last date anything is returned for.
+# The three places that deliberately look at expired rows are `BY_CITY_SQL`'s
+# `verified_events_expired`, `EVENT_FRESHNESS_SQL`, and the API's
+# `include_expired` -- because "we hold four London listings that nobody has
+# re-checked since 24 September" is a more useful thing to show a reader than
+# an empty list.
 EVENTS_LOCALISED_SQL = """
 WITH localised AS (
   SELECT e.id, e.city_id, e.title, e.category, e.venue, e.starts_at, e.ends_at,
@@ -170,6 +176,14 @@ EVENT_FRESHNESS_SQL = """
 SELECT COUNT(*) FILTER (WHERE NOT is_sample AND valid_until > now())  AS current,
        COUNT(*) FILTER (WHERE NOT is_sample AND valid_until <= now()) AS expired,
        COUNT(*) FILTER (WHERE is_sample)                              AS samples,
+       -- Split, because the same filter applies to a generated row and an
+       -- expired sample is otherwise invisible: it would be counted in
+       -- `samples`, excluded from every read, and named nowhere. Demo mode
+       -- exists to exercise the planner in all five cities, and "the demo rows
+       -- have aged out" has to be something the coverage panel can say rather
+       -- than a stack that quietly stops showing them.
+       COUNT(*) FILTER (WHERE is_sample AND valid_until > now())       AS samples_current,
+       COUNT(*) FILTER (WHERE is_sample AND valid_until <= now())      AS samples_expired,
        MIN(checked_at) FILTER (WHERE NOT is_sample AND valid_until > now())
                                                                       AS oldest_check,
        MIN(valid_until) FILTER (WHERE NOT is_sample AND valid_until > now())
@@ -445,10 +459,20 @@ def expired_events(
     and are past their recheck date" are different answers, and only the second
     one tells the reader what to do about it. The agent asks for this only when
     it is about to report a gap, so the ordinary path still runs one query.
+
+    Grouped by category, and that is not a convenience. A question can ask
+    about two kinds at once ("any concerts or dance this week?"), and it gets a
+    gap sentence per kind. A single total attached to both would quote the
+    concert count in the dance sentence -- and, worse, would claim a stale
+    listing for a category that has never had one, which is the precise
+    confusion between "the feed is out of date" and "the city is quiet" that
+    this whole feature exists to prevent. So the caller gets `by_category` and
+    a `total` for the question as a whole, and uses whichever matches the gap
+    it is writing.
     """
     sql = [
         EVENTS_LOCALISED_SQL,
-        "SELECT COUNT(*) AS expired, MAX(checked_at) AS last_checked",
+        "SELECT category, COUNT(*) AS expired, MAX(checked_at) AS last_checked",
         "  FROM localised WHERE NOT is_current",
     ]
     params: dict[str, Any] = {}
@@ -464,7 +488,22 @@ def expired_events(
     if categories:
         sql.append("AND category = ANY(%(categories)s)")
         params["categories"] = list(categories)
-    return conn.execute("\n".join(sql), params).fetchone() or {"expired": 0, "last_checked": None}
+    sql.append("GROUP BY category")
+
+    rows = conn.execute("\n".join(sql), params).fetchall()
+    by_category = {
+        str(row["category"]): {
+            "expired": int(row["expired"]),
+            "last_checked": row["last_checked"],
+        }
+        for row in rows
+    }
+    checks = [row["last_checked"] for row in rows if row["last_checked"]]
+    return {
+        "expired": sum(entry["expired"] for entry in by_category.values()),
+        "last_checked": max(checks) if checks else None,
+        "by_category": by_category,
+    }
 
 
 # ---------------------------------------------------------------- facts ----

@@ -31,9 +31,21 @@
 --
 -- Backfill. An existing database has rows written before these columns existed.
 -- They are backfilled from as_of, which is exactly what as_of used to mean for
--- an event row, and the expiry from as_of plus the default 21-day window. That
--- makes every pre-existing row honest about its own age rather than silently
--- perpetual, and the next ingest overwrites both columns from the seed anyway.
+-- an event row, and the expiry from as_of plus 21 days.
+--
+-- That 21 is a literal, and it is the one place in the system that does not
+-- read AOW_EVENT_RECHECK_DAYS: psql has no access to the application's
+-- environment, and passing it in would mean the migration container and the
+-- ingestor container agreeing about a variable neither of them owns. So it is
+-- the default, and it is deliberately only a starting value. A deployment
+-- running a different window corrects itself on the next ingest, because
+-- `consumer.upsert_event` widens its idempotency guard to let a changed
+-- `valid_until` through even when nothing else about the row moved -- which is
+-- also what makes lowering the window take effect at all.
+--
+-- The point of the backfill is therefore not to be exactly right; it is that
+-- every pre-existing row ends up with an age rather than being silently
+-- perpetual.
 --
 -- Idempotent, like the others: ADD COLUMN IF NOT EXISTS, and the backfill only
 -- touches rows that are still NULL, so re-running on every boot is a no-op.
