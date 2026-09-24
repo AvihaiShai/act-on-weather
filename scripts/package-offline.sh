@@ -35,7 +35,12 @@ docker tag "$ui_ref" "aow-bundle/ui:$commit"
 
 # .env.example supplies only placeholders for Compose interpolation here.
 docker compose --env-file .env.example pull postgres rabbitmq llm edge
-images="$(docker compose --env-file .env.example config --images)"
+# The monitoring overlay is optional at runtime, but its images must travel
+# with the bundle if an offline operator enables it later.
+docker compose -f compose.yml -f compose.observability.yml --env-file .env.example \
+  pull prometheus grafana edge-observability
+images="$(docker compose -f compose.yml -f compose.observability.yml \
+  --env-file .env.example config --images)"
 docker compose -f compose.tools.yml --env-file .env.example pull stage
 docker compose -f compose.tools.yml --env-file .env.example build demos
 stage_ref="$(docker compose -f compose.tools.yml --env-file .env.example config --images | awk '/^python:.*@sha256:/ {print; exit}')"
@@ -48,7 +53,9 @@ docker tag aow/demos:dev "aow-bundle/demos:$commit"
 # the offline host. SHA256SUMS proves images.tar arrived intact; this proves
 # that the intact tar holds the images CI built, scanned and published.
 { printf 'services %s\n' "$services_ref"; printf 'ui %s\n' "$ui_ref"; } > "$out/images.bundle.lock"
-for pair in 'postgres:postgres:' 'rabbitmq:rabbitmq:' 'llm:ghcr.io/ggml-org/llama.cpp:' 'edge:nginx:'; do
+for pair in 'postgres:postgres:' 'rabbitmq:rabbitmq:' 'llm:ghcr.io/ggml-org/llama.cpp:' \
+            'edge:nginx:' 'prometheus:prom/prometheus:' 'grafana:grafana/grafana:' \
+            'edge-observability:nginx:'; do
   name="${pair%%:*}"
   prefix="${pair#*:}"
   ref="$(printf '%s\n' "$images" | awk -v p="$prefix" 'index($0, p) == 1 {print; exit}')"
@@ -63,6 +70,8 @@ docker save -o "$out/images.tar" \
   "aow-bundle/services:$commit" "aow-bundle/ui:$commit" \
   "aow-bundle/postgres:$commit" "aow-bundle/rabbitmq:$commit" \
   "aow-bundle/llm:$commit" "aow-bundle/edge:$commit" \
+  "aow-bundle/prometheus:$commit" "aow-bundle/grafana:$commit" \
+  "aow-bundle/edge-observability:$commit" \
   "aow-bundle/stage:$commit" "aow-bundle/demos:$commit"
 
 # The proof runner is built from this release's pinned Dockerfile on the

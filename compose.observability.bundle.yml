@@ -1,0 +1,10 @@
+# Apply only with compose.observability.yml on an offline installation.
+# Keeping these services in a separate overlay preserves the base bundle's
+# opt-in monitoring behavior.
+services:
+  prometheus:
+    image: aow-bundle/prometheus:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  grafana:
+    image: aow-bundle/grafana:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
+  edge-observability:
+    image: aow-bundle/edge-observability:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}

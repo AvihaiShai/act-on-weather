@@ -194,6 +194,7 @@ jobs:
           bash -n demos/*.sh
           docker compose -f compose.yml -f compose.ci.yml --env-file .env.example config --quiet
           AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml --env-file .env.example config --quiet
+          AOW_IMAGE_VERSION="$GITHUB_SHA" docker compose -f compose.yml -f compose.bundle.yml -f compose.observability.yml -f compose.observability.bundle.yml --env-file .env.example config --quiet
           # Every overlay a reviewer can actually pass to `docker compose -f`
           # is rendered here. An overlay nobody validates is one that breaks on
           # the reviewer's machine and nowhere else.
