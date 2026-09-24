@@ -70,7 +70,13 @@ docker compose up -d
 ### Open and stop the app
 
 Open **<http://localhost:8080>**. The API documentation is at
-<http://localhost:8000/docs>. The first start takes several minutes while the
+<http://localhost:8000/docs>. Both are published on **loopback only** — this
+machine can reach them and nothing else on the network can, because the API
+accepts writes and authenticates nobody. [Security](#security) says what would
+have to be true before that changes, and how to reach the stack from another
+machine without changing it. The binding is IPv4 loopback, so on the rare host
+whose browser resolves `localhost` to `::1` and does not fall back, use
+**<http://127.0.0.1:8080>** instead. The first start takes several minutes while the
 model loads and the saved data enters the database. Check progress with
 `docker compose ps`; an exited `migrate` container with code 0 is normal. If
 the page does not load after a few minutes, run `docker compose logs --tail 50`
@@ -306,8 +312,18 @@ Eleven containers. `postgres`, `rabbitmq`, `migrate` (one-shot), `llm`,
 | `frontend` | `edge` only | Docker cannot publish a port from an internal network, so exactly one container straddles the boundary |
 | `egress` | nobody, by default | `compose.connected.yml` attaches the ingestor for a refresh |
 
-Only 8080 and 8000 are published. Not the database, not the broker, not the
-management UI, not the model server.
+Only 8080 and 8000 are published, and both only on `127.0.0.1`. Not the
+database, not the broker, not the management UI, not the model server.
+
+The loopback part is not incidental. Docker's short form, `8000:8000`, binds
+`0.0.0.0` — on any host with a LAN address that publishes the API to every
+client that can route to it, and the API's write routes ask for no credentials.
+So the binding is spelled out: `${AOW_BIND_ADDR:-127.0.0.1}:8000:8000`. The UI
+is bound the same way, because it reaches those write routes through `api` and
+an open 8080 would be the same hole with one more hop in front of it.
+`tests/unit/test_compose_ports.py` holds this over every `compose*.yml`, so a
+regression to the short form fails the build rather than the reviewer's
+network.
 
 ---
 
@@ -532,7 +548,7 @@ There is exactly one write path into this database.
   only) may `INSERT`/`UPDATE` and *not* `DELETE`; `aow_reader` (api, agent,
   enricher) may only `SELECT`. Enforced by grants, not convention.
 * Secrets live only in a gitignored `.env`; `.env.example` is committed.
-* Only 8080 and 8000 are published.
+* Only 8080 and 8000 are published, **and only on `127.0.0.1`** — see below.
 * **No container in the running stack can reach the Docker socket.** The one
   container that mounts it is the proof runner in `compose.tools.yml`, which
   exists only while a drill is running and is never started by `up` — see
@@ -540,6 +556,70 @@ There is exactly one write path into this database.
 * CI runs blocking **Trivy** (`HIGH,CRITICAL`) on both images and the filesystem,
   **gitleaks**, and a guard that fails the build if a hosted-model SDK or
   endpoint ever appears in the source.
+
+### The write API has no authentication, and the binding is what stands in for it
+
+Stated plainly, because it is the one real hole in this design and the fix for
+it is a deployment decision rather than a patch.
+
+The API accepts writes — `POST /recommendations`, `POST /itineraries`,
+`POST /reenrich`, `PATCH /records/{entity}/{id}` — and asks no caller for
+credentials. Any client that can open a socket to port 8000 can queue a
+correction, a recommendation or a batch of enrichment work. Nothing downstream
+distinguishes those messages from the ingestor's: they carry the same envelope,
+take the same queue and reach the same consumer.
+
+**What protects it here is that nothing off this machine can open that socket.**
+`${AOW_BIND_ADDR:-127.0.0.1}` binds both published ports to loopback. The
+threat model that matches is the one that is actually true of a take-home demo:
+one workstation, one operator, the UI in the same Compose project reaching the
+API over the internal network rather than over the published port. Under that
+model an unauthenticated write API is no weaker than the shell prompt already
+sitting in front of it, and adding a token would be security theatre — a shared
+secret in a `.env` file on the same disk, protecting the machine from itself.
+
+**What that model does not survive is a second user.** Before this is published
+beyond the trusted host — a shared on-prem server, a jump host, anything with a
+routable address — the write path needs all of:
+
+* **Authentication** against the organisation's own identity provider (OIDC at
+  the edge, or Kerberos/LDAP where that is what exists). Not a bearer token
+  checked in a config file, and not a check in the Streamlit UI: the UI is a
+  client of this API, so a control that lives only in the UI is bypassed by
+  `curl`.
+* **Authorisation by role**, because the routes are not equally dangerous. A
+  reader needs the `GET` routes only; a planner may `POST /itineraries`; a data
+  steward may `PATCH /records/...`; an operator may `POST /reenrich`, which
+  commits the whole model backlog to work. Enforced in the API, where the route
+  is known, with the edge doing authentication and identity propagation only.
+* **An identity on every accepted message.** The envelope has `source`, and a
+  user edit currently sets it to the service. It would carry the authenticated
+  principal, which makes `record_history` an audit trail rather than a change
+  log.
+* **Rate limiting** on the write routes. `POST /reenrich` is the one that
+  matters: it is cheap to call and expensive to serve.
+
+None of that is implemented, and a token check or a UI-only guard was
+deliberately not implemented in its place — either would read as authentication
+without being it. The
+[production path](#production-path-kubernetes--openshift) is where this
+belongs: an OIDC-authenticating ingress in front of the service, with the role
+check in the API.
+
+Until then: **`AOW_BIND_ADDR` widens the binding, and widening it is the point
+at which this system becomes multi-user without having become multi-user safe.**
+
+If the stack runs on a remote host — a VM, a lab machine — reach it by
+forwarding the ports over SSH rather than by widening the binding:
+
+```sh
+ssh -L 8080:127.0.0.1:8080 -L 8000:127.0.0.1:8000 user@host
+```
+
+That borrows SSH's authentication, which is a real one, and leaves the ports
+closed to everyone else. It borrows no authorisation: anyone who can open that
+tunnel has every route, including the write routes. It is the right answer for
+one operator on a remote box and the wrong one for a team.
 
 ---
 
@@ -690,6 +770,15 @@ docker build -q -f tests/Dockerfile -t aow/tests:dev .
 docker run --rm aow/tests:dev
 ```
 
+The loopback binding is one of them — it reads the Compose files rather than a
+running stack, so it holds for every overlay and for a host that has never
+started this project:
+
+```sh
+docker run --rm aow/tests:dev pytest tests/unit/test_compose_ports.py -v
+docker compose config | grep -A 4 'ports:'   # host_ip: 127.0.0.1, twice
+```
+
 `make offline`, `make demo`, `make test` and the rest are shorthands for these;
 see [Shorthand](#shorthand). The proof runner mounts the Docker socket, for the
 reason given there.
@@ -731,6 +820,14 @@ Stated, not implied:
   phrase retrieved rows. It is not a general-purpose assistant, and that is the
   point.
 * **Writes are eventually consistent** — 202, then the queue.
+* **The write API has no authentication or authorisation**, and is kept safe
+  only by being bound to loopback. That is sufficient for a single-workstation
+  demo and insufficient for anything shared; what a shared deployment would
+  need is spelled out under
+  [Security](#the-write-api-has-no-authentication-and-the-binding-is-what-stands-in-for-it).
+  Remote access over SSH port-forwarding works and inherits SSH's
+  authentication, but not its authorisation: a forwarded port is full operator
+  access to every route.
 * **`edge` is the one container on a routable network**, by necessity.
 * **The CSP carries `'unsafe-inline'` and `'unsafe-eval'`** because Streamlit's
   bundle requires them. Noted rather than quietly included.
@@ -791,6 +888,12 @@ The rest of what would change:
   become StatefulSets, because an outbox is state.
 * **Secrets** move to Vault or sealed secrets; the three database roles stay as
   they are, because that separation is the useful part.
+* **The loopback binding is replaced, not carried over.** A `Service` plus an
+  OIDC-authenticating `Ingress`/`Route` does there what `127.0.0.1` does here,
+  with the per-route role check in the API — see
+  [Security](#the-write-api-has-no-authentication-and-the-binding-is-what-stands-in-for-it)
+  for what that check has to cover. Exposing this stack in a cluster without it
+  would be strictly worse than the demo, because the cluster has other tenants.
 * Healthchecks become readiness and liveness probes, with the model load
   covered by a `startupProbe`.
 * Prometheus scrapes the services (B2, not attempted here), and Loki takes the

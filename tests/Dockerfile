@@ -15,10 +15,16 @@ RUN pip install --no-cache-dir -r /tmp/req/requirements.txt -r /tmp/req/ui.txt \
       pytest==8.3.3 ruff==0.8.4 httpx==0.27.2
 
 COPY pytest.ini ruff.toml ./
+# Two tests read the deployment files themselves rather than the code.
 # test_demo_events.py asserts that AOW_DEMO_EVENTS appears only in the demo
-# overlay. If demo mode ever leaked into the default compose file it would
-# stop being opt-in, and that is worth catching in CI rather than by eye.
-COPY compose.yml compose.demo.yml ./
+# overlay -- if demo mode ever leaked into the default compose file it would
+# stop being opt-in. test_compose_ports.py asserts that every published port,
+# on every overlay, binds loopback, so all of them are copied and not just the
+# two that test happens to know about today. `.env.example` comes with them:
+# it is the file an operator copies before their first run, and a wide address
+# there would override every default in the Compose files. It holds
+# placeholders only; the real `.env` is excluded by .dockerignore.
+COPY compose*.yml .env.example ./
 COPY data/ ./data/
 COPY services/ ./services/
 COPY tests/ ./tests/

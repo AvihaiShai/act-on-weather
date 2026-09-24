@@ -265,9 +265,25 @@ services:
     mem_limit: 64m
     volumes:
       - ./edge/nginx.conf:/etc/nginx/nginx.conf:ro
+    # Loopback, deliberately. The API accepts writes -- POST /recommendations,
+    # POST /itineraries, POST /reenrich, PATCH /records/... -- and it has no
+    # authentication of its own, because every caller so far is either the UI
+    # in the same stack or the operator on the same machine. A bare `8000:8000`
+    # binds 0.0.0.0, so on any host with a LAN address those write routes would
+    # be reachable by every client that can route to it. `127.0.0.1:` is the
+    # boundary that matches what actually exists: a single-workstation demo.
+    #
+    # The UI is bound the same way for the same reason, not for its own sake:
+    # it drives those write routes through `api`, so leaving 8080 open would
+    # leave the write path open with an extra hop in front of it.
+    #
+    # AOW_BIND_ADDR exists so that a host with a real deployment behind it can
+    # move the boundary on purpose rather than by editing this file -- but read
+    # the Security section first. Exposing this beyond the trusted host needs
+    # authenticated, authorised writes, and that does not exist yet.
     ports:
-      - "8080:8080"   # UI
-      - "8000:8000"   # API
+      - "${AOW_BIND_ADDR:-127.0.0.1}:8080:8080"   # UI
+      - "${AOW_BIND_ADDR:-127.0.0.1}:8000:8000"   # API
     networks: [frontend, backend]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
