@@ -100,7 +100,9 @@ images="$(docker compose $obs --env-file .env.example config --images)"
 # is only sound while they pin the same reference, and nothing else would
 # notice if a later edit gave them different bytes -- the bundle would simply
 # run the observability edge on the main edge's image. Fail here instead.
-nginx_refs="$(printf '%s\n' "$images" | awk '/^nginx:/ {print}' | LC_ALL=C sort -u)"
+# Same two reference shapes as the loop below: `nginx:alpine@sha256:...` today,
+# `nginx@sha256:...` if a future pin drops the tag.
+nginx_refs="$(printf '%s\n' "$images" | awk '/^nginx[:@]/ {print}' | LC_ALL=C sort -u)"
 [ "$(printf '%s\n' "$nginx_refs" | grep -c .)" -eq 1 ] \
   || { echo "edge and edge-observability use different nginx images" >&2; exit 1; }
 docker compose -f compose.tools.yml --env-file .env.example pull stage
@@ -115,12 +117,25 @@ docker tag aow/demos:dev "aow-bundle/demos:$commit"
 # the offline host. SHA256SUMS proves images.tar arrived intact; this proves
 # that the intact tar holds the images CI built, scanned and published.
 { printf 'services %s\n' "$services_ref"; printf 'ui %s\n' "$ui_ref"; } > "$out/images.bundle.lock"
-for pair in 'postgres:postgres:' 'rabbitmq:rabbitmq:' 'llm:ghcr.io/ggml-org/llama.cpp:' \
-            'edge:nginx:' 'prometheus:prom/prometheus:' 'grafana:grafana/grafana:'; do
-  name="${pair%%:*}"
-  prefix="${pair#*:}"
-  ref="$(printf '%s\n' "$images" | awk -v p="$prefix" 'index($0, p) == 1 {print; exit}')"
-  test -n "$ref" || { echo "no image for $name in compose.yml" >&2; exit 1; }
+# bundle alias -> the repository it comes from. Matched against Compose's
+# rendered reference, which takes one of two shapes depending on whether the
+# pin kept a tag: `postgres:17-alpine@sha256:...` but `prom/prometheus@sha256:...`.
+# An earlier version matched a literal `<repo>:` prefix and so could not see a
+# digest-only pin at all -- packaging failed with "no image for prometheus",
+# which is the right way round, but the matcher has to handle both forms.
+for pair in 'postgres=postgres' 'rabbitmq=rabbitmq' 'llm=ghcr.io/ggml-org/llama.cpp' \
+            'edge=nginx' 'prometheus=prom/prometheus' 'grafana=grafana/grafana'; do
+  name="${pair%%=*}"
+  repo="${pair#*=}"
+  ref=""
+  while IFS= read -r candidate; do
+    # A prefix test, not a substring one: `nginx` must not match `nginx-extras`,
+    # and the delimiter is what proves the repository name ended there.
+    case "$candidate" in
+      "$repo:"* | "$repo@"*) ref="$candidate"; break ;;
+    esac
+  done <<< "$images"
+  test -n "$ref" || { echo "no image for $name in the rendered compose files" >&2; exit 1; }
   [[ "$ref" == *@sha256:* ]] || { echo "$name is not pinned by digest in compose.yml: $ref" >&2; exit 1; }
   docker tag "$ref" "aow-bundle/$name:$commit"
   printf '%s %s\n' "$name" "$ref" >> "$out/images.bundle.lock"
