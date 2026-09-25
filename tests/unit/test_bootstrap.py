@@ -199,8 +199,11 @@ def test_the_egress_window_failure_is_louder_than_a_failed_fetch() -> None:
     assert "docker network rm" in source
 
 
-def test_help_states_what_refresh_does_not_update() -> None:
-    result, _, _ = bootstrap(Path("."), "--help")
+def test_help_states_what_refresh_does_not_update(tmp_path: Path) -> None:
+    # tmp_path, not Path("."): the helper writes its docker stub under whatever
+    # it is given, so passing the repo root litters the working tree with a
+    # stub/ directory -- which is exactly how one got committed once.
+    result, _, _ = bootstrap(tmp_path, "--help")
     assert result.returncode == 0
     assert "--refresh" in result.stdout
     assert "places, city facts and events" in result.stdout.replace("\n", " ").replace(
