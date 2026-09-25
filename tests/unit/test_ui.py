@@ -83,7 +83,17 @@ def _payload_for(url: str, overrides: dict | None = None):
     raise AssertionError(f"the UI called /{path}, which the fixture does not cover")
 
 
-def _run(monkeypatch, *, offline=False, overrides=None) -> AppTest:
+def _run(monkeypatch, *, offline=False, overrides=None, sent=None, replies=None) -> AppTest:
+    """`sent` collects every write the app makes, as (method, path, body).
+
+    The UI's writes were invisible to this suite: the fake below discarded its
+    payload, so a test could prove a button existed but never that it sent the
+    right thing. Passing a list opts in to recording them.
+
+    `replies` answers a write with a real body instead of the bare acceptance.
+    `POST /agent/itinerary` is a write that returns a *plan*, so without this
+    the built-plan branch of `render_plan` cannot be reached at all.
+    """
     import requests
 
     def fake_get(url, params=None, timeout=None, **kwargs):
@@ -92,8 +102,13 @@ def _run(monkeypatch, *, offline=False, overrides=None) -> AppTest:
         return FakeResponse(_payload_for(url, overrides))
 
     def fake_request(method, url, json=None, timeout=None, **kwargs):
+        path = urlparse(url).path
+        if sent is not None:
+            sent.append((method, path, json))
         if offline:
             raise requests.ConnectionError("no route to the API")
+        if replies and path.strip("/") in replies:
+            return FakeResponse(replies[path.strip("/")], 200)
         return FakeResponse({"accepted": True, "message_id": "test-message-id"}, 202)
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -406,3 +421,153 @@ def test_checking_for_updates_says_what_it_found(app):
     assert [toast.value for toast in checked.toast] == ["Checked. Everything on screen is current."]
     captions = " ".join(element.value for element in checked.caption)
     assert "last checked 12:00 UTC" in captions
+
+
+# ---------------------------------------------- the plan the user just built --
+
+# Shaped like `agent.build_itinerary`'s output. The built branch of
+# `render_plan` had never executed under test -- every existing planner test
+# reaches the renderer through "Open", which takes the *saved* branch -- so
+# neither the caption, the outside-coverage warning, the score pill nor the
+# save request was checked.
+BUILT_PLAN = {
+    "city": "lisbon",
+    "title": "Two days in Lisbon",
+    "start_date": "2026-09-23",
+    "end_date": "2026-09-25",
+    "as_of": "2026-09-23T18:16:44.438338Z",
+    "coverage": {"first": "2026-09-23", "last": "2026-10-08"},
+    "requested_days_outside_coverage": ["2026-10-09"],
+    "days": [
+        {
+            "date": "2026-09-23",
+            "activity": "Walking tour",
+            "activity_slug": "walking_tour",
+            "activity_score": 88,
+            "activity_band": "great",
+            "activity_icon": "",
+            "activity_places": [],
+            "activity_place_categories": [],
+            "alternatives": [],
+            "events": [],
+            "places": [],
+            "summary": "high 24C, low 16C",
+        }
+    ],
+}
+
+SAVED = "itineraries/11111111-2222-3333-4444-555555555555"
+
+
+def _build(monkeypatch, plan=None, sent=None):
+    at = _run(
+        monkeypatch,
+        sent=sent,
+        replies={"agent/itinerary": BUILT_PLAN if plan is None else plan},
+    )
+    at = _open_page(at, "trip-planner")
+    built = next(b for b in at.button if b.label == "Build the itinerary").click().run()
+    assert not built.exception, [e.value for e in built.exception]
+    return built
+
+
+def _reopen(monkeypatch, row):
+    at = _run(monkeypatch, overrides={SAVED: row})
+    at = _open_page(at, "trip-planner")
+    reopened = next(b for b in at.button if b.label == "Open").click().run()
+    assert not reopened.exception, [e.value for e in reopened.exception]
+    return reopened
+
+
+def _saved_row(**changes):
+    # Deep-copied: the fixtures are module level and mutating one in place
+    # leaks into every test that runs after it.
+    row = json.loads(json.dumps(FIXTURES[SAVED]))
+    row.update(changes)
+    return row
+
+
+def test_a_built_plan_renders_with_its_as_of_and_its_limits(monkeypatch):
+    """Deleting the caption, the warning or the score pill was invisible."""
+    built = _build(monkeypatch)
+
+    captions = " ".join(c.value for c in built.caption)
+    assert "Built from data as of 2026-09-23 18:16 UTC" in captions
+    assert "coverage 2026-09-23 to 2026-10-08" in captions
+
+    warnings = " ".join(w.value for w in built.warning)
+    assert "2026-10-09" in warnings
+    assert "left out rather than guessed" in warnings
+
+    text = " ".join(m.value for m in built.markdown)
+    assert "Walking tour" in text
+    assert "88/100" in text, "the suitability score is not on screen"
+
+
+def test_saving_a_built_plan_sends_its_days_and_its_scoring_as_of(monkeypatch):
+    """The save request itself, which nothing looked at before.
+
+    `as_of` is the load-bearing field. The API no longer reads the database to
+    find it, so if the UI stops sending it, every saved plan silently loses the
+    provenance of its scores.
+    """
+    sent: list = []
+    built = _build(monkeypatch, sent=sent)
+    sent.clear()  # the build request is not what is under test here
+
+    saved = next(b for b in built.button if b.label == "Save this itinerary").click().run()
+    assert not saved.exception, [e.value for e in saved.exception]
+
+    writes = [call for call in sent if call[1].rstrip("/").endswith("itineraries")]
+    assert len(writes) == 1, f"expected exactly one save, got {sent}"
+    method, path, body = writes[0]
+    assert method == "POST"
+    assert path.endswith("/itineraries"), "a save must not bypass the queued write path"
+    assert body["as_of"] == BUILT_PLAN["as_of"]
+    assert body["days"] == BUILT_PLAN["days"]
+    assert body["city"] == "lisbon"
+    assert body["start_date"] == "2026-09-23"
+    assert body["end_date"] == "2026-09-25"
+
+
+def test_a_built_plan_with_no_as_of_says_so_rather_than_saying_never(monkeypatch):
+    """`fmt_ts(None)` is "never", which beside "as of" reads as the weather."""
+    built = _build(monkeypatch, plan={**BUILT_PLAN, "as_of": None})
+
+    captions = " ".join(c.value for c in built.caption)
+    assert "no recorded as-of" in captions
+    assert "as of never" not in captions
+
+
+def test_a_saved_plan_whose_forecast_moved_on_says_so(monkeypatch):
+    """The staleness notice, which the fixture could never trigger.
+
+    The saved itinerary's `as_of` is exactly `coverage.weather_as_of`, so both
+    branches of `render_plan_staleness` were unreachable: inverting its
+    comparison, or deleting the function body, left the suite green while
+    stale scores redrew under the header's current stamp.
+    """
+    reopened = _reopen(monkeypatch, _saved_row(as_of="2026-09-20T06:00:00Z"))
+
+    info = " ".join(element.value for element in reopened.info)
+    assert "has been refreshed since this was saved" in info
+    assert "2026-09-23 18:16 UTC" in info, "the notice must name the current stamp"
+
+    captions = " ".join(c.value for c in reopened.caption)
+    assert "scored from weather as of 2026-09-20 06:00 UTC" in captions
+
+
+def test_a_saved_plan_with_no_scoring_as_of_is_not_called_stale(monkeypatch):
+    """A record saved by a caller that sent no `as_of` stores NULL.
+
+    It has to read as unknown rather than as "scored from weather as of
+    never", and it must not raise the staleness notice: there is nothing to
+    compare, and announcing a refresh against an absent stamp would be an
+    assertion about data the record does not carry.
+    """
+    reopened = _reopen(monkeypatch, _saved_row(as_of=None))
+
+    captions = " ".join(c.value for c in reopened.caption)
+    assert "scoring timestamp not recorded" in captions
+    assert "as of never" not in captions
+    assert not any("refreshed since this was saved" in e.value for e in reopened.info)

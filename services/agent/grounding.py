@@ -516,13 +516,15 @@ def build(result: Retrieval) -> Brief:
         country=str(city.get("country") or ""),
         question=resolution.question,
         # The days the answer may speak about without a row naming them. For a
-        # question that needed weather this is what the snapshot actually
-        # reaches, not what was asked: a half-expired forecast must not leave
-        # the validator willing to accept a sentence about a day with no data.
-        # `covered_days` is empty for every other kind of question, and those
-        # fall back to the asked window as before.
+        # question about the weather this is the days a forecast row actually
+        # came back for, not the days that were asked about: a half-expired
+        # snapshot must not leave the validator willing to accept a sentence
+        # about a day with no data. The flag, not the emptiness of the list, is
+        # what decides -- no covered day at all is a real answer here, and
+        # falling back to the asked window in that case would restore the hole.
         window_days=result.covered_days
-        or ([d.isoformat() for d in resolution.window.days()] if resolution.window else []),
+        if result.weather_scoped
+        else ([d.isoformat() for d in resolution.window.days()] if resolution.window else []),
         event_categories=list(getattr(resolution, "event_categories", []) or []),
         interests=list(resolution.interests),
         named_activities=list(resolution.activities),
@@ -633,6 +635,55 @@ def _stale_feed_sentence(result: Retrieval, category: str | None = None) -> str:
     )
 
 
+def _date_runs(days: list[str]) -> str:
+    """Consecutive dates as ranges, everything else listed.
+
+    A single first-to-last span is wrong the moment the missing days are not
+    one block: asked about a week whose middle day failed to ingest, "no
+    weather for 2026-09-25 to 2026-10-01" denies five days that are stored.
+    Only genuinely consecutive dates are collapsed.
+    """
+    runs: list[list[date]] = []
+    for value in sorted(date.fromisoformat(d) for d in days):
+        if runs and value - runs[-1][-1] == timedelta(days=1):
+            runs[-1].append(value)
+        else:
+            runs.append([value])
+    return ", ".join(str(run[0]) if len(run) == 1 else f"{run[0]} to {run[-1]}" for run in runs)
+
+
+def _partial_coverage_sentence(result: Retrieval, city: str) -> str:
+    """Name the missing days, and explain the absence without overclaiming.
+
+    The explanation has to match where the days sit relative to the stored
+    window. Saying "the forecast ends on X" is true for days past the end and
+    false for days before the start -- and for a day inside the window with no
+    row it is not merely imprecise, it points at the wrong cause entirely.
+    """
+    missing = result.uncovered_days
+    first = str(result.coverage.get("weather_first_date") or "")
+    last = str(result.coverage.get("weather_last_date") or "")
+    before = [d for d in missing if first and d < first]
+    after = [d for d in missing if last and d > last]
+
+    if first and last and after and not before and len(after) == len(missing):
+        why = f"The stored forecast ends on {last}"
+    elif first and last and before and not after and len(before) == len(missing):
+        why = f"The stored forecast begins on {first}"
+    elif first and last:
+        # Either both ends, or a day inside the window that has no row for this
+        # city -- `coverage` is a global MIN/MAX, so being inside it proves
+        # nothing about this city.
+        why = f"The stored forecast covers {first} to {last} and has no row for {city} on them"
+    else:
+        why = "No forecast is stored at all"
+
+    return (
+        f"No weather is stored for {_date_runs(missing)} in {city}. {why}, so those days "
+        f"are left out rather than guessed. Refresh the snapshot while connected to extend it."
+    )
+
+
 def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
     from .router import activity_meta
 
@@ -668,16 +719,8 @@ def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
             )
 
     if result.uncovered_days:
-        first, last = result.uncovered_days[0], result.uncovered_days[-1]
-        span = first if first == last else f"{first} to {last}"
-        ends = result.coverage.get("weather_last_date")
         gaps.append(
-            Gap(
-                "coverage:partial",
-                f"No weather is stored for {span} in {brief.city}. The stored forecast ends "
-                f"on {ends}, so those days are left out rather than guessed. Refresh the "
-                f"snapshot while connected to extend it.",
-            )
+            Gap("coverage:partial", _partial_coverage_sentence(result, brief.city)),
         )
 
     if result.resolution.categories and not brief.places:

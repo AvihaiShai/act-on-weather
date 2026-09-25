@@ -142,7 +142,13 @@ class Itinerary(_Payload):
     start_date: date
     end_date: date
     days: list[dict[str, Any]] = Field(default_factory=list)
-    as_of: datetime
+    # The as-of of the forecast the plan's scores were computed from. Supplied
+    # by the caller, because only the caller knows which snapshot it scored
+    # against; `None` when it did not say. Nullable rather than defaulted,
+    # because the alternative is stamping a plan with a timestamp nothing
+    # scored it against -- an invented provenance is worse than a missing one,
+    # and the UI can say "not recorded" but cannot un-mislead a wrong date.
+    as_of: datetime | None = None
 
 
 class ItineraryDelete(_Payload):

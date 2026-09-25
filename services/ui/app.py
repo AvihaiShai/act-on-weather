@@ -701,14 +701,16 @@ def render_plan(plan: dict, cov) -> None:
     if saved:
         st.caption(
             f"Saved itinerary · Updated {fmt_ts(saved['updated_at'])} · "
-            f"scored from weather as of {fmt_ts(plan.get('as_of'))}"
+            f"{scored_from(plan.get('as_of'))}"
         )
         render_plan_staleness(plan, cov)
     else:
-        st.caption(
-            f"Built from data as of {fmt_ts(plan.get('as_of'))} · "
-            f"coverage {plan['coverage']['first']} to {plan['coverage']['last']}"
+        built = (
+            f"Built from data as of {fmt_ts(plan['as_of'])}"
+            if plan.get("as_of")
+            else "Built from stored data with no recorded as-of"
         )
+        st.caption(f"{built} · coverage {plan['coverage']['first']} to {plan['coverage']['last']}")
     if plan.get("requested_days_outside_coverage"):
         st.warning(
             "No stored weather for: "
@@ -724,6 +726,20 @@ def render_plan(plan: dict, cov) -> None:
         render_rename(plan, saved)
     else:
         render_save(plan)
+
+
+def scored_from(as_of) -> str:
+    """How a plan says which snapshot it was scored against.
+
+    A stored plan may have no scoring as-of: the caller that saved it did not
+    send one, and nothing invents one on its behalf. `fmt_ts` renders a missing
+    value as "never", which beside "scored from weather as of" reads as a
+    statement about the weather rather than about the record, so the absent
+    case gets its own sentence.
+    """
+    if not as_of:
+        return "scoring timestamp not recorded, so it cannot be compared with what is stored now"
+    return f"scored from weather as of {fmt_ts(as_of)}"
 
 
 def render_plan_staleness(plan: dict, cov) -> None:
@@ -769,6 +785,13 @@ def render_save(plan: dict) -> None:
                 "start_date": plan["start_date"],
                 "end_date": plan["end_date"],
                 "days": plan["days"],
+                # The snapshot these scores were computed from, carried from
+                # the plan the agent built. It travels with the record because
+                # the API must not read the database to find it: a write that
+                # depends on Postgres is a write that is lost when Postgres is
+                # down, and a clock substituted for it is a provenance nothing
+                # scored the plan against.
+                "as_of": plan.get("as_of"),
             },
         )
         if saved:
