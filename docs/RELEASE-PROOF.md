@@ -467,7 +467,9 @@ received HTTP 403 and recorded `verified: false`.
 
 ### How the physical air gap would be closed — a plan, not a record
 
-**Nothing in this subsection has been run.** It is the one item no amount of
+**The physical air-gap run described here has not happened.** (Preparation
+for it has: the measured results referenced below were executed, and are
+recorded in the evidence document. What remains unrun is the drill itself.) It is the one item no amount of
 work on this machine can close: as of 2026-09-25 this project has one physical
 machine and no removable media attached, so there is no second host to carry a
 bundle to. A VM on this machine would not satisfy the standard either.
@@ -477,8 +479,10 @@ list of what is still missing now live in
 **[EVIDENCE-physical-airgap.md](EVIDENCE-physical-airgap.md)**, kept separate
 from this file precisely so that a plan is never read as a record. That document
 also carries what *was* done in preparation and measured: a release artifact
-built and independently verified for `a21dff9`, with the out-of-band anchor
-enforced and a measured pull count of zero.
+built and independently verified for `1890eba`, with the out-of-band anchor
+`2edf2cd2…f6b8` enforced, exit 0 and a measured pull count of zero; a
+fault-injection artifact whose failure mode was measured against a real
+Postgres 17; and the full A/B/fault-injection drill set prepared.
 
 What changed here as a result, because the old checklist asked for evidence no
 command produced:

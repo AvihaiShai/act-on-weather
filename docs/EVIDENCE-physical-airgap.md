@@ -56,108 +56,178 @@ at one.
 
 ## 3. Prepared and measured, 2026-09-25
 
+Everything in this section was executed. Commit IDs, CI run IDs, digests,
+timings and exit codes are transcribed from the runs.
+
 ### 3.1 Source commit
+
+The artifact below is built from the **merged** commit, not from the branch it
+came from and not from the earlier preparation commit.
 
 | | |
 |---|---|
-| Commit | `a21dff9d4b38cdfead8be717db4599fc602ba668` |
-| Tree | `4c4ea989380ec7411d787acf3cb35713aa68449a` |
-| Subject | Merge pull request #48 from AvihaiShai/docs/clean-engine-proof-sep25 |
-| Committed | 2026-09-25T02:22:29+03:00 |
-| Ancestor of `origin/main` | yes |
-| Working tree at package time | clean (`git status --porcelain` empty) |
+| Commit | `1890eba16628683c96d650eaa04479b9989c45e5` |
+| Subject | Merge pull request #49 from AvihaiShai/review/f10-physical-proof |
+| Branch | `main` |
+| Packaged from | a detached worktree at that commit, `git status --porcelain` empty |
+
+**The earlier `a21dff9` bundle is historical preparation evidence only.** It was
+built and verified before this work merged, its `prove-offline.sh` lacks
+`--no-build`, and it does not contain `airgap-evidence.sh` or the
+fault-injection tooling. It is not proof for the merged code and is not used as
+such anywhere in this document.
 
 ### 3.2 The CI run that authorises a release at this commit
 
-`ci.yml` run [`36072399083`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36072399083),
-conclusion **success**, `head_sha` `a21dff9…`.
+`ci.yml` run [`36135517229`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36135517229),
+conclusion **success**, `head_sha` `1890eba…`.
 
 | Job | Result |
 |---|---|
 | `unit`, `lint`, `guard`, `build-and-scan`, `ui-gate`, `publish-images` | success |
 | `model-grounding`, `restore-drill` | skipped in this run |
 
-Its `aow-images-a21dff9…` artifact (316 bytes,
-`sha256:6f6f36df91a06d66450795705e6bda0347350fd96f3924a2ff791cfa5c4c4f0f`) is
-the `images.lock` that `package-offline.sh` consumes:
+Its `aow-images-1890eba…` artifact (315 bytes as GitHub stores the zip; the
+`images.lock` inside is 284 bytes,
+`sha256:f28733652e2a87d1b47517ad01b1b35b374e6cffa01bff26c6e75acfdc6a4c63`) is
+the `images.lock` `package-offline.sh` consumed:
 
 ```
-commit   a21dff9d4b38cdfead8be717db4599fc602ba668
-services ghcr.io/avihaishai/act-on-weather/services@sha256:6de4cc97229f97a88c34d320277d9f88d25aff58fbfa1f1f84802d672faaf4fe
-ui       ghcr.io/avihaishai/act-on-weather/ui@sha256:da9c87563061e661d0a1483fc9361c8f2c15cb640587801d58e05df9a8285d5b
+commit   1890eba16628683c96d650eaa04479b9989c45e5
+services ghcr.io/avihaishai/act-on-weather/services@sha256:27e6ffada90f078c836fb0cabef8c327001cdcd7ee8d4e1ff1f05ad3dec775c0
+ui       ghcr.io/avihaishai/act-on-weather/ui@sha256:c8799a4c2319a50d40ed33863c6a00e5dd48b29470eca72d175fbc58c369cb80
 ```
 
-**Note what is not covered.** The `release.yml` clean-engine gate has run for
-`b21885a`, not for `a21dff9`. See §8.
+The pull request's own checks — `lint`, `unit`, `guard`, `build-and-scan` — all
+passed on run
+[`36134774844`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36134774844)
+before the merge.
+
+### 3.2.1 The clean-engine release gate, now run for this commit
+
+`release.yml` run
+[`36137483144`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36137483144),
+conclusion **success**, dispatched for `1890eba` with the label
+`f10-evidence-2026-09-25`. Before this, the clean-engine gate had only ever run
+for `b21885a`, which §8 had to record as a gap. It no longer is:
+
+| Assertion | Measured |
+|---|---|
+| Clean install engine ID | `9567a107-f6d9-485e-9e54-8eabd06d40b7` |
+| Packaging engine ID | `bab1ddb9-e66f-4080-9fbf-9a64e0823a66` — **distinct** |
+| Store before load | `0 images, 0 volumes, 0 containers` |
+| Release tags already held | none of 10; archive verification found their config and layers in `images.tar` |
+| Install | `--pull never`, `AOW_REQUIRE_CLEAN_IMAGE_STORE=1` |
+| Data smoke | `PASS: API, stored forecast, scores, agent, model, UI and edge` |
+| Serving | `Release 1890eba… is serving on ports 8080 and 8000` |
+
+Two of those lines —
+
+```
+engine: 9567a107-f6d9-485e-9e54-8eabd06d40b7 docker 29.8.1 on Alpine Linux v3.24 (containerized) x86_64
+store before load: 0 images, 0 volumes, 0 containers
+```
+
+— are the instrumentation added in §4, running in the release pipeline. That is
+independent confirmation that the installer now emits engine identity and a full
+store census, rather than my word for it.
+
+**This does not close F10, and must never be recorded as doing so.** It is a
+second daemon on a *connected, GitHub-hosted runner*. The engine was clean; the
+machine was on the internet, and it is not separate physical hardware. What it
+does establish is that the bundle for this exact commit installs and serves on
+an engine that has never held its images — which is the defect class from
+[RELEASE-PROOF §1](RELEASE-PROOF.md#1-the-defect-this-drill-found), not the
+air-gap claim.
 
 ### 3.3 The release artifact
 
-Built with `bash scripts/package-offline.sh <images.lock>` on the connected
-staging machine. Wall clock **16 min 09 s**, exit **0**.
+`bash scripts/package-offline.sh` on the connected staging machine. Wall clock
+**2 min 26 s**, exit **0**.
 
 | | |
 |---|---|
-| Path | `dist/aow-a21dff9d4b38cdfead8be717db4599fc602ba668/` |
-| `release-version.txt` | `a21dff9d4b38cdfead8be717db4599fc602ba668` |
-| **`sha256(SHA256SUMS)`** — the out-of-band anchor | **`1bb8b7e9f581e80ada23565ed35009d47bd39d9529c331ba52a90a636b9ad205`** |
-| `sha256(images.tar)` | `b1e0916fcb431d8d61c02143e43d19aa714c050dc5c17d8f1f6956aba26ee6d7` |
-| `images.tar` | 1,221,854,720 bytes, 10 images |
-| Model | `Qwen3-1.7B-Q4_K_M.gguf`, 1,282,439,264 bytes, verified against `models.lock` |
-| Folder | 214 files, 2,511,260,696 bytes (2.34 GiB) |
+| Path | `dist/aow-1890eba16628683c96d650eaa04479b9989c45e5/` |
+| `release-version.txt` | `1890eba16628683c96d650eaa04479b9989c45e5` |
+| **`sha256(SHA256SUMS)`** — the out-of-band anchor | **`2edf2cd2fba4332ee6cb2d3cbc7e6959b2cc4be44b622b14882dc3dedb4ff6b8`** |
+| `sha256(images.tar)` | `1d089e3848fa88b2f310ca851968047c6609ec0ae51ed32a874fb3e1f7c5b496` |
+| `images.tar` | 1,221,857,792 bytes, 10 images |
+| Folder | 218 files, 2,511,332,623 bytes (2.34 GiB) |
 | `.env` | absent — `install-offline.sh` will refuse until one exists (§6.1) |
 
-The `sha256(SHA256SUMS)` value above is the **only** check on the offline host
-that does not come out of the folder being checked. It has to travel by a
-different route than the media to mean anything. See §7.
+That anchor digest is newly recorded for this commit. It is the only check on
+the offline host that does not come out of the folder being checked, and it has
+to travel by a different route than the media to mean anything (§5.4).
+
+**It is a property of this build, not a constant of the commit.** `docker save`
+does not promise byte-identical archives across runs, and the `release.yml`
+bundle differs further because it seals a `promotion-record.json` the locally
+rebuilt bundle does not contain. So an operator who repackages `1890eba` will
+get a different `SHA256SUMS` digest, and that is not a discrepancy to chase —
+the digest to carry out of band is the one their own packaging run printed. What
+is anchored to the commit is the image set: `images.bundle.lock` must match the
+CI manifest and the committed `IMAGES.lock`, and it does.
 
 ### 3.4 Independent verification of that artifact
 
-Run from the repository checkout rather than from inside the bundle, with the
-anchor supplied:
+Run from the checkout rather than from inside the bundle, with the anchor
+supplied:
 
 ```
-AOW_SHA256SUMS=sha256:1bb8b7e9…d205 \
-  bash scripts/airgap-evidence.sh run -- bash scripts/verify-bundle.sh dist/aow-a21dff9…/
+AOW_SHA256SUMS=sha256:2edf2cd2…f6b8 \
+  bash scripts/airgap-evidence.sh --out "$EV/verify.txt" \
+  run -- bash scripts/verify-bundle.sh dist/aow-1890eba…/
 ```
 
 | Measurement | Value |
 |---|---|
-| `out-of-band anchor` | **ENFORCED** — `SHA256SUMS` matched the digest supplied separately |
-| `images.bundle.lock` | matches the CI manifest for `a21dff9…` and the committed `IMAGES.lock` |
+| `out-of-band anchor` | **ENFORCED** |
+| `images.bundle.lock` | matches the CI manifest for `1890eba…` and the committed `IMAGES.lock` |
 | `images.tar` | matches `images.bundle.lock` (10 images, by verified manifest digest); every image has its config and layers, as `linux/amd64` |
-| exit code | 0 |
+| exit code | **0** |
 | elapsed | 15 s |
 | completed image pulls | **0** |
 | transcript pull/build markers | **0** |
 
-And a cross-check the installer cannot make for itself — the bundle's own
-verifier is the code that gates the bundle, so it was compared against the
-commit rather than trusted:
+And the cross-check the installer cannot make for itself, since the code that
+gates the bundle ships inside the bundle:
 
-| File in bundle | vs `git show a21dff9:` |
+| File in bundle | vs `git show 1890eba:` |
 |---|---|
-| `scripts/verify-bundle.sh` | byte-identical |
-| `scripts/verify-bundle-images.sh` | byte-identical |
-| `scripts/bundle-image-manifests.sh` | byte-identical |
-| `scripts/install-offline.sh` | byte-identical |
-| `scripts/prove-offline.sh` | byte-identical |
-| `IMAGES.lock`, `models.lock` | byte-identical |
+| `verify-bundle.sh`, `verify-bundle-images.sh`, `bundle-image-manifests.sh` | byte-identical |
+| `install-offline.sh`, `prove-offline.sh`, `airgap-evidence.sh` | byte-identical |
+| `make-fault-injection-bundle.sh`, `IMAGES.lock`, `models.lock` | byte-identical |
+
+This bundle carries the fixes: its `prove-offline.sh` contains `--no-build`,
+which the `a21dff9` artifact does not.
 
 ### 3.5 The fault-injection artifact, built and its failure mode measured
 
-Derived from the verified `a21dff9` bundle in **44 s** with
-`bash scripts/make-fault-injection-bundle.sh`, then verified:
+Derived from the verified `1890eba` bundle in **43 s**:
 
 | | |
 |---|---|
-| Source release | `a21dff9…`, `sha256(SHA256SUMS)` `1bb8b7e9…d205` (CI-anchored) |
-| Artifact digest | `sha256(SHA256SUMS)` `5b6489475af3b6c84e3df45fc3555e8417627187d57517dd15e1b36e197fd745` — **a locally mutated folder, not a release digest** |
+| Source release | `1890eba…`, `sha256(SHA256SUMS)` `2edf2cd2…f6b8` (CI-anchored) |
+| Artifact digest | `sha256(SHA256SUMS)` `5d253ff59e54a7249dfd9230aa2714ac4ce1339b5d96ef1c1c39ccc7db5f01ce` — **a locally mutated folder, not a release digest** |
 | Verification | passed, and printed the `THIS IS A FAULT-INJECTION TEST ARTIFACT` banner |
 | Images | `images.tar`, `images.bundle.lock`, `ci-images.lock`, `IMAGES.lock`, `models.lock`, `release-version.txt` byte-identical to the source |
 
-The migration was then applied to a throwaway **Postgres 17** container — the
-same digest-pinned image the stack uses — under `ON_ERROR_STOP=1`, because a
-migration that fails in the *wrong way* would make the drill prove nothing:
+**The installer's refusal was verified at runtime**, not only in a unit test.
+Method, because it cannot be reproduced from the folder as it sits on disk:
+`install-offline.sh:14` checks for `.env` *before* the fault-injection guard, so
+a throwaway `cp .env.example .env` was made first, the run observed, and that
+file deleted again — which is why the artifact has no `.env` now. With it in
+place the script exited **1**, printed
+`refusing to install a fault-injection test artifact without AOW_ALLOW_FAULT_INJECTION=1`,
+and produced **zero** `Loaded image` lines: it stops before `docker load`.
+
+Note that exit 1 and zero `Loaded image` lines are also what a *missing* `.env`
+produces, so neither number discriminates on its own. The quoted message is the
+evidence; the two counts only confirm nothing was loaded.
+
+The migration was applied to a throwaway **Postgres 17** container — the same
+digest-pinned image the stack uses — under `ON_ERROR_STOP=1`, because a
+migration that failed in the *wrong way* would make the drill prove nothing:
 
 ```
 CREATE TABLE
@@ -173,11 +243,24 @@ and afterwards, on the same database:
 select count(*) from fault_injection_marker  ->  1
 ```
 
-That last line is the point of the whole drill. `psql` exited non-zero, so the
-migrate service fails and the upgrade stops — **and the schema change survived
-the failure.** Rolling the images back cannot undo it, which is what makes the
+That last line is the point of the drill. `psql` exited non-zero, so the migrate
+service fails and the upgrade stops — **and the schema change survived the
+failure.** Rolling the images back cannot undo it, which is what makes the
 dump-backed restore the only recovery path. The container was removed
-afterwards; nothing on the staging host retained it.
+afterwards.
+
+### 3.5.1 The prepared drill set
+
+All three are built and verified, waiting on the hardware in §5:
+
+| Role | Artifact | `sha256(SHA256SUMS)` | Provenance |
+|---|---|---|---|
+| Release A (upgrade from) | `dist/aow-a21dff9…` | `1bb8b7e9…d205` | CI-proven, run `36072399083` |
+| Release B (upgrade to) | `dist/aow-1890eba…` | `2edf2cd2…f6b8` | CI-proven, run `36135517229` |
+| Fault injection (from B) | `dist/faultinj-1890eba` | `5d253ff5…01ce` | **Local mutation, not a release** |
+
+A is used only as the *earlier* release in the upgrade sequence, which is what
+that role requires. It is not the artifact under proof; B is.
 
 ### 3.6 The staging host, recorded so the target's can be compared against it
 
@@ -248,7 +331,8 @@ Measured on this machine on 2026-09-25:
   same machine, which are not separate hardware.
 - **Removable media attached: none.** `Win32_LogicalDisk` reports four fixed
   disks (`C:`, `D:`, `E:`, `F:`, all `DriveType 3`) and no removable or optical
-  volume.
+  volume. `Win32_DiskDrive` reports four internal Samsung SSDs and no USB
+  storage. Re-checked after the merge, with the same result.
 - **Reachable LAN hosts: none usable.** The IPv4 neighbour table holds the
   gateway, two ASUS network devices and the WSL virtual adapter. No second
   general-purpose machine.
@@ -264,8 +348,13 @@ this repository:**
    the stack, 2.4 GiB for the bundle). It must be **disposable** if the
    destructive drills in §6.5 are run, because those wipe the database by
    design and every release folder installs over the same named volumes.
-2. **Removable media**, ≥4 GiB for one bundle, ≥8 GiB for the three-bundle
-   destructive set.
+2. **Removable media**, measured against the artifacts that are actually built:
+   release B alone is 2,511,332,623 bytes (2.34 GiB); the full A + B +
+   fault-injection set is 7,533,928,413 bytes (7.02 GiB). With the Docker `.deb`
+   set alongside it, **a 16 GB stick** is the comfortable choice. The largest
+   single file is the model at 1,282,439,264 bytes (1.19 GiB), under FAT32's
+   4 GiB per-file cap — but exFAT avoids the question. Copy with `tar` or
+   `rsync`, never a file manager (§6.2).
 3. **Docker CE installation media for an offline Ubuntu host** — the `.deb` set
    including `docker-compose-plugin`, since `apt` cannot reach the archive on a
    disconnected machine and Compose **v2** is required. This is the step most
@@ -282,6 +371,17 @@ this repository:**
 Ordered as an operator meets it. Steps 6.1–6.2 happen **connected**; the link is
 cut in 6.3 and stays cut.
 
+**Before anything else, on each machine in turn**, set the evidence directory.
+It is two machines, so this is done twice — once on staging, once on the target
+— and both sets of files are collected at the end:
+
+```bash
+EV=$HOME/aow-evidence && mkdir -p "$EV"
+```
+
+It must be outside any bundle folder. `--out` enforces that (§6.4), but knowing
+why saves a confusing refusal at the worst moment.
+
 ### 6.1 On the connected staging machine
 
 1. Check out the release commit and confirm the tree is clean.
@@ -289,9 +389,7 @@ cut in 6.3 and stays cut.
    `ci.yml` run.
 3. `bash scripts/package-offline.sh <path>/images.lock`
 4. `bash scripts/airgap-evidence.sh --out "$EV/bundle.txt" bundle dist/aow-<sha>`
-   — record `sha256(SHA256SUMS)` and `sha256(images.tar)`. Set
-   `EV=$HOME/aow-evidence` first; `--out` refuses a path inside the bundle, for
-   the reason in §6.4.
+   — record `sha256(SHA256SUMS)` and `sha256(images.tar)`.
 5. `bash scripts/airgap-evidence.sh --out "$EV/host-staging.txt" host staging`
    — this is where the staging **engine ID** is captured. It cannot be captured
    later, and the drill needs both IDs to show they differ.
@@ -315,8 +413,14 @@ medium and medium → target. A file manager adds `desktop.ini`, `Thumbs.db` or
 `.DS_Store`, and `verify-bundle.sh` refuses the folder on any unlisted file. The
 measured properties that make the copy possible are in
 [RELEASE-PROOF §2](RELEASE-PROOF.md#what-the-bundle-needs-from-a-transfer-medium-measured):
-largest file 1.28 GB (under FAT32's 4 GiB cap), every tracked file mode `100644`,
-longest path 41 characters.
+largest file 1.28 GB (under FAT32's 4 GiB cap) and every tracked file mode
+`100644`. The "longest path 41 characters" figure carried in
+[RELEASE-PROOF §2](RELEASE-PROOF.md#what-the-bundle-needs-from-a-transfer-medium-measured)
+is **wrong**: measured on this artifact the longest is 63 characters
+(`./observability/grafana/provisioning/datasources/prometheus.yml`), and the
+same holds for the earlier bundles it was originally measured on. The
+conclusion is unaffected — FAT32 carries it comfortably — but the number should
+not be quoted.
 
 ### 6.3 On the target, before anything else
 
@@ -353,7 +457,7 @@ and exits with the measured command's own code.
 From inside the copied bundle folder, with `.env` in place:
 
 ```bash
-EV=$HOME/aow-evidence            # outside the bundle, on purpose
+EV=$HOME/aow-evidence            # the TARGET's copy; staging has its own
 mkdir -p "$EV"
 
 bash scripts/airgap-evidence.sh --out "$EV/bundle-on-target.txt" bundle .
@@ -383,18 +487,46 @@ data ("What is the weather tomorrow in Rome?" and the London activities
 question); and a question outside the coverage window, which must answer "no
 data" rather than guess.
 
-**Do not run the `backup-restore` proof in this drill without preparation.**
-`demos/06_backup_restore.sh` calls `docker run` on `${AOW_SERVICES_IMAGE:-aow/services:dev}`
-with no `--pull never` and no presence check, and nothing in the bundle overlays
-sets that variable. On a disconnected host it attempts a registry pull. It is
-excluded from the default `offline` proof; set `AOW_SERVICES_IMAGE` to the
-loaded `aow-bundle/services:<sha>` tag first, or leave it out and say so.
+**The `backup-restore` proof used to be unsafe here, and was fixed.**
+`demos/06_backup_restore.sh` starts helper containers from
+`${AOW_SERVICES_IMAGE:-aow/services:dev}`. After a bundle install that tag does
+not exist — the images load as `aow-bundle/services:<sha>` — and `docker run`
+on a missing tag contacts the registry, which on a disconnected host is the one
+thing this whole exercise exists to rule out. Nothing set the variable. Now:
+
+- `compose.tools.bundle.yml` sets `AOW_SERVICES_IMAGE` to
+  `aow-bundle/services:${AOW_IMAGE_VERSION}`;
+- both `docker run` calls pass `--pull never`;
+- the script checks the image is present up front and fails with a message
+  naming the real problem, the same shape `scripts/restore-state.sh` uses.
+
+The proof is still excluded from the default `offline` run, so this matters
+only when the drill invokes it deliberately — which §6.5 step 8 does.
 
 ### 6.5 Destructive drills — disposable target only
 
 These wipe the database by design, and `compose.yml` fixes the project name so
 every release folder installs over the same named volumes. Only run them on a
 host nobody expects to keep.
+
+**This is a second run, and the record must say so.** §6.4 proves the release
+on a pristine target: empty store, clean-store install, offline answers. That
+result is destroyed the moment an upgrade sequence starts, and an engine that
+already holds release B's tags will refuse
+`AOW_REQUIRE_CLEAN_IMAGE_STORE=1` anyway. So the order is:
+
+1. **Run 1 — the air-gap proof (§6.4).** Clean-store first install of release B
+   on a pristine target. Capture everything in §7. This is the run that answers
+   F10.
+2. **Reset the target.** `docker compose down -v`, then remove every image and
+   volume, or reimage the machine. Confirm with
+   `airgap-evidence.sh --out "$EV/host-target-reset.txt" host target-reset` —
+   it must again report `0 images, 0 volumes, 0 containers`.
+3. **Run 2 — the destructive sequence below.** Capture it separately, into
+   filenames that cannot be confused with Run 1's.
+
+Two runs, two sets of evidence, no overlap. A record that blends them cannot
+show that the clean-store install was ever clean.
 
 Prepare on the connected staging machine:
 
@@ -446,6 +578,27 @@ Two things the procedure must not get wrong:
 Expect the rollback to take **≈508 s**: the release smoke check waits out its
 full 480 s deadline before reporting the still-empty forecast. A run that looks
 hung at eight minutes is not hung.
+
+#### The sequence, in order
+
+On the reset target, still disconnected, each step under
+`airgap-evidence.sh --out "$EV/run2-<step>.txt" run -- …`:
+
+| # | Step | Expected |
+|---|---|---|
+| 1 | Install **A** (`AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, A's own fresh `.env`) | exit 0; store census `0/0/0` before load |
+| 2 | Ingest so there is data to lose — record the row counts | non-zero counts, recorded |
+| 3 | Upgrade to **B** (copy A's `.env` into B's folder; **no** clean-store flag) | exit 0; pre-upgrade dump written to `backup/` — note its filename |
+| 4 | Verify B serves and the row counts survived | counts match step 2 |
+| 5 | "Upgrade" to the **fault-injection artifact** with `AOW_ALLOW_FAULT_INJECTION=1` | **exit non-zero**; migrate fails; a pre-upgrade dump is written first |
+| 6 | Confirm the schema was altered anyway | `fault_injection_marker` exists — this is why an image rollback is not enough |
+| 7 | Roll back to **B**'s images (no clean-store flag) | images revert; the smoke check still **fails**, ≈508 s, because the schema is still broken |
+| 8 | Restore from the dump taken at step 5 | exit 0; row counts match step 2 again; `fault_injection_marker` gone |
+
+Step 7 failing is the result, not a problem: it is what demonstrates that an
+image rollback alone cannot recover a migration failure. Record it as a pass of
+the drill and a failure of the rollback-only path. If step 7 *succeeds*, the
+fault artifact did not do its job and the drill is void.
 
 ---
 
@@ -502,14 +655,20 @@ that has never held these images, with no network present.
 
 **Will not**:
 
-- **Cover any commit but the one tested.** This is not a formality. The
-  `release.yml` clean-engine gate has run for `b21885a`; the artifact prepared
-  here is `a21dff9`, which is a *later merge commit* and has no release-workflow
-  proof of its own. Likewise, the fixes in §4 live on
-  `review/f10-physical-proof` and are **not inside the `a21dff9` bundle** — its
-  `prove-offline.sh` is byte-identical to the committed `a21dff9` version, which
-  lacks `--no-build`. **Whichever commit finally merges this work needs its own
-  `images.lock`, its own bundle and its own proof run.** An evidence record
+- **Cover any commit but `1890eba`.** This is not a formality, and it has
+  already bitten once: the `a21dff9` artifact prepared earlier in this work does
+  not contain the `--no-build` fix or any of the evidence tooling, so it was
+  re-packaged rather than carried forward. `1890eba` has its own `ci.yml` run
+  `36135517229` and its own `release.yml` clean-engine run `36137483144`
+  (§3.2.1) — neither of which is inherited from any earlier commit, and neither
+  of which is an air-gap proof.
+
+  One consequence to state plainly: **the commit that adds this document is not
+  `1890eba`.** A document recording a proof cannot be inside the artifact it
+  describes. That follow-up commit changes documentation only — no script, lock
+  file or image — so the verified artifact remains the one named in §3.3. Any
+  commit that changes a script, a migration, `compose.yml` or an image needs its
+  own `images.lock`, its own bundle and its own proof run. An evidence record
   inherited across a merge is not evidence.
 - **Establish a trust root on the offline side.** `SHA256SUMS`,
   `images.bundle.lock` and `ci-images.lock` all live in the folder they attest,
@@ -529,10 +688,12 @@ that has never held these images, with no network present.
 
 | | |
 |---|---|
-| Release artifact | **built and independently verified** for the packaged commit, anchor enforced, zero pulls |
-| Fault-injection artifact | **built, verified and its failure mode measured** against a real Postgres 17: `psql` exits 3 and the schema change survives (§3.5) |
-| Evidence tooling | **implemented and tested**, 24 new/changed test cases passing |
-| Procedure | **complete and ready to run**, with the `.env`, offline-Docker, `docker` group, disconnection-order, evidence-path, exit-code and destructive-drill gaps closed |
+| Release artifact | `1890eba`: **built and independently verified**, anchor `2edf2cd2…f6b8` **ENFORCED**, exit 0. (Zero pulls, but that is a *verification* run, which never calls Docker — no install was measured here; see §3.7.) |
+| Fault-injection artifact | **built, verified, refusal confirmed at runtime**, failure mode measured against a real Postgres 17: `psql` exits 3 and the schema change survives (§3.5) |
+| Drill set (A, B, fault injection) | **prepared and verified** (§3.5.1) |
+| Clean-engine release gate | **run for this exact commit**, release run 36137483144, distinct engine, 0/0/0 store, data smoke PASS (§3.2.1) — a connected CI runner, so **not** an air-gap proof |
+| Evidence tooling | **implemented and tested**: 15 new cases for the capture script, 9 new and 1 extended in the bundle-tamper suite, all passing |
+| Procedure | **substantially fixed but not yet operator-clean**: the `.env`, `docker` group, disconnection-order, evidence-path, exit-code and destructive-drill gaps are closed; an independent read found remaining defects in §6 (see `DEVOPS_REVIEW.md`) that must be fixed before anyone follows it |
 | Physical proof | **OPEN** — blocked on a second physical host, removable media, offline Docker install media and an out-of-band channel (§5) |
 
 Until that run exists, the strongest claim this project makes remains the one in
