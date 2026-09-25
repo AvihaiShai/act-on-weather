@@ -1,0 +1,42 @@
+#!/bin/sh
+case "$1" in
+  info)
+    if [ "$2" = --format ]; then echo 8589934592; fi
+    ;;
+  version) echo 29.8 ;;
+  image) [ "$AOW_STUB_IMAGES_PRESENT" = 1 ]; exit $? ;;
+  pull)
+    echo called > "$AOW_STUB_PULL_MARKER"
+    exit 1
+    ;;
+  compose)
+    echo "$*" >> "$AOW_STUB_CALLS"
+    shift
+    if [ "$1" = --env-file ]; then shift 2; fi
+    if [ "$1" = version ]; then echo 2.39.0; exit 0; fi
+    if [ "$1" = config ] && [ "$2" = --images ]; then
+      printf 'aow/services:dev\naow/ui:dev\n'
+      exit 0
+    fi
+    if [ "$1" = -f ] && [ "$3" = config ] && [ "$4" = --images ]; then
+      printf 'python:3.12-slim@sha256:example\naow/demos:dev\n'
+      exit 0
+    fi
+    if [ "$1" = config ] && [ "$2" = --services ]; then
+      printf 'migrate\napi\n'
+      exit 0
+    fi
+    if [ "$1" = ps ]; then
+      if [ "$AOW_STUB_HEALTHY" = 1 ]; then
+        printf 'migrate|exited||0\napi|running|healthy|\n'
+      else
+        printf 'migrate|exited||0\napi|exited||0\n'
+      fi
+      exit 0
+    fi
+    if [ "$1" = -f ] && [ "$3" = run ] && [ "$5" = refresh ]; then
+      exit ${AOW_STUB_REFRESH_RC:-0}
+    fi
+    ;;
+esac
+exit 0
