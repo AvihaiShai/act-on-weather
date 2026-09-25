@@ -1,14 +1,17 @@
 # Evidence: targeted test coverage (B1)
 
-**Dated 2026-09-25, re-verified 2026-09-26.** Branch `review/b1-targeted-tests`,
-based on `a21dff9`. **Revised after review of `bf1d2a8`** — §1 and §2.1 record
-what that review corrected and why the first fix was not good enough.
+**Dated 2026-09-25. Rebased and re-verified 2026-09-26.** Branch
+`review/b1-targeted-tests`, now based on **`1890eba`** (`origin/main`, PR #49,
+the F10 physical air-gap proof). **Revised after review of `bf1d2a8`** — §1 and
+§2.1 record what that review corrected and why the first fix was not good
+enough.
 
-**This branch is two commits behind `origin/main`**, which advanced to `1890eba`
-(PR #49, the F10 physical air-gap proof) after this work started. There is **no
-file overlap** between the two, so the rebase should be clean. Every number
-below is measured against `a21dff9`; `1890eba` adds tests of its own, so the
-unit count will be higher after a rebase and that is not a regression.
+The work was originally built on `a21dff9`, which `origin/main` had moved past
+while it was in progress. The rebase was clean: no conflicts, no file overlap
+with what `1890eba` landed, and `git range-diff` reports all three commits
+identical apart from their parents. §5 carries both sets of numbers — the
+current ones on `1890eba`, and the pre-rebase ones on `a21dff9`, which is the
+tree the defect reproductions and mutation checks were performed against.
 
 B1 asks for "full tests for all components". This work does **not** claim to
 close it, and nothing here should be read as "B1 is now met" —
@@ -42,9 +45,10 @@ baseline suite is strong, and most of what was checked did not need a test.
 | Forecast card rendering | local-today cutting, null handling, plus a real browser re-proof | `test_forecast.py`, `browser_gate.py:173` |
 | Planner as a pure function | ordering, tie-breaking, interest bonus, repeat penalty, venue matching | `test_planner.py`, `test_planner_venues.py` |
 
-Baseline on `a21dff9`, run in an image built from `tests/Dockerfile`:
-**1486 passed, 2 skipped** under `--network none`. The 2 skips are the README
-count checks, which only run in CI's `guard` job against the full checkout.
+Baseline on `a21dff9`, the tree this pass was written against, run in an image
+built from `tests/Dockerfile`: **1486 passed, 2 skipped** under `--network
+none`. The 2 skips are the README count checks, which only run in CI's `guard`
+job against the full checkout. Current figures after the rebase are in §5.
 
 ---
 
@@ -313,15 +317,43 @@ ones CI uses. The integration drill ran in its own Compose project
 (`aow-ci-b1review`) with its own volumes, and started no port-publishing
 service, so a separate stack already running on this machine was untouched.
 
+**Current — on the rebased branch (base `1890eba`).** Image
+`aow/tests:b1-rebased`, rebuilt from scratch after the rebase.
+
+| Gate | Command | Result |
+|---|---|---|
+| unit | `docker run --rm --network none aow/tests:b1-rebased` | **1554 passed, 2 skipped**, 44.9s |
+| ruff check | `… ruff check services tests scripts` | **passed** |
+| ruff format | `… ruff format --check services tests scripts` | **109 files already formatted** |
+| snapshot manifest | `python3 scripts/snapshot_manifest.py --check` | **passed** (it counts data, not migrations) |
+
+Where the 1554 comes from, measured rather than assumed: the three new test
+files collect 10 + 13 + 16 = **39**, and five more were added to
+`test_ui.py`, so this branch contributes **44**. Running the suite with the
+three new files ignored gives 1554 − 39 = **1515**, which corroborates the
+split; subtracting the five `test_ui.py` cases puts the new base's own count at
+**1510** (derived, not separately measured). The suite is slower than before —
+44.9s against 15.2s — because `1890eba` added `test_airgap_evidence.py` and
+extended `test_bundle_tamper.py`, both of which do real archive work.
+
+**Pre-rebase history — on base `a21dff9`.** Kept because the defect
+reproductions and the mutation checks below were performed against this tree,
+and their numbers refer to it. Image `aow/tests:b1-review`.
+
 | Gate | Command | Result |
 |---|---|---|
 | baseline unit | `docker run --rm --network none aow/tests:b1-review` on `a21dff9` | 1486 passed, 2 skipped, 13.9s |
-| unit | same, on this branch | **1530 passed, 2 skipped**, 14.3s |
-| unit, re-verified 2026-09-26 | image rebuilt from scratch after a host restart | **1530 passed, 2 skipped**, 15.2s |
-| ruff check | `docker run --rm --network none aow/tests:b1-review ruff check services tests scripts` | passed |
+| unit | same, on the branch before rebasing | 1530 passed, 2 skipped, 14.3s |
+| unit, re-verified 2026-09-26 | image rebuilt from scratch after a host restart | 1530 passed, 2 skipped, 15.2s |
+| ruff check | `… ruff check services tests scripts` | passed |
 | ruff format | `… ruff format --check services tests scripts` | 108 files already formatted |
-| snapshot manifest | `python3 scripts/snapshot_manifest.py --check` | passed (it counts data, not migrations) |
+| snapshot manifest | `python3 scripts/snapshot_manifest.py --check` | passed |
 | integration | `AOW_CI_SERVICES_IMAGE=aow/services:b1review GITHUB_RUN_ID=b1followup bash scripts/ci-integration.sh` | **exit 0**, whole script |
+
+The integration gate has **not** been re-run since the rebase. It passed on
+`a21dff9` with migration `008` applied, and `1890eba` changed no file this
+branch touches and no file `ci-integration.sh` drives — but that is an argument,
+not a run, and it is recorded as an argument. See §6.
 
 The integration run is the existing script with the new step in it, not a
 reduced version of it. Everything that passed before still passed — five outage
@@ -423,6 +455,12 @@ not a list of what is safe.
   gets `NULL` rather than an invented timestamp. The consequence is that such a
   plan cannot be compared against the current window, so the UI states that
   instead of showing a staleness verdict. The UI itself always sends the value.
+- **The Compose integration gate has not been re-run since the rebase.** It
+  passed on `a21dff9` with migration `008` applied (§5). `1890eba` touches no
+  file this branch touches and none that `ci-integration.sh` drives, so there is
+  a good argument that it would still pass — but nobody has run it on this base,
+  and an argument is not a run. CI will settle it on the PR, where
+  `build-and-scan` runs it.
 - **The `restore-drill` and the offline bundle have not been re-run** since
   migration `008`. It is an `ALTER … DROP NOT NULL` inside a transaction,
   applied by the same `migrate` service the integration gate exercised and
@@ -450,11 +488,12 @@ Nothing in `README.md` is made **false** by this branch. This was checked rather
 than assumed: no test count, no migration count and no schema listing is cited
 anywhere in it; `POST /itineraries` appears only in the write-API authentication
 section; and the committed claim in the offline-limits table — "questions beyond
-it are **refused**, not guessed" (`README.md:612` at `a21dff9`) — remains true,
+it are **refused**, not guessed" (`README.md:612`) — remains true,
 because it is about a window a question is entirely beyond. What is missing is
 documentation of three new behaviours.
 
-Line numbers below are for `README.md` **as committed at `a21dff9`**. The copy in
+Line numbers below are for `README.md` **as committed on this branch's base**
+(byte-identical at `a21dff9` and `1890eba` — neither changed it). The copy in
 the main checkout is mid-rewrite and its line numbers and phrasing differ, which
 is the other reason to apply this against the rewritten text rather than by
 line.
