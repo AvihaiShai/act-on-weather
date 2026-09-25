@@ -71,7 +71,7 @@ if [ "$DEPTH1" -gt 0 ]; then
 else
   fail "no queued record while the consumer was stopped"
 fi
-if [ "$(trace "$MID1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["published_at"])')" != "None" ]; then
+if wait_published "$MID1" 30; then
   pass "the traced ID was published before the consumer restarted"
 else
   fail "the traced ID never reached the broker during the consumer outage"

@@ -63,6 +63,35 @@ wait_stored() {
   return 1
 }
 
+# Has this record reached the broker yet? `published_at` is stamped on the
+# outbox row after the publish is confirmed, so it is the producer's own
+# record of the handover rather than something inferred from queue depth.
+#
+# `.get("published_at")` and not `["published_at"]`: a 404 still returns valid
+# JSON -- FastAPI's {"detail": ...} -- and a subscript would raise, leaving the
+# caller comparing an empty string. That reads as "not None" and passes, which
+# is the wrong way for a data-loss drill to fail.
+published() {
+  curl -s "$API/outbox/$1" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("published_at"))' 2>/dev/null \
+    || echo "unknown"
+}
+
+# Publishing is asynchronous: the producer drains its outbox on a ~2s cycle, so
+# a record accepted a moment ago has not reached the broker yet and the row
+# still says None. Polling for it removes a race that made the consumer-down
+# drill fail about one run in three on a system that was working correctly --
+# the record was always published and always stored, just not within the
+# millisecond the check happened to look.
+wait_published() {
+  local mid="$1" limit="${2:-30}" i=0 value
+  while [ "$i" -lt "$limit" ]; do
+    value="$(published "$mid")"
+    case "$value" in None | unknown | '') ;; *) return 0 ;; esac
+    sleep 2; i=$((i + 2))
+  done
+  return 1
+}
+
 hr() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 pass() { printf '\033[32m   PASS\033[0m %s\n' "$*"; }
