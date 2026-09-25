@@ -326,6 +326,27 @@ service, so a separate stack already running on this machine was untouched.
 | ruff check | `… ruff check services tests scripts` | **passed** |
 | ruff format | `… ruff format --check services tests scripts` | **109 files already formatted** |
 | snapshot manifest | `python3 scripts/snapshot_manifest.py --check` | **passed** (it counts data, not migrations) |
+| integration | `AOW_CI_SERVICES_IMAGE=aow/services:b1rebased GITHUB_RUN_ID=b1rebased bash scripts/ci-integration.sh` | **exit 0**, whole script |
+
+The integration gate was re-run on the rebased tree specifically because
+migration `008` is the reason to care: `migrate` applies it against real
+Postgres before anything else starts, so a migration that failed on this base
+would take the whole script down. It passed, in its own Compose project
+(`aow-ci-b1rebased`) with its own volumes, and tore itself down afterwards; the
+separate `aow` stack running on this machine was untouched throughout. Every
+step passed — the snapshot-to-history smoke, the enricher probe, reconnect, the
+local-event-day and event-freshness/recheck drills, the out-of-order forecast
+drill, the reconciliation audit and replay with its stored-ID control, five
+outage drills across both outboxes, and the final `count(*)` gate over all six
+traced IDs after a full restart:
+
+```
+PASS: lisbon 2026-09-23 kept as_of 2026-09-26 00:55:45.435720+00:00 and
+      revision 2 after an older forecast was redelivered behind it
+PASS: five outages across the API and ingestor outboxes each committed once
+      and survived a full restart
+PASS: all 6 traced IDs (...) are stored exactly once after full recovery
+```
 
 Where the 1554 comes from, measured rather than assumed: the three new test
 files collect 10 + 13 + 16 = **39**, and five more were added to
@@ -350,10 +371,9 @@ and their numbers refer to it. Image `aow/tests:b1-review`.
 | snapshot manifest | `python3 scripts/snapshot_manifest.py --check` | passed |
 | integration | `AOW_CI_SERVICES_IMAGE=aow/services:b1review GITHUB_RUN_ID=b1followup bash scripts/ci-integration.sh` | **exit 0**, whole script |
 
-The integration gate has **not** been re-run since the rebase. It passed on
-`a21dff9` with migration `008` applied, and `1890eba` changed no file this
-branch touches and no file `ci-integration.sh` drives — but that is an argument,
-not a run, and it is recorded as an argument. See §6.
+This pre-rebase integration run is superseded by the one in the table above,
+which was executed on the rebased tree. Both passed; the current one is the
+evidence.
 
 The integration run is the existing script with the new step in it, not a
 reduced version of it. Everything that passed before still passed — five outage
@@ -455,12 +475,6 @@ not a list of what is safe.
   gets `NULL` rather than an invented timestamp. The consequence is that such a
   plan cannot be compared against the current window, so the UI states that
   instead of showing a staleness verdict. The UI itself always sends the value.
-- **The Compose integration gate has not been re-run since the rebase.** It
-  passed on `a21dff9` with migration `008` applied (§5). `1890eba` touches no
-  file this branch touches and none that `ci-integration.sh` drives, so there is
-  a good argument that it would still pass — but nobody has run it on this base,
-  and an argument is not a run. CI will settle it on the PR, where
-  `build-and-scan` runs it.
 - **The `restore-drill` and the offline bundle have not been re-run** since
   migration `008`. It is an `ALTER … DROP NOT NULL` inside a transaction,
   applied by the same `migrate` service the integration gate exercised and
@@ -475,38 +489,34 @@ not a list of what is safe.
 
 `CLAUDE.md` requires that a behaviour change update `README.md` in the same
 change. This branch does not, deliberately: `README.md` was held out of its
-scope, and at the time of writing it is being rewritten in the main checkout by
-another session. Editing it here would have produced a near-certain conflict
-with that rewrite, and `DEVOPS_REVIEW.md` records that two tools contending for
-that one file have already destroyed work once.
+scope, and while this work was in progress it was being rewritten by another
+session. Editing it here would have produced a near-certain conflict with that
+rewrite, and `DEVOPS_REVIEW.md` records that two tools contending for that one
+file have already destroyed work once.
 
-**So the wording lives here, and applying it is an open task.** Apply it *after*
-the in-flight README rewrite lands, against the rewritten text rather than by
-patching these snippets in blind — the surrounding sentences may have changed.
+**That rewrite has since landed** — PR #51, `origin/main` at `6664454` — and it
+replaced the ~1900-line README with a 680-line one. The section names this
+section originally targeted **no longer exist**, so the targets below were
+re-derived against the rewritten file. The wording itself is unchanged; only
+where it goes was corrected. Applying it is still an open task and is
+deliberately not done on this branch.
 
-Nothing in `README.md` is made **false** by this branch. This was checked rather
-than assumed: no test count, no migration count and no schema listing is cited
-anywhere in it; `POST /itineraries` appears only in the write-API authentication
-section; and the committed claim in the offline-limits table — "questions beyond
-it are **refused**, not guessed" (`README.md:612`) — remains true,
-because it is about a window a question is entirely beyond. What is missing is
-documentation of three new behaviours.
+Nothing in `README.md` is made **false** by this branch, re-checked against the
+rewritten file rather than carried over: no test count, no migration count and
+no schema listing is cited anywhere in it; `POST /itineraries` appears only under
+`### The write API has no authentication`; and the claim at line 47 — "a question
+past the window is refused rather than guessed" — remains true, because it is
+about a window a question is *entirely* beyond. What is missing is documentation
+of three new behaviours.
 
-Line numbers below are for `README.md` **as committed on this branch's base**
-(byte-identical at `a21dff9` and `1890eba` — neither changed it). The copy in
-the main checkout is mid-rewrite and its line numbers and phrasing differ, which
-is the other reason to apply this against the rewritten text rather than by
-line.
+Headings and line numbers below are `README.md` at `6664454`. Re-check them
+before applying: PR #52 (`feat/reviewer-quickstart`) was still open when this was
+written and may move them again.
 
-### 7.1 Into `## Delivery guarantees, and their boundary`
+### 7.1 Into `### The delivery guarantee, and its boundary` (line 285)
 
-One row for the failure table, after the `poison message` row:
-
-```markdown
-| the same city-day refreshed twice, redelivered out of order | the older forecast is discarded; the stored row keeps its `as_of` and its revision |
-```
-
-And a paragraph after that table:
+The rewrite dropped the old failure table, so this is now prose rather than a
+table row. Add after the "Not covered" paragraph:
 
 > An older forecast redelivered behind a newer one never overwrites it. Two
 > refreshes of the same city-day are two different messages with two different
@@ -517,7 +527,11 @@ And a paragraph after that table:
 > stack genuinely reaches. Asserted on every PR by
 > `tests/integration/stale_forecast.py`.
 
-### 7.2 Into `### What gets worded, and what does not`, or as a subsection beside it
+### 7.2 Into `### The data on board, and when it goes stale` (line 27)
+
+The rewrite removed `### What gets worded, and what does not`. This now belongs
+beside the freshness paragraph that already ends with the refusal sentence, or
+under `## Offline operation` (line 300) — the choice is the applier's.
 
 > **A snapshot that has partly expired.** A question whose whole window is
 > outside the stored forecast is refused. A question that straddles the edge —
@@ -538,7 +552,11 @@ partial case, for example: "a question past the window is refused rather than
 guessed, and one that only partly reaches past it is answered for the days that
 have data and states the days that do not."
 
-### 7.3 Into `## Updating stored information (M12)`
+### 7.3 Into `### Connected refresh` (line 326) or `### The write API has no authentication` (line 488)
+
+The rewrite removed `## Updating stored information (M12)`. The update paths are
+now split between those two sections; the second already lists
+`POST /itineraries`, which makes it the closer fit.
 
 > **Saving a trip carries its own provenance.** `POST /itineraries` takes the
 > `as_of` of the forecast snapshot the plan's scores were computed from. It comes
@@ -555,10 +573,14 @@ have data and states the days that do not."
 
 ### 7.4 Also worth a look when applying the above
 
-- The **`## Requirements traceability`** matrix marks **B1** partial. That is
-  still correct and should stay. It may be worth pointing the B1 row at this
-  file, since it is the evidence for what was added and for what is still open.
-- The **`## Known limitations`** section is where the two defects left open in
-  §6 belong if they are still open at submission: the undated-weather-prose hole
-  in `grounding.violations`, and `build_itinerary` still filtering days through
-  the global `queries.in_coverage`.
+- The **`## Requirements traceability`** matrix (line 617) marks **B1** partial.
+  That is still correct and should stay. It may be worth pointing the B1 row at
+  this file, since it is the evidence for what was added and for what is still
+  open.
+- **`## Known limitations`** (line 530) is where the two defects left open in §6
+  belong if they are still open at submission: the undated-weather-prose hole in
+  `grounding.violations`, and `build_itinerary` still filtering days through the
+  global `queries.in_coverage`.
+- **`## Tests and operational tools`** (line 361) is the natural home for a
+  mention of the new out-of-order forecast drill, if that section enumerates the
+  integration drills.
