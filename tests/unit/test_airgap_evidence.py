@@ -75,7 +75,7 @@ def test_the_script_is_syntactically_valid() -> None:
 def test_no_subcommand_prints_usage_and_fails() -> None:
     result = run()
     assert result.returncode == 2
-    assert "airgap-evidence.sh host" in result.stderr
+    assert "airgap-evidence.sh [--out FILE] host" in result.stderr
 
 
 def test_an_unknown_subcommand_fails_rather_than_capturing_nothing() -> None:
@@ -169,3 +169,56 @@ def test_the_capture_never_asserts_a_negative_from_a_missing_tool() -> None:
     source = (REPO / SCRIPT).read_text(encoding="utf-8")
     assert "default_routes: UNKNOWN" in source
     assert "ip is not installed" in source
+
+
+def test_out_writes_the_evidence_file_and_keeps_the_exit_code(tmp_path: Path) -> None:
+    # The reason --out exists. `cmd | tee file` returns tee's status, so a
+    # failed install reads as a pass in exactly the situation where the operator
+    # is least able to notice -- standing at a disconnected machine.
+    out = tmp_path / "install.txt"
+    result = run("--out", str(out), "run", "--", "sh", "-c", "echo working; exit 9")
+
+    assert result.returncode == 9
+    written = out.read_text(encoding="utf-8")
+    assert "working" in written
+    assert "exit_code: 9" in written
+
+
+def test_out_refuses_to_write_inside_a_release_bundle(tmp_path: Path) -> None:
+    # The documented procedure used to say `tee evidence/...` from inside the
+    # bundle. That creates a file SHA256SUMS does not list, so the next
+    # verify-bundle.sh refuses the folder -- the evidence run destroying the
+    # artifact it was measuring.
+    bundle = tmp_path / "aow-release"
+    (bundle / "evidence").mkdir(parents=True)
+    (bundle / "SHA256SUMS").write_text("", encoding="utf-8")
+    (bundle / "release-version.txt").write_text("c" * 40 + "\n", encoding="utf-8")
+
+    result = run("--out", str(bundle / "evidence" / "x.txt"), "run", "--", "true")
+    assert result.returncode == 2
+    assert "refusing to write evidence inside a release bundle" in result.stderr
+    assert not (bundle / "evidence" / "x.txt").exists()
+
+
+def test_out_accepts_a_path_beside_the_bundle(tmp_path: Path) -> None:
+    bundle = tmp_path / "aow-release"
+    bundle.mkdir()
+    (bundle / "SHA256SUMS").write_text("", encoding="utf-8")
+    (bundle / "release-version.txt").write_text("d" * 40 + "\n", encoding="utf-8")
+    outside = tmp_path / "evidence"
+    outside.mkdir()
+
+    result = run("--out", str(outside / "verify.txt"), "run", "--", "true")
+    assert result.returncode == 0
+    assert (outside / "verify.txt").read_text(encoding="utf-8").strip()
+
+
+def test_pull_events_are_named_not_merely_counted() -> None:
+    # A bare count is unauditable months later: on a connected machine the
+    # platform's own background image work lands in the same window as the
+    # install's. The names are what let a reviewer tell the two apart, and the
+    # criterion that matters is whether an aow-bundle/* image was pulled.
+    source = (REPO / SCRIPT).read_text(encoding="utf-8")
+    assert "{{.Actor.Attributes.name}}" in source
+    assert "pulled_images:" in source
+    assert "aow-bundle/* image is a failed proof" in source

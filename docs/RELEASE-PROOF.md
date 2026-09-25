@@ -493,6 +493,18 @@ command produced:
   image/volume/container census before the load.
 - `scripts/prove-offline.sh` gained `--no-build`, so a missing bundle tag can no
   longer become a build that needs the egress the proof exists to disprove.
+- `scripts/airgap-evidence.sh --out` replaces `| tee`, which returned *tee's*
+  exit status and so reported a failed install as a pass. It also refuses to
+  write inside a release folder, because the old checklist's `tee evidence/…`
+  created a file `SHA256SUMS` does not list -- the evidence run would have made
+  the next verification fail.
+- `scripts/make-fault-injection-bundle.sh` closes the one gap the drill in §3
+  could not reproduce. CI can never publish a migration written to fail, so the
+  artifact is derived from a verified bundle, its provenance is sealed into
+  `FAULT-INJECTION.json`, and both the verifier and the installer refuse to let
+  it pass for a release. Its failure mode is measured rather than assumed:
+  against a real Postgres 17, `psql` exits 3 **and the schema change survives**,
+  which is exactly why an image rollback is not sufficient recovery.
 
 Until that run exists, the strongest claim this project makes is the one in §2:
 a separate Docker engine with an empty image store and no reachable egress, plus

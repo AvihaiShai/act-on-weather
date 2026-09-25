@@ -143,7 +143,43 @@ commit rather than trusted:
 | `scripts/prove-offline.sh` | byte-identical |
 | `IMAGES.lock`, `models.lock` | byte-identical |
 
-### 3.5 The staging host, recorded so the target's can be compared against it
+### 3.5 The fault-injection artifact, built and its failure mode measured
+
+Derived from the verified `a21dff9` bundle in **44 s** with
+`bash scripts/make-fault-injection-bundle.sh`, then verified:
+
+| | |
+|---|---|
+| Source release | `a21dff9…`, `sha256(SHA256SUMS)` `1bb8b7e9…d205` (CI-anchored) |
+| Artifact digest | `sha256(SHA256SUMS)` `5b6489475af3b6c84e3df45fc3555e8417627187d57517dd15e1b36e197fd745` — **a locally mutated folder, not a release digest** |
+| Verification | passed, and printed the `THIS IS A FAULT-INJECTION TEST ARTIFACT` banner |
+| Images | `images.tar`, `images.bundle.lock`, `ci-images.lock`, `IMAGES.lock`, `models.lock`, `release-version.txt` byte-identical to the source |
+
+The migration was then applied to a throwaway **Postgres 17** container — the
+same digest-pinned image the stack uses — under `ON_ERROR_STOP=1`, because a
+migration that fails in the *wrong way* would make the drill prove nothing:
+
+```
+CREATE TABLE
+INSERT 0 1
+ERROR:  column "this_column_does_not_exist_and_the_migration_must_fail_here"
+        of relation "fault_injection_marker" does not exist
+psql exit: 3
+```
+
+and afterwards, on the same database:
+
+```
+select count(*) from fault_injection_marker  ->  1
+```
+
+That last line is the point of the whole drill. `psql` exited non-zero, so the
+migrate service fails and the upgrade stops — **and the schema change survived
+the failure.** Rolling the images back cannot undo it, which is what makes the
+dump-backed restore the only recovery path. The container was removed
+afterwards; nothing on the staging host retained it.
+
+### 3.6 The staging host, recorded so the target's can be compared against it
 
 Captured with `bash scripts/airgap-evidence.sh host staging`:
 
@@ -160,7 +196,7 @@ proves nothing about the archive, for the reason in
 [RELEASE-PROOF §1](RELEASE-PROOF.md#1-the-defect-this-drill-found), and this
 document does not record one.
 
-### 3.6 The install was deliberately not run here
+### 3.7 The install was deliberately not run here
 
 No `install-offline.sh` run appears in this document. Running it on the
 packaging host would produce a passing transcript that is evidence about the
@@ -183,12 +219,23 @@ could be done without the hardware.
 | `scripts/verify-bundle.sh` | Prints `out-of-band anchor: ENFORCED` or `NOT SUPPLIED`. Before, a skipped anchor check and a passed one produced identical output, so the strongest sentence in the release proof could not be verified from its own transcript |
 | `scripts/install-offline.sh` | Prints the engine ID, Docker version, OS and a full image/volume/container census before the load. Both were previously available only from the CI clean-engine job |
 | `scripts/prove-offline.sh` | Added `--no-build`. `compose.tools.yml` still carries a `build:` section, so a missing `aow-bundle/demos:<sha>` tag made Compose *build* the image, and `demos/Dockerfile`'s `apk add` then needs the egress the proof exists to show is absent — turning a tag problem into a network error on the one host where that reads as a failed proof |
-| `tests/unit/test_airgap_evidence.py` (new, 11 cases) | The capture script is a measuring instrument, so the tested failure mode is a confident zero: a missing `ip` must report `UNKNOWN`, not "no default route" |
-| `tests/unit/test_bundle_tamper.py` (+2 cases) | Asserts the anchor transcript lines, and that the offline proof cannot fall back to building |
+| `scripts/airgap-evidence.sh --out FILE` | `cmd \| tee file` returns *tee's* exit status, so a failed install reads as a pass. `--out` writes the file itself and keeps the measured exit code. It also **refuses a path inside a release bundle**, because the old procedure's `tee evidence/…` created a file `SHA256SUMS` does not list — the evidence run would have destroyed the artifact it was measuring |
+| `scripts/make-fault-injection-bundle.sh` (new) | Derives the deliberately-broken artifact the rollback drill needs, from a verified bundle, with sealed provenance. §6.5 |
+| `verify-bundle.sh` / `install-offline.sh` fault-injection guard | A fault-injection artifact verifies — the drill installs it — so the success line must not read like a release. Both print a banner; the installer refuses outright without `AOW_ALLOW_FAULT_INJECTION=1` |
+| `tests/unit/test_airgap_evidence.py` (new, 15 cases) | The capture script is a measuring instrument, so the tested failure mode is a confident zero: a missing `ip` must report `UNKNOWN`, not "no default route" |
+| `tests/unit/test_bundle_tamper.py` (+9 cases) | The anchor transcript lines, the no-build fallback, and the fault-injection artifact's marking, resealing, image-anchor preservation and refusal paths |
 
 The pull counter was validated against a real pull on the staging engine:
-`completed_image_pulls: 1` for `docker pull hello-world`, including the harder
-"image is up to date" case, which still emits the event.
+`completed_image_pulls: 1`, `pulled_images: 1 x hello-world`, including the
+harder "image is up to date" case, which still emits the event.
+
+It records **names, not just a count**, after a run on the development machine
+reported two pulls for a command that only echoed a string. That was the
+platform's own background image work landing in the measurement window, and a
+bare number months later cannot be told apart from a bundle image the install
+fetched. The criterion that decides a drill is therefore *which* image was
+pulled: any `pulled_images` line naming an `aow-bundle/*` image is a failed
+proof.
 
 ---
 
@@ -241,9 +288,11 @@ cut in 6.3 and stays cut.
 2. Download the `aow-images-<sha>` artifact from that commit's successful
    `ci.yml` run.
 3. `bash scripts/package-offline.sh <path>/images.lock`
-4. `bash scripts/airgap-evidence.sh bundle dist/aow-<sha> | tee evidence/bundle.txt`
-   — record `sha256(SHA256SUMS)` and `sha256(images.tar)`.
-5. `bash scripts/airgap-evidence.sh host staging | tee evidence/host-staging.txt`
+4. `bash scripts/airgap-evidence.sh --out "$EV/bundle.txt" bundle dist/aow-<sha>`
+   — record `sha256(SHA256SUMS)` and `sha256(images.tar)`. Set
+   `EV=$HOME/aow-evidence` first; `--out` refuses a path inside the bundle, for
+   the reason in §6.4.
+5. `bash scripts/airgap-evidence.sh --out "$EV/host-staging.txt" host staging`
    — this is where the staging **engine ID** is captured. It cannot be captured
    later, and the drill needs both IDs to show they differ.
 6. **Generate `.env` here, not on the target.** `install-offline.sh` refuses
@@ -280,7 +329,7 @@ longest path 41 characters.
    Bluetooth PAN, tethering and any BMC/IPMI port. Not a firewall rule, not
    `ip link set down` — the point is that the isolation is not enforced by
    software the stack could influence.
-3. `bash scripts/airgap-evidence.sh host target | tee evidence/host-target.txt`
+3. `bash scripts/airgap-evidence.sh --out "$EV/host-target.txt" host target`
    — this is the census **before the load**. It must show a different engine ID
    from §6.1.5, and `images: 0`, `volumes: 0`, `containers: 0`.
 4. Photograph the disconnected link, and keep `ip -br link` from step 3. Both
@@ -289,24 +338,43 @@ longest path 41 characters.
 
 ### 6.4 Install and prove
 
+**Evidence goes outside the bundle, and never through a pipe.** Both rules are
+corrections of an earlier draft of this procedure:
+
+- `tee evidence/…` from inside the bundle creates a file `SHA256SUMS` does not
+  list, so the next `verify-bundle.sh` refuses the folder — the evidence run
+  destroying the artifact it was measuring.
+- `cmd | tee file` returns *tee's* exit status, so a failed install reads as a
+  pass, in the one situation where the operator can least afford to miss it.
+
+`--out` fixes both: it writes the file itself, refuses a path inside a bundle,
+and exits with the measured command's own code.
+
 From inside the copied bundle folder, with `.env` in place:
 
 ```bash
-bash scripts/airgap-evidence.sh bundle . | tee evidence/bundle-on-target.txt
+EV=$HOME/aow-evidence            # outside the bundle, on purpose
+mkdir -p "$EV"
+
+bash scripts/airgap-evidence.sh --out "$EV/bundle-on-target.txt" bundle .
 # sha256(images.tar) must equal the value from §6.1.4
 
 export AOW_SHA256SUMS=sha256:<digest carried out of band>
-bash scripts/airgap-evidence.sh run -- bash scripts/verify-bundle.sh . \
-  | tee evidence/verify.txt
+bash scripts/airgap-evidence.sh --out "$EV/verify.txt" \
+  run -- bash scripts/verify-bundle.sh .
 # must print "out-of-band anchor: ENFORCED"
 
 AOW_REQUIRE_CLEAN_IMAGE_STORE=1 \
-  bash scripts/airgap-evidence.sh run -- bash scripts/install-offline.sh \
-  | tee evidence/install.txt
+  bash scripts/airgap-evidence.sh --out "$EV/install.txt" \
+  run -- bash scripts/install-offline.sh
 
-bash scripts/airgap-evidence.sh run -- bash scripts/prove-offline.sh \
-  | tee evidence/prove.txt
+bash scripts/airgap-evidence.sh --out "$EV/prove.txt" \
+  run -- bash scripts/prove-offline.sh
 ```
+
+Check `echo $?` after each, or run them under `set -e`. The exit code is now
+the command's own, so a non-zero one is a real failure and must be recorded as
+such rather than rerun until it passes.
 
 `prove-offline.sh` runs five sections: Docker forbids a route out of the
 application network; the services cannot reach the internet, demonstrated; no
@@ -335,12 +403,35 @@ Prepare on the connected staging machine:
   the drilled A/B measurements in RELEASE-PROOF §3 predate
   `004_itinerary_delete.sql` and `005_user_data_wipe.sql` and do not cover the
   current tree.
-- **A deliberately failing migration.** There is no reproducible recipe for
-  this today, and it is the largest gap in §6.5: CI will never publish images
-  for a commit containing a migration written to fail, and `package-offline.sh`
-  refuses any tree that is not exactly the commit in `images.lock`. The bundle
-  must therefore be hand-assembled and its `SHA256SUMS` re-sealed, which is
-  itself outside the verified path. Writing that recipe is open work.
+- **A deliberately failing migration**, built by
+  `scripts/make-fault-injection-bundle.sh <verified-bundle> <destination>`.
+
+  This gap used to be open, and the reason it had to be closed by a script
+  rather than by a commit is worth stating: CI can never publish images for a
+  commit whose migration is written to fail — `main` is branch-protected on
+  four required jobs — and `package-offline.sh` refuses any tree that is not
+  exactly the commit named in its `images.lock`. So the artifact is derived
+  locally, from a bundle that *was* CI-proven.
+
+  What the script does, and what it costs:
+
+  | | |
+  |---|---|
+  | Verifies the source bundle first | Deriving from a folder that never verified would prove nothing about either |
+  | Adds `db/migrations/900_fault_injection.sql` | Creates a table and inserts a row, **then** fails on a missing column. The schema is already altered when it stops, which is what makes an image rollback insufficient and the dump-backed restore necessary |
+  | Adds one `-f` argument to the migrate command | `compose.yml` lists migrations explicitly; there is no directory glob |
+  | Writes `FAULT-INJECTION.json` | Records the source release, the **source CI-anchored digest**, every mutation, and every file left untouched |
+  | Reseals `SHA256SUMS` | **This destroys the folder's self-attestation.** The digest it prints attests to a locally mutated folder and is *not* a release digest |
+  | Leaves the images alone | `images.tar`, `images.bundle.lock`, `ci-images.lock`, `IMAGES.lock`, `models.lock` and `release-version.txt` are copied byte-for-byte, so every container image is still the digest-pinned set CI published |
+
+  The marker is sealed into `SHA256SUMS`, so deleting it breaks verification.
+  `verify-bundle.sh` prints a banner when it is present, and
+  `install-offline.sh` **refuses to install** without
+  `AOW_ALLOW_FAULT_INJECTION=1`. Inspect any such artifact with
+  `bash scripts/make-fault-injection-bundle.sh --diff <dir>`.
+
+  **Never describe this artifact as a release.** It is a test fixture that
+  happens to verify.
 
 Two things the procedure must not get wrong:
 
@@ -367,18 +458,18 @@ failures rather than reruns.
 |---|---|---|---|
 | 1 | Source commit and tree | `git rev-parse HEAD; git rev-parse HEAD^{tree}` | |
 | 2 | CI run id and conclusion for that commit | `gh run list --branch main` | |
-| 3 | Staging engine ID | `airgap-evidence.sh host staging` | |
-| 4 | Target engine ID — **must differ from 3** | `airgap-evidence.sh host target` | |
+| 3 | Staging engine ID | `airgap-evidence.sh --out … host staging` | |
+| 4 | Target engine ID — **must differ from 3** | `airgap-evidence.sh --out … host target` | |
 | 5 | Target store before load — **must be 0 / 0 / 0** | same capture as 4 | |
 | 6 | Link state on target + photograph | `ip -br link` in capture 4, plus photo | |
-| 7 | `sha256(images.tar)` on staging | `airgap-evidence.sh bundle dist/aow-<sha>` | |
-| 8 | `sha256(images.tar)` on target — **must equal 7** | `airgap-evidence.sh bundle .` | |
+| 7 | `sha256(images.tar)` on staging | `airgap-evidence.sh --out … bundle dist/aow-<sha>` | |
+| 8 | `sha256(images.tar)` on target — **must equal 7** | `airgap-evidence.sh --out … bundle .` | |
 | 9 | Out-of-band `SHA256SUMS` digest, and how it travelled | recorded at §6.1.7 | |
 | 10 | Anchor enforced | `verify.txt` must contain `out-of-band anchor: ENFORCED` | |
 | 11 | Verify: exit code, elapsed | `verify.txt` | |
 | 12 | Install: engine line and `store before load` census | `install.txt` | |
 | 13 | Install: clean-store census line | `install.txt` | |
-| 14 | Install: exit code, elapsed, **completed pulls**, **pull/build markers** | `install.txt` | |
+| 14 | Install: exit code, elapsed, **completed pulls**, **pulled image names**, **pull/build markers** | `install.txt` | |
 | 15 | Prove: exit code and all five sections | `prove.txt` | |
 | 16 | The two reviewer questions and the out-of-coverage answer, with as-of stamps | `prove.txt` §4 and §5 | |
 | 17 | Transport wall clock | `time tar …` on both hops | |
@@ -394,7 +485,8 @@ result, not a pass:
 - rows 7 and 8 are equal;
 - row 10 says `ENFORCED`;
 - every exit code is 0;
-- **completed image pulls is 0 and pull/build markers is 0** in rows 14 and 15;
+- **no `pulled_images` line names an `aow-bundle/*` image**, and pull/build
+  markers is 0, in rows 14 and 15;
 - the coverage question in row 16 answers "no data", not a guess.
 
 A non-zero marker count with zero completed pulls is the signature of a pull
@@ -437,9 +529,10 @@ that has never held these images, with no network present.
 
 | | |
 |---|---|
-| Release artifact for `a21dff9` | **built and independently verified**, anchor enforced, 0 pulls |
-| Evidence tooling | **implemented and tested**, 13 new/changed test cases passing |
-| Procedure | **complete and ready to run**, with the `.env`, offline-Docker, `docker` group, disconnection-order and destructive-drill gaps closed |
+| Release artifact | **built and independently verified** for the packaged commit, anchor enforced, zero pulls |
+| Fault-injection artifact | **built, verified and its failure mode measured** against a real Postgres 17: `psql` exits 3 and the schema change survives (§3.5) |
+| Evidence tooling | **implemented and tested**, 24 new/changed test cases passing |
+| Procedure | **complete and ready to run**, with the `.env`, offline-Docker, `docker` group, disconnection-order, evidence-path, exit-code and destructive-drill gaps closed |
 | Physical proof | **OPEN** — blocked on a second physical host, removable media, offline Docker install media and an out-of-band channel (§5) |
 
 Until that run exists, the strongest claim this project makes remains the one in

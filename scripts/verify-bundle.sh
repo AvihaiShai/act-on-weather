@@ -163,4 +163,17 @@ echo "images.bundle.lock matches the CI manifest for $commit and the committed I
 # ----------------------------------------------------------------- 4. images --
 bash scripts/verify-bundle-images.sh .
 
+if [ -f FAULT-INJECTION.json ]; then
+  # Sealed into SHA256SUMS by make-fault-injection-bundle.sh, so it cannot be
+  # deleted without breaking the check above. A verified fault-injection
+  # artifact is still a verified folder -- the images are the CI-published set
+  # and the archive is intact -- which is exactly why the success line must not
+  # be allowed to read like a release.
+  echo "*********************************************************************"
+  echo "* THIS IS A FAULT-INJECTION TEST ARTIFACT, NOT A CI-PUBLISHED RELEASE"
+  echo "* Its migration is written to fail after altering the schema, and its"
+  echo "* SHA256SUMS digest attests to a locally mutated folder. Install it"
+  echo "* only on a disposable host. See FAULT-INJECTION.json."
+  echo "*********************************************************************"
+fi
 echo "Bundle verified: $(pwd)"

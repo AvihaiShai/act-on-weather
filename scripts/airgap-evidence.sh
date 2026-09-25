@@ -9,12 +9,17 @@
 # sentence in a document rather than a number from a run. This script produces
 # them.
 #
-#   bash scripts/airgap-evidence.sh host   [label]
-#   bash scripts/airgap-evidence.sh bundle [dir]
-#   bash scripts/airgap-evidence.sh run    -- <command> [args...]
+#   bash scripts/airgap-evidence.sh [--out FILE] host   [label]
+#   bash scripts/airgap-evidence.sh [--out FILE] bundle [dir]
+#   bash scripts/airgap-evidence.sh [--out FILE] run    -- <command> [args...]
 #
-# Everything goes to stdout so the operator can tee it; nothing is written
-# except the transcript `run` needs, and nothing here changes the host.
+# Use --out, not a pipe. `cmd | tee file` returns tee's exit status, so a failed
+# install reads as a pass -- and the obvious place to put that file, next to the
+# bundle being verified, is inside the folder whose unlisted-file check then
+# refuses it. --out writes the file itself, refuses a path inside a bundle, and
+# leaves the measured exit code as this script's own.
+#
+# Nothing else here changes the host.
 #
 # What this cannot do: prove a negative about the network. `host` samples the
 # link at one instant, and `run` counts pulls the daemon *completed*. Neither
@@ -23,22 +28,64 @@
 set -euo pipefail
 
 usage() {
-  sed -n '3,20p' "$0" >&2
+  # Selected by content, not by line number. A hard-coded range silently starts
+  # printing the wrong paragraph the first time the header above is edited,
+  # which is exactly what happened when --out was added.
+  sed -n '/^#   bash scripts/,/^# Nothing else here changes the host\./p' "$0" \
+    | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
-say() { printf '%s\n' "$*"; }
-rule() { printf -- '--- %s\n' "$*"; }
+OUT=""
+if [ "${1:-}" = "--out" ]; then
+  OUT="${2:?--out needs a file path}"
+  shift 2
+
+  # Where the file must not go. docs/RELEASE-PROOF.md used to tell the operator
+  # to `tee evidence/...` from inside the bundle, which creates a file
+  # SHA256SUMS does not list -- so the very next verify refuses the folder, and
+  # the evidence run destroys the thing it was measuring. Walk up from the
+  # destination and refuse if any ancestor looks like a release folder.
+  out_dir="$(cd "$(dirname "$OUT")" 2>/dev/null && pwd)" \
+    || { echo "--out directory does not exist: $(dirname "$OUT")" >&2; exit 2; }
+  probe="$out_dir"
+  while [ -n "$probe" ]; do
+    if [ -f "$probe/SHA256SUMS" ] && [ -f "$probe/release-version.txt" ]; then
+      echo "refusing to write evidence inside a release bundle: $probe" >&2
+      echo "  SHA256SUMS does not list it, so the next verify-bundle.sh would" >&2
+      echo "  refuse the folder. Choose a path outside the bundle." >&2
+      exit 2
+    fi
+    [ "$probe" = "/" ] && break
+    probe="$(dirname "$probe")"
+  done
+  : > "$OUT"
+fi
+
+# Written once, to both places. Not `| tee`: this script's exit status has to
+# stay the measured command's.
+emit() {
+  printf '%s\n' "$*"
+  [ -n "$OUT" ] && printf '%s\n' "$*" >> "$OUT"
+  return 0
+}
+
+say() { emit "$*"; }
+rule() { emit "--- $*"; }
 
 # A command that may legitimately be absent on a minimal target: report the
 # absence rather than aborting the capture. Evidence with a hole in it is worth
 # more than no evidence, as long as the hole says so.
 try() {
   if command -v "$1" >/dev/null 2>&1; then
-    "$@" 2>&1 || say "(exit $?)"
+    local captured status
+    captured="$("$@" 2>&1)" && status=0 || status=$?
+    [ -n "$captured" ] && emit "$captured"
+    [ "$status" -eq 0 ] || emit "(exit $status)"
   else
     say "($1 not installed on this host)"
   fi
+  return 0
 }
 
 evidence_host() {
@@ -88,7 +135,7 @@ evidence_host() {
   try df -h .
   say ""
   if command -v free >/dev/null 2>&1; then
-    free -h | awk 'NR<=2'
+    emit "$(free -h | awk 'NR<=2')"
   else
     say '(free not installed on this host)'
   fi
@@ -139,7 +186,7 @@ evidence_run() {
   # still connecting would read as a clean zero, which is the one failure this
   # number must not have.
   docker events --filter 'type=image' --filter 'event=pull' \
-    --format '{{.Actor.ID}}' > "$events" 2>/dev/null &
+    --format '{{.Actor.Attributes.name}}' > "$events" 2>/dev/null &
   watcher=$!
   sleep 2
 
@@ -153,6 +200,8 @@ evidence_run() {
   "$@" 2>&1 | tee "$transcript"
   exit_code="${PIPESTATUS[0]}"
   set -e
+  # PIPESTATUS[0], not $?, so `tee` cannot report success for a failed command.
+  [ -n "$OUT" ] && cat "$transcript" >> "$OUT"
 
   end_epoch="$(date +%s)"
   sleep 2
@@ -163,7 +212,19 @@ evidence_run() {
   say "exit_code: $exit_code"
   say "elapsed_seconds: $((end_epoch - start_epoch))"
   say "finished_at: $(date -u +%Y-%m-%dT%H:%M:%SZ) (UTC)"
-  say "completed_image_pulls: $(grep -c . "$events" || true)"
+  local pulls
+  pulls="$(grep -c . "$events" || true)"
+  say "completed_image_pulls: $pulls"
+  if [ "$pulls" != "0" ]; then
+    # Named, so the record can be audited rather than believed. A pull of an
+    # aow-bundle/* image during an offline install is a failed proof; a pull of
+    # something the platform does in the background is a dirty measurement on a
+    # connected machine, and on the disconnected target neither can happen.
+    say "pulled_images:"
+    sort "$events" | uniq -c | while read -r count name; do
+      say "  $count x $name"
+    done
+  fi
   # A pull that failed because there is no network emits no event, so the
   # daemon's count cannot see it. What can is the text the tools print on the
   # way to trying: Compose announces "Pulling"/"Building" before it acts, and
@@ -174,6 +235,7 @@ evidence_run() {
   say "A clean offline run reads: exit_code 0, completed_image_pulls 0,"
   say "transcript_pull_or_build_markers 0. A non-zero marker count with zero"
   say "completed pulls is the signature of a pull that was attempted and failed."
+  say "Any pulled_images line naming an aow-bundle/* image is a failed proof."
 
   exit "$exit_code"
 }
