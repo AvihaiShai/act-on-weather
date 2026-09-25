@@ -1119,3 +1119,97 @@ def test_stating_the_absence_and_the_forecast_separately_is_allowed():
         "stored forecast is a high of 19C and a low of 12C."
     )
     assert grounding.violations(answer, brief) == []
+
+
+# ------------------------------------------- events placed on the wrong day --
+
+
+def test_a_concert_claimed_on_a_day_with_no_event_row_is_rejected():
+    """The failure this check was written for, observed on the live stack.
+
+    Asked the assignment's second example question, the agent answered:
+
+        "Concerts are scheduled on 2026-09-25, 2026-09-26, 2026-09-27,
+         2026-09-29, and 2026-09-30."
+
+    London held one concert row inside that window, on the 25th. The other
+    four days were invented -- most likely read off the per-day suitability
+    scores, which do exist for every day.
+
+    Nothing already here caught it. Check 1 needs a category with no rows at
+    all and `concert` had one; checks 2 and 3 need a place or a stored event to
+    be named, and neither was. Check 7 tests dates against `allowed_dates()`,
+    which unions the forecast days -- so with a forecast covering the window,
+    every one of those dates was already "allowed".
+    """
+    result = retrieval(
+        "What activities can I do with my wife this week in London? "
+        "We like concerts, shopping and fine dining.",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+
+    # The forecast really does make these dates pass the older date check, so
+    # this test would be meaningless without them.
+    assert DAY3.isoformat() in brief.allowed_dates()
+
+    found = grounding.violations(
+        f"Concerts are scheduled on {DAY2.isoformat()}, {DAY3.isoformat()}.", brief
+    )
+    assert any(DAY3.isoformat() in v and "no stored event row covers" in v for v in found), found
+    # The day that does have a row must not be reported.
+    assert not any(DAY2.isoformat() in v for v in found), found
+
+
+def test_a_concert_claimed_on_the_day_its_row_covers_is_allowed():
+    """The check must not cost a correct answer its wording."""
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    answer = f"Free Friday Lunchtime Concert is on at The O2 arena on {DAY2.isoformat()}."
+    assert grounding.violations(answer, brief) == []
+
+
+def test_every_day_a_multi_day_event_runs_supports_a_claim():
+    """A tournament running the 24th to the 26th supports all three days."""
+    result = retrieval(
+        "Which sports events are on in London this week?",
+        events=[
+            event("theo2:laver", "Laver Cup 2026", "sport", DAY1, last_day=DAY3),
+        ],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    answer = (
+        f"Laver Cup 2026 runs on {DAY1.isoformat()}, {DAY2.isoformat()} and " f"{DAY3.isoformat()}."
+    )
+    assert grounding.violations(answer, brief) == []
+
+
+def test_saying_no_concert_is_on_a_day_does_not_place_one():
+    """A negated clause asserts nothing, and must not trip the check."""
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    answer = f"No concert is on record for {DAY3.isoformat()}."
+    assert grounding.violations(answer, brief) == []
+
+
+def test_a_category_with_no_rows_is_still_reported_once_not_twice():
+    """Check 1 owns the no-rows-at-all case; this check must not duplicate it."""
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:laver", "Laver Cup 2026", "sport", DAY1)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2)],
+    )
+    brief = grounding.build(result)
+    found = grounding.violations(f"A concert is scheduled on {DAY2.isoformat()}.", brief)
+    assert any("no stored event row" in v for v in found), found
+    assert not any("no stored event row covers" in v for v in found), found
