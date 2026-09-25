@@ -24,6 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+import psycopg
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -497,10 +498,40 @@ class ItineraryIn(RequestIn):
     days: list[dict[str, Any]] = Field(default_factory=list)
 
 
+def scoring_as_of() -> str:
+    """The forecast as-of the plan being saved was scored against.
+
+    Read best effort. A save is a write, and this module's contract is that a
+    write never touches the database -- so the stamp is worth one immediate
+    attempt and not one second of waiting. `pool.conn` would have waited
+    forever (`db.connect` retries with backoff until Postgres returns), which
+    turned a database outage into a lost itinerary on a service whose outbox
+    was sitting there ready to accept it.
+
+    The fallback is this service's own clock. It is the same fallback the
+    handler already used when coverage held no weather row, and it is
+    pessimistic in the safe direction: a plan stamped slightly late reads as
+    stale against a newer forecast, which the UI says out loud, rather than
+    reading as fresher than the data behind it.
+    """
+    conn = pool.conn_if_up
+    if conn is not None:
+        try:
+            as_of = queries.coverage(conn).get("weather_as_of")
+        except psycopg.Error as exc:
+            log.warning("coverage unreadable while saving an itinerary (%s)", exc)
+            pool.drop()
+        else:
+            if isinstance(as_of, str):
+                return as_of
+            if as_of is not None:
+                return as_of.isoformat()
+    return datetime.now(UTC).isoformat()
+
+
 @app.post("/itineraries", status_code=202)
 def save_itinerary(body: ItineraryIn) -> dict[str, Any]:
     itinerary_id = str(uuid.uuid4())
-    cov = queries.coverage(pool.conn)
     message_id = accept(
         config.RK_ITINERARY,
         {
@@ -510,9 +541,7 @@ def save_itinerary(body: ItineraryIn) -> dict[str, Any]:
             "start_date": body.start_date.isoformat(),
             "end_date": body.end_date.isoformat(),
             "days": body.days,
-            "as_of": (cov.get("weather_as_of") or datetime.now(UTC)).isoformat()
-            if not isinstance(cov.get("weather_as_of"), str)
-            else cov["weather_as_of"],
+            "as_of": scoring_as_of(),
         },
         city=body.city,
     )

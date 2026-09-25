@@ -17,8 +17,22 @@ from psycopg.rows import dict_row
 log = logging.getLogger(__name__)
 
 
-def connect(dsn: str, *, autocommit: bool = False, max_wait: float = 30.0) -> psycopg.Connection:
+def connect(
+    dsn: str,
+    *,
+    autocommit: bool = False,
+    max_wait: float = 30.0,
+    attempts: int = 0,
+) -> psycopg.Connection:
+    """Connect, retrying with backoff.
+
+    `attempts=0` retries forever, which is what a long-lived service wants: the
+    consumer's whole job is to still be there when Postgres comes back. A
+    finite `attempts` gives up and re-raises instead, for the callers that must
+    answer now rather than wait -- see `Pool.conn_if_up`.
+    """
     delay = 1.0
+    tried = 0
     while True:
         try:
             conn = psycopg.connect(dsn, autocommit=autocommit, row_factory=dict_row)
@@ -30,6 +44,9 @@ def connect(dsn: str, *, autocommit: bool = False, max_wait: float = 30.0) -> ps
                 conn.commit()
             return conn
         except psycopg.OperationalError as exc:
+            tried += 1
+            if attempts and tried >= attempts:
+                raise
             log.warning("postgres unreachable (%s); retrying in %.0fs", exc, delay)
             time.sleep(delay)
             delay = min(delay * 2, max_wait)
@@ -57,6 +74,26 @@ class Pool:
     def conn(self) -> psycopg.Connection:
         if self._conn is None or self._conn.closed:
             self._conn = connect(self.dsn, autocommit=self.autocommit)
+        return self._conn
+
+    @property
+    def conn_if_up(self) -> psycopg.Connection | None:
+        """A connection if one can be had immediately, otherwise `None`.
+
+        `conn` retries forever, and for a background loop that is correct. It
+        is wrong inside a request that has to be answered now -- above all a
+        write, which the API accepts into its outbox and by design does not
+        need the database for at all. A write path that reached `conn` would
+        block its worker for as long as the outage lasted, losing a record the
+        outbox was ready to make durable.
+        """
+        if self._conn is not None and not self._conn.closed:
+            return self._conn
+        try:
+            self._conn = connect(self.dsn, autocommit=self.autocommit, attempts=1)
+        except psycopg.OperationalError:
+            self._conn = None
+            return None
         return self._conn
 
     def drop(self) -> None:

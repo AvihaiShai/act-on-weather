@@ -46,6 +46,12 @@ dc exec -T api python - < tests/integration/event_freshness.py
 # The probe needs egress and is not run here; this drives the apply path, which
 # is the half that can silently extend a listing's life if it regresses.
 dc exec -T api python - < tests/integration/event_recheck.py
+# At-least-once plus a requeue means two refreshes of one city-day can arrive
+# in the wrong order under different message_ids, which `ingest_log` does not
+# deduplicate. Only `upsert_weather`'s as_of guard stops the older one being
+# written, and no other check in this repository exercises it -- every drill
+# below replays the *same* message rather than an older one.
+dc exec -T api python - < tests/integration/stale_forecast.py
 ingestor_audit="$(dc exec -T ingestor python -m services.common.reconcile)"
 python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert r["mode"] == "audit" and r["scanned"] > 0, r' "$ingestor_audit"
 echo "ingestor reconciliation audit: $ingestor_audit"

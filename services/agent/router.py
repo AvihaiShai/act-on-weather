@@ -302,6 +302,14 @@ class Retrieval:
     # and when the newest of them was last checked. It turns a bare "nothing on
     # record" into a statement about the feed rather than about the city.
     expired_events: dict[str, Any] = field(default_factory=dict)
+    # Days inside the asked window that the stored forecast reaches, and days
+    # it does not. Filled only for a question that needed weather, so a pure
+    # `where` question -- which is answerable from a fully expired snapshot --
+    # is never narrowed by them. The whole-window case is a refusal above; this
+    # is the partial case, which is what a snapshot looks like a few days after
+    # it was staged, and is therefore the ordinary state rather than the odd one.
+    covered_days: list[str] = field(default_factory=list)
+    uncovered_days: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any(
@@ -465,6 +473,10 @@ class Router:
         start = covered_days[0] if covered_days else window.start
         end = covered_days[-1] if covered_days else window.end
         result = Retrieval(resolution, coverage, in_cov)
+        if weather_needed:
+            covered = set(covered_days)
+            result.covered_days = [d.isoformat() for d in covered_days]
+            result.uncovered_days = [d.isoformat() for d in window.days() if d not in covered]
         city_id = resolution.city["id"]
 
         # A question that asked only where is not asked about the weather, so

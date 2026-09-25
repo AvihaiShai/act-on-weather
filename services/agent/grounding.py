@@ -515,7 +515,14 @@ def build(result: Retrieval) -> Brief:
         window=str(resolution.window) if resolution.window else "",
         country=str(city.get("country") or ""),
         question=resolution.question,
-        window_days=[d.isoformat() for d in resolution.window.days()] if resolution.window else [],
+        # The days the answer may speak about without a row naming them. For a
+        # question that needed weather this is what the snapshot actually
+        # reaches, not what was asked: a half-expired forecast must not leave
+        # the validator willing to accept a sentence about a day with no data.
+        # `covered_days` is empty for every other kind of question, and those
+        # fall back to the asked window as before.
+        window_days=result.covered_days
+        or ([d.isoformat() for d in resolution.window.days()] if resolution.window else []),
         event_categories=list(getattr(resolution, "event_categories", []) or []),
         interests=list(resolution.interests),
         named_activities=list(resolution.activities),
@@ -660,6 +667,19 @@ def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
                 )
             )
 
+    if result.uncovered_days:
+        first, last = result.uncovered_days[0], result.uncovered_days[-1]
+        span = first if first == last else f"{first} to {last}"
+        ends = result.coverage.get("weather_last_date")
+        gaps.append(
+            Gap(
+                "coverage:partial",
+                f"No weather is stored for {span} in {brief.city}. The stored forecast ends "
+                f"on {ends}, so those days are left out rather than guessed. Refresh the "
+                f"snapshot while connected to extend it.",
+            )
+        )
+
     if result.resolution.categories and not brief.places:
         wanted = ", ".join(i.replace("_", " ") for i in brief.interests) or "those interests"
         gaps.append(Gap("places", f"No place is on record in {brief.city} for {wanted}."))
@@ -693,6 +713,14 @@ def prompt_block(brief: Brief) -> str:
     if brief.days:
         lines.append("\nStored daily forecast:")
         lines.extend(f"  {day.day}: {day.text}" for day in brief.days)
+
+    # Said before the rows rather than after them: the model has just been told
+    # which dates were asked about, and without this the next thing it sees is
+    # a shorter list of days with no explanation of why it is shorter.
+    partial = [g for g in brief.gaps if g.subject == "coverage:partial"]
+    if partial:
+        lines.append("\nDATES WITH NO STORED WEATHER -- do not describe these days at all:")
+        lines.extend(f"  {gap.text}" for gap in partial)
 
     activity_gaps = [g for g in brief.gaps if g.subject.startswith("activity:")]
     if activity_gaps:
