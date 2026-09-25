@@ -32,9 +32,19 @@ done
 # ----------------------------------------------------------------- 1. files --
 own="$(sha256sum SHA256SUMS | awk '{print $1}')"
 echo "SHA256SUMS sha256:$own"
-if [ -n "${AOW_SHA256SUMS:-}" ] && [ "$own" != "${AOW_SHA256SUMS#sha256:}" ]; then
-  echo "SHA256SUMS does not match the digest supplied out of band" >&2
-  exit 1
+# Everything else below is one file in this folder checking another file in
+# this folder. AOW_SHA256SUMS is the single value that has to arrive by a
+# different route, so the transcript has to record whether it did: the digest
+# line above prints either way, and a skipped check and a passed check read
+# identically once the run is over and only the log is left.
+if [ -n "${AOW_SHA256SUMS:-}" ]; then
+  if [ "$own" != "${AOW_SHA256SUMS#sha256:}" ]; then
+    echo "SHA256SUMS does not match the digest supplied out of band" >&2
+    exit 1
+  fi
+  echo "out-of-band anchor: ENFORCED -- SHA256SUMS matches the digest carried separately"
+else
+  echo "out-of-band anchor: NOT SUPPLIED -- AOW_SHA256SUMS is unset, so every check below is this folder checking itself"
 fi
 
 sha256sum -c SHA256SUMS

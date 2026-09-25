@@ -418,7 +418,45 @@ def test_out_of_band_digest_is_checked_when_supplied(bundle: Path) -> None:
     assert "supplied out of band" in output(result)
 
     good = hashlib.sha256((bundle / "SHA256SUMS").read_bytes()).hexdigest()
-    assert verify(bundle, AOW_SHA256SUMS=good).returncode == 0
+    passed = verify(bundle, AOW_SHA256SUMS=good)
+    assert passed.returncode == 0
+    assert "out-of-band anchor: ENFORCED" in passed.stdout
+
+
+def test_the_transcript_says_when_no_external_anchor_was_supplied(bundle: Path) -> None:
+    # AOW_SHA256SUMS is optional, and install-offline.sh does not set it. So the
+    # ordinary offline install is the bundle checking itself, and the only thing
+    # that can tell a reader which kind of run they are looking at is the log.
+    # Before this line existed, a skipped anchor check and a passed one produced
+    # identical output -- the digest is printed either way -- which made the
+    # strongest sentence in the release proof unverifiable from its own evidence.
+    env = {k: v for k, v in os.environ.items() if k != "AOW_SHA256SUMS"}
+    result = subprocess.run(
+        [BASH, "scripts/verify-bundle.sh", "."],
+        cwd=bundle,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, output(result)
+    assert "out-of-band anchor: NOT SUPPLIED" in result.stdout
+    assert "this folder checking itself" in result.stdout
+    assert "ENFORCED" not in result.stdout
+
+
+def test_the_offline_proof_cannot_fall_back_to_building(bundle: Path) -> None:
+    # compose.tools.yml still carries a `build:` section for the demos image, so
+    # `docker compose run` without --no-build treats a missing bundle tag as a
+    # reason to build -- and demos/Dockerfile's `apk add` needs the egress the
+    # proof exists to show is absent. On a disconnected host that turns a tag
+    # problem into a network error, which is the most misleading failure this
+    # script could produce.
+    prove = (REPO / "scripts" / "prove-offline.sh").read_text()
+    run_line = next(line for line in prove.splitlines() if "run --rm" in line)
+    assert "--no-build" in run_line
+    assert "--pull never" in run_line
 
 
 def test_verification_never_calls_docker() -> None:

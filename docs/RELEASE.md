@@ -3,8 +3,14 @@
 This is the CD half of the project. It is deliberately split at one place:
 **the workflow automates everything up to a verified, reproducible bundle and
 a recorded promotion decision; a human carries the bundle to the offline host
-and installs it.** The target is air-gapped, so an automated network deploy
-to it does not exist and is not simulated here.
+and installs it.** An air-gapped target is what this split is designed for, so
+an automated network deploy across it does not exist and is not simulated here.
+
+One qualification, because the sentence above describes an intent rather than a
+machine: **no such target exists in this project yet.** Every install recorded
+so far ran on a separate Docker engine on the development machine or on a
+hosted CI runner. What that leaves open, and what would close it, is
+[EVIDENCE-physical-airgap.md](EVIDENCE-physical-airgap.md).
 
 ```
 commit on main, CI green
@@ -25,7 +31,7 @@ commit on main, CI green
         v
 Operator, on a connected staging machine   (manual, documented below)
   - re-runs scripts/package-offline.sh to produce the actual bundle bytes
-  - physically carries dist/aow-<sha>/ to the offline host
+  - physically carries dist/aow-<sha>/ to the offline host  [never yet performed]
         |
         v
 Offline host   (manual, documented below)
@@ -258,6 +264,11 @@ if a rollback is needed afterward.
   exercised end to end for that exact commit, and the promotion decision is
   recorded with enough detail to reconstruct it later.
 - Manual and documented, not automated: reproducing the bundle bytes on a
-  staging machine, the physical transfer, the install, and the proof. This is
-  the honest shape of an air-gapped release -- nothing in this repository
-  claims to deploy across that gap, because nothing safely can.
+  staging machine, the install, and the proof. This is the honest shape of an
+  air-gapped release -- nothing in this repository claims to deploy across that
+  gap, because nothing safely can.
+- Documented but **never performed**: the physical transfer itself, and the
+  install on separate physical hardware. It is listed apart from the row above
+  deliberately -- the other manual steps have been run by hand many times, and
+  this one has not been run at all. See
+  [EVIDENCE-physical-airgap.md](EVIDENCE-physical-airgap.md).

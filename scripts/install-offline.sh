@@ -52,6 +52,16 @@ fi
 # tagged them reads as clean here. It is a floor under the claim, not a proof of
 # it -- what proves the archive is self-contained is verify-bundle.sh above,
 # which reads the archive's own bytes and never asks the daemon anything.
+
+# Which engine this was, and what it held. The alias census below answers
+# "had this engine seen this release?"; these two lines answer "which engine,
+# and was it empty?" -- the half of an air-gap claim that no check inside the
+# bundle can make, because the bundle cannot see the machine. Both were
+# previously available only from the CI clean-engine job, which left an
+# operator on a real host copying them into a checklist by hand.
+echo "engine: $(docker info --format '{{.ID}}') docker $(docker version --format '{{.Server.Version}}') on $(docker info --format '{{.OperatingSystem}}') $arch"
+echo "store before load: $(docker image ls -qa | grep -c . || true) images, $(docker volume ls -q | grep -c . || true) volumes, $(docker ps -aq | grep -c . || true) containers"
+
 already=()
 while read -r alias _; do
   test -n "$alias" || continue
