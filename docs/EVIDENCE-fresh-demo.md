@@ -7,8 +7,13 @@ it and the output that came back. Steps that could not be run are recorded as
 pass.
 
 - **Commit under test:** `a21dff9d4b38cdfead8be717db4599fc602ba668` (`review/bootstrap-proof`, branched from `main` at `a21dff9`)
-- **Scope of this branch:** `scripts/bootstrap.sh`, `tests/unit/test_bootstrap.py`, this file. `README.md` and `DEVOPS_REVIEW.md` are deliberately untouched and left for integration.
-- **Date of the run:** 2026-09-25 (UTC timestamps inline)
+- **Scope of §1–§11:** `scripts/bootstrap.sh`, `tests/unit/test_bootstrap.py`, this file — committed as `dfbe0db`. `README.md` and `DEVOPS_REVIEW.md` are deliberately untouched and left for integration.
+- **§12 is a follow-up branch** (`fix/grounded-event-dates`, commits `a1417ff`
+  and `c535faf`) that fixes two of the defects §5.5 and §6.1 reported but did
+  not fix. Where §12 contradicts an earlier section, §12 is the later state;
+  the earlier text is left as written because it is the record of what was
+  observed.
+- **Date of the run:** 2026-09-25, follow-up 2026-09-26 (UTC timestamps inline)
 
 ---
 
@@ -1175,6 +1180,17 @@ exists rather than leaning on the demos' exit codes.
 
 ## 11. Summary, and what this does not prove
 
+This section describes the state at `dfbe0db`. Three of its entries were
+overtaken by the follow-up branch — see **§12**:
+
+- table row 10 (`demos no-data-loss` flaky) — fixed, 12 consecutive passes
+- table row 13 (1502 tests) — now 1507, with five added
+- caveat 6 (the grounding gap) — fixed, 0 leaks in 10 runs
+- caveat 7 (the model-server restart) — did not recur under heavier load
+
+The rest still stands, and the original wording is left as written because it
+is the record of what was observed at the time.
+
 ### What was exercised, and the result
 
 | # | what | result |
@@ -1253,3 +1269,175 @@ docker exec aow-review-dind sh -c 'cd /work && docker compose --env-file .env -f
 # tear down; the outer engine is untouched throughout
 docker rm -f aow-review-dind && docker volume rm aow-review-dind-lib
 ```
+
+---
+
+## 12. Follow-up: two of the reported defects fixed
+
+Sections 1–11 record the bootstrap proof at commit `dfbe0db`, which stands
+unchanged. This section records the follow-up branch
+`fix/grounded-event-dates`, which fixes two of the three findings that §5.5,
+§6.1 and §10.5 had reported rather than fixed. The README edits in §10 are
+still deliberately left for integration.
+
+Both fixes were verified against the same staged system, restarted from the
+same disposable engine volume after a reboot: all 14 images and 11 containers
+came back, so the stack, the database and the 1.2 GB model are the ones §3
+describes.
+
+| commit | what |
+|---|---|
+| `a1417ff` | `services/agent/grounding.py` — reject an event placed on a day no event row covers |
+| `c535faf` | `demos/lib.sh`, `demos/02_no_data_loss.sh` — stop drill 1 racing the outbox drain |
+
+### 12.1 The grounding gap (§6.1) — fixed
+
+**Why nothing caught it.** `violations()` had nine checks. Check 7 tests every
+date in a sentence against `Brief.allowed_dates()`, and that set is the union
+of forecast days, event days, verdict days and window days. On any question
+carrying a forecast — which E2 does — **every day in the window is already
+allowed**, so a weather row for the 26th makes "a concert on the 26th" look
+supported. Checks 1–3 all miss too: the `concert` category *did* have rows, no
+place was named, and no stored event was relabelled.
+
+**The fix, check 3b.** When a clause asserts a scheduled event of a category
+that has rows, every calendar day it names must be a day one of those rows
+covers. Multi-day events cover their whole run; negated clauses assert nothing;
+a category with no rows at all stays check 1's job, so nothing is reported
+twice. It runs per clause, like checks 1–6, and `_clauses()` does not split on
+plain commas — so "Concerts are scheduled on X, Y and Z" stays one clause and
+the assertion and its dates are seen together.
+
+**Live result.** The same probe as §6.1, ten runs of the London question
+against the rebuilt agent:
+
+```
+runs leaking an unsupported event date: 0 of 10     (was ~1 in 8)
+```
+
+The new check fired on **7 of the 10**, and every one is genuine. The agent log
+shows what was rejected each time:
+
+```
+WARNING agent ungrounded answer rejected:
+  places a concert on 2026-09-26, which no stored event row covers;
+  places a concert on 2026-09-27, which no stored event row covers;
+  places a concert on 2026-09-28, which no stored event row covers;
+  places a concert on 2026-09-29, which no stored event row covers;
+  places a concert on 2026-09-30, which no stored event row covers
+```
+
+All five are days London holds no event row on. So the model attempts this far
+more often than the old leak rate of 1-in-8 suggested — the other checks were
+catching some of it incidentally, on the place names it happened to use. There
+were no false positives in the sample.
+
+**No regression.** E1, E2 and the out-of-coverage control all pass again with
+the model's own wording accepted (§6's script, re-run: `all checks passed`), and
+`demos questions` exits 0 with 8 PASS lines and no FAIL.
+
+**Tests.** Five added to `tests/unit/test_grounding.py`: the regression itself,
+the supported-day case, a multi-day event covering its whole run, a negated
+clause, and the no-duplicate-reporting guard. The regression test fails against
+`dfbe0db` with an empty violations list — which is the bug:
+
+```
+>  assert any(DAY3.isoformat() in v and "no stored event row covers" in v for v in found)
+E  AssertionError: []
+```
+
+Full suite: **1507 passed, 2 skipped** in the container with `--network none`
+(was 1502).
+
+### 12.2 The flaky M11 drill (§5.5) — fixed
+
+**The race, measured.** Drill 1 read `published_at` once, straight after
+accepting the record. Publishing is asynchronous — the producer drains its
+outbox on a ~2 s cycle. Five samples on the live stack:
+
+```
+sample 1: first read = None (would have FAILED the old check) | set after ~1s
+sample 2: first read = None (would have FAILED the old check) | set after ~2s
+sample 3: first read = None (would have FAILED the old check) | set after ~2s
+sample 4: first read = None (would have FAILED the old check) | set after ~2s
+sample 5: first read = None (would have FAILED the old check) | set after ~2s
+```
+
+`published_at` was null on the first read **every time**. The check passed at
+all only because the queue-depth loop above it sometimes absorbed the delay;
+when that loop returned immediately — because the queue already held another
+message — the read lost the race. That is the 1-in-3 failure rate of §5.5.
+
+**The fix.** `wait_published`, mirroring the existing `wait_stored`: poll for up
+to 30 s, then fail. Two details are deliberate:
+
+- It uses `.get("published_at")`, not a subscript. A 404 still returns valid
+  JSON — FastAPI's `{"detail": …}` — and the subscript raised there, leaving
+  the caller comparing an empty string against `"None"`. That comparison is
+  true, so a record the system had **never accepted** would have passed. This
+  was the fail-open path flagged in the original audit, and it is closed too.
+- `"unknown"`, which the helper reports when curl itself fails, is treated as
+  not-published rather than as a timestamp.
+
+**Live result.** Twelve consecutive runs:
+
+```
+runs 1-6:   6 passed, 0 failed
+runs 7-12:  6 passed, 0 failed
+```
+
+The publish assertion passed in all twelve, and
+`duplicate message_ids in the database: 0` in all twelve. Against a prior rate
+of one failure in three, twelve clean runs would occur by chance about 0.8% of
+the time.
+
+**Left alone deliberately.** Drill 3's mirror assertion still uses the old
+subscript. It tests `published_at == None` with the broker down, so it fails
+*closed* — the safe direction. Its failure message names the wrong cause when a
+record was never accepted, but that is wording, and outside what this change
+was scoped to do.
+
+### 12.3 The model-server exit (§6.2) — did not recur
+
+The instruction was to investigate only if it recurred. It did not, under a
+heavier load than the one that triggered it: roughly 30 model calls across ten
+E2 probes, two full example runs and a `questions` demo, plus twelve
+no-data-loss drills.
+
+```
+llm  RestartCount=0  Status=running
+agent: "llm unavailable" log lines since the rebuild: 0
+```
+
+So it stays what §6.2 called it: seen once, cause not determined. Not
+investigated further.
+
+### 12.4 A confirmation, from the drills themselves
+
+After the twelve no-data-loss runs, which stop and start the consumer four
+times each:
+
+```
+consumer  RestartCount=6   Status=running
+llm       RestartCount=0
+```
+
+`consumer` is back at a non-zero cumulative count while perfectly healthy —
+independently reproducing the observation in §7.2 that made the first version
+of the health fix wrong. The settling-sample design handles it.
+
+### 12.5 What is still open after this section
+
+1. **The README edits in §10** — left for integration, as planned.
+2. **`demos/01_offline.sh` asserts nothing about the two example answers**
+   (§10.5). Untouched. §6 of this document is the substitute.
+3. **`demos/01_offline.sh`'s per-service egress probe is vacuous for `llm`**
+   (§5.2). Untouched; the structural check covers the claim.
+4. **Drill 3's misleading failure message** (§12.2). Untouched.
+5. **Check 3b is narrow by design.** It only fires when a clause both asserts a
+   scheduled event *and* names a calendar day. A claim with no date in the same
+   clause ("there are concerts all week") is not caught by it — checks 1, 2 and
+   6b cover the shapes of that seen so far, but the class is not closed.
+6. Everything in §11 still applies: this is a nested Alpine engine, not a
+   reviewer's machine; the UI was checked for HTTP 200 only; and the data ages
+   out after 2026-10-08.
