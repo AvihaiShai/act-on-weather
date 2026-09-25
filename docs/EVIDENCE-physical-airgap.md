@@ -287,11 +287,24 @@ mode `100644` and every script is invoked as `bash scripts/…` rather than by i
 executable bit — which is why that property was worth measuring in the first
 place.
 
-Also staged on the medium: a standalone copy of `airgap-evidence.sh`, because
-release A's bundle predates the tooling and its installer cannot report its own
-install (§6.5). The fault-injection artifact and release A are copied by the
-same method; each must be verified on the medium the same way before the drill,
-and the result recorded — measured here for release B only.
+All three drill artifacts were copied the same way and **each was verified on
+the medium**, with its own out-of-band anchor enforced and exit 0:
+
+| On the medium | Anchor supplied | Result |
+|---|---|---|
+| `aow-1890eba…/` — release B | `sha256:2edf2cd2…f6b8` | **ENFORCED**, exit 0, 218 files, 0 pulls |
+| `faultinj-1890eba/` — fault injection | `sha256:5d253ff5…01ce` | **ENFORCED**, exit 0, 220 files, 0 pulls, and the `THIS IS A FAULT-INJECTION TEST ARTIFACT` banner fired from the stick |
+| `aow-a21dff9…/` — release A | `sha256:1bb8b7e9…d205` | **ENFORCED**, exit 0, 0 pulls |
+| `airgap-evidence.sh` | — | Standalone copy, outside every bundle. Release A predates the tooling and its installer cannot report its own install (§6.5), so the target needs this independently of whichever bundle it is installing |
+
+Stick occupancy afterwards: 7.1 GiB of 32 GiB, leaving room for the Docker
+`.deb` set and the `.env`.
+
+Two details worth recording because they are easy to get wrong. Each artifact
+verified against **its own** digest — passing release B's anchor to the
+fault-injection folder is refused, which is what stops a mutated artifact being
+presented under a release's digest. And the fault-injection banner survives the
+copy, because the marker is sealed into `SHA256SUMS` rather than merely present.
 
 **This is transport evidence, not air-gap evidence.** No target host exists yet,
 nothing was installed from the medium, and F10 is unchanged. What it removes is
@@ -771,12 +784,12 @@ that has never held these images, with no network present.
   and the pull counter sees only pulls the daemon completed; Docker emits no
   event for a pull that failed. The unplugged cable is the evidence, the
   photograph is its record, and these are corroboration.
-- **Exercise the transfer medium's *failure* modes.** A clean copy onto FAT32
-  removable media is now measured and verified on the medium (§3.5.2), which the
-  earlier record listed as unproven. What is still untested is the bad case: a
-  torn or interrupted copy, a failing stick, a write that completes short. Those
-  are caught by `SHA256SUMS` — but no recovery step is written for one, beyond
-  copying again.
+- **Exercise the transfer medium's *failure* modes.** Clean copies of all three
+  drill artifacts onto FAT32 removable media are now measured and verified on
+  the medium (§3.5.2), which the earlier record listed as unproven. What is
+  still untested is the bad case: a torn or interrupted copy, a failing stick, a
+  write that completes short. Those are caught by `SHA256SUMS` — but no recovery
+  step is written for one, beyond copying again.
 
 ---
 
