@@ -222,3 +222,31 @@ def test_pull_events_are_named_not_merely_counted() -> None:
     assert "{{.Actor.Attributes.name}}" in source
     assert "pulled_images:" in source
     assert "aow-bundle/* image is a failed proof" in source
+
+
+def test_out_is_pinned_absolute_so_a_relative_path_cannot_re_enter_the_bundle(
+    tmp_path: Path,
+) -> None:
+    # The guard checks the --out directory, then `bundle` cds into the folder it
+    # inspects and emit() appends by the path it was given. A relative --out was
+    # therefore validated outside the bundle and written inside it -- the one
+    # way to satisfy the guard and still create the unlisted file it exists to
+    # prevent. --out is now resolved absolute before anything is written.
+    bundle = tmp_path / "aow-release"
+    bundle.mkdir()
+    (bundle / "SHA256SUMS").write_text("", encoding="utf-8")
+    (bundle / "release-version.txt").write_text("e" * 40 + "\n", encoding="utf-8")
+    (bundle / "images.tar").write_bytes(b"x")
+
+    result = subprocess.run(
+        [BASH, str(REPO / SCRIPT), "--out", "beside.txt", "bundle", bundle.name],
+        cwd=tmp_path,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "beside.txt").read_text(encoding="utf-8").strip()
+    assert not (bundle / "beside.txt").exists()

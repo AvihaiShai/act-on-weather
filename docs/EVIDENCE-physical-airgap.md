@@ -262,6 +262,41 @@ All three are built and verified, waiting on the hardware in §5:
 A is used only as the *earlier* release in the upgrade sequence, which is what
 that role requires. It is not the artifact under proof; B is.
 
+### 3.5.2 The transfer medium, now actually exercised
+
+Until 2026-09-26 this was the one hop with measured *properties* and no measured
+*copy*: [RELEASE-PROOF §4](RELEASE-PROOF.md#4-what-is-still-not-proven) recorded
+"a real transfer medium" as unproven, and the only transfer ever performed was a
+drvfs hypervisor share. A USB stick is now attached and the copy has been made
+and verified **on the medium**.
+
+| | |
+|---|---|
+| Medium | `I:` `CORSAIR`, **FAT32**, 31.99 GiB, effectively empty |
+| Method | `(cd src && tar -cf - .) \| (cd dst && tar -xf -)` — the documented method, not a file manager |
+| Release B copy | 2 min 55 s, 218 files, 2,511,332,623 bytes |
+| `sha256(images.tar)` on the medium | `1d089e3848fa88b2f310ca851968047c6609ec0ae51ed32a874fb3e1f7c5b496` — **identical to source** |
+| `sha256(SHA256SUMS)` on the medium | `2edf2cd2…f6b8` — identical to source |
+| Verification run **on the medium** | out-of-band anchor **ENFORCED**, exit **0**, 15 s, 0 pulls, 0 pull/build markers |
+
+Two things this settles that the earlier size-and-mode analysis could only
+predict. FAT32 carries the bundle: the largest file is the model at
+1,282,439,264 bytes, comfortably under the 4 GiB per-file cap. And FAT32's
+inability to store Unix modes costs nothing here, because every tracked file is
+mode `100644` and every script is invoked as `bash scripts/…` rather than by its
+executable bit — which is why that property was worth measuring in the first
+place.
+
+Also staged on the medium: a standalone copy of `airgap-evidence.sh`, because
+release A's bundle predates the tooling and its installer cannot report its own
+install (§6.5). The fault-injection artifact and release A are copied by the
+same method; each must be verified on the medium the same way before the drill,
+and the result recorded — measured here for release B only.
+
+**This is transport evidence, not air-gap evidence.** No target host exists yet,
+nothing was installed from the medium, and F10 is unchanged. What it removes is
+the risk that the bundle could not survive the hop at all.
+
 ### 3.6 The staging host, recorded so the target's can be compared against it
 
 Captured with `bash scripts/airgap-evidence.sh host staging`:
@@ -399,12 +434,26 @@ why saves a confusing refusal at the worst moment.
    `bootstrap.sh` looks it up by its digest-pinned `python:3.12-slim@sha256:…`
    reference and will not find it. Run `bash scripts/bootstrap.sh` connected, or
    copy `.env.example` and replace every `change-me` with a different value.
-   Carry `.env` **separately from the bundle folder**; `verify-bundle.sh` exempts
-   any file named `.env` from both `SHA256SUMS` and the unlisted-file check, so
-   dropping it in afterwards is by design.
-7. Carry the `SHA256SUMS` digest out of band (§5.4).
-8. If the destructive drills are planned, prepare their extra artifacts now
-   (§6.5).
+   Carry `.env` **separately from the bundle folder**. Dropping it in afterwards
+   is by design, and two different scripts make that safe:
+   `package-offline.sh` excludes any file named `.env` when it seals
+   `SHA256SUMS`, and `verify-bundle.sh` exempts the same name from the
+   unlisted-file check. Neither one does both.
+7. **Download the Docker CE `.deb` set for the target's Ubuntu release**, and
+   put it on the medium beside the bundle. `apt` cannot reach the archive from
+   a disconnected host, so this cannot be done later, and it is the step most
+   often discovered too late — standing at an unplugged machine with no way to
+   install the thing everything else needs. The set is `containerd.io`,
+   `docker-ce`, `docker-ce-cli`, `docker-buildx-plugin` and
+   **`docker-compose-plugin`** (Compose **v2** is required; `apt install
+   docker.io` is not sufficient). Record their filenames and `sha256sum`s.
+8. **Copy `scripts/airgap-evidence.sh` onto the medium as a standalone file**,
+   outside any bundle. It is a capture tool, not part of the artifact, and the
+   target needs it before and between installs — including when the bundle
+   being installed is an older release that does not contain it (§6.5).
+9. Carry the `SHA256SUMS` digest out of band (§5.4).
+10. If the destructive drills are planned, prepare their extra artifacts now
+    (§6.5).
 
 ### 6.2 Transfer
 
@@ -433,10 +482,25 @@ not be quoted.
    Bluetooth PAN, tethering and any BMC/IPMI port. Not a firewall rule, not
    `ip link set down` — the point is that the isolation is not enforced by
    software the stack could influence.
-3. `bash scripts/airgap-evidence.sh --out "$EV/host-target.txt" host target`
-   — this is the census **before the load**. It must show a different engine ID
+3. **Set this machine's evidence directory.** The target is a different
+   machine from §6.1, so it needs its own — nothing carried over:
+
+   ```bash
+   EV=$HOME/aow-evidence && mkdir -p "$EV"
+   ```
+
+   Without it, `--out "$EV/…"` expands to `/host-target.txt` and the capture
+   fails on permissions, or writes to the filesystem root as root.
+4. From **the copied bundle folder** (or using the standalone copy of the
+   script from §6.1.8 by absolute path — either works, it only reads):
+
+   ```bash
+   bash scripts/airgap-evidence.sh --out "$EV/host-target.txt" host target
+   ```
+
+   This is the census **before the load**. It must show a different engine ID
    from §6.1.5, and `images: 0`, `volumes: 0`, `containers: 0`.
-4. Photograph the disconnected link, and keep `ip -br link` from step 3. Both
+5. Photograph the disconnected link, and keep `ip -br link` from step 4. Both
    are point-in-time samples; the photograph is what makes them a claim about
    the window.
 
@@ -568,9 +632,17 @@ Prepare on the connected staging machine:
 Two things the procedure must not get wrong:
 
 - **Carry release A's `.env` into release B's folder.** Do not generate a new
-  one. `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD` are baked into the volumes at
-  creation, and `install-offline.sh` aborts on a mismatch *after* `docker load`
-  has already replaced the images.
+  one. `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD` are baked into the volumes
+  when Postgres and RabbitMQ first initialise, and a new `.env` does not
+  re-initialise them — it just fails to authenticate.
+
+  To be precise about the failure, because the script promises less than it
+  might appear to: `install-offline.sh` has **no password-mismatch check**. It
+  verifies the bundle, loads the images, then runs `dc up -d` and the release
+  smoke check. So a wrong `.env` is not caught by a guard at all — it surfaces
+  as services that will not come up, by which time `docker load` has already
+  replaced the images. The consequence is the one that matters: there is no
+  early abort to rely on, so get the `.env` right before starting.
 - **Drop `AOW_REQUIRE_CLEAN_IMAGE_STORE=1` for the rollback.** Re-installing A
   on an engine that already holds A's tags is a hard failure with that variable
   set. It belongs on the first install only.
@@ -578,6 +650,26 @@ Two things the procedure must not get wrong:
 Expect the rollback to take **≈508 s**: the release smoke check waits out its
 full 480 s deadline before reporting the still-empty forecast. A run that looks
 hung at eight minutes is not hung.
+
+#### Release A cannot report its own install
+
+A is an older release, and its `install-offline.sh` predates the evidence
+instrumentation: **no engine line and no `store before load` census.** In the
+sequence below A is what gets installed first, onto the clean target — which is
+exactly where §7 rows 5, 12 and 13 want those lines.
+
+The workaround, and it must be recorded as one: capture `host` immediately
+before installing A, using the standalone script from §6.1.8:
+
+```bash
+bash /media/<stick>/airgap-evidence.sh --out "$EV/run2-00-host-before-A.txt" host target-reset
+```
+
+That yields the same engine ID and the same `0/0/0` census from outside the
+installer. Rows 12 and 13 are then filled from *that* capture for Run 2, and
+from `install.txt` for Run 1, where release B's own installer prints them. Say
+which in the record; do not present A's install log as containing lines it
+cannot contain.
 
 #### The sequence, in order
 
@@ -617,7 +709,7 @@ failures rather than reruns.
 | 6 | Link state on target + photograph | `ip -br link` in capture 4, plus photo | |
 | 7 | `sha256(images.tar)` on staging | `airgap-evidence.sh --out … bundle dist/aow-<sha>` | |
 | 8 | `sha256(images.tar)` on target — **must equal 7** | `airgap-evidence.sh --out … bundle .` | |
-| 9 | Out-of-band `SHA256SUMS` digest, and how it travelled | recorded at §6.1.7 | |
+| 9 | Out-of-band `SHA256SUMS` digest, and how it travelled | recorded at §6.1.9 | |
 | 10 | Anchor enforced | `verify.txt` must contain `out-of-band anchor: ENFORCED` | |
 | 11 | Verify: exit code, elapsed | `verify.txt` | |
 | 12 | Install: engine line and `store before load` census | `install.txt` | |
@@ -679,8 +771,12 @@ that has never held these images, with no network present.
   and the pull counter sees only pulls the daemon completed; Docker emits no
   event for a pull that failed. The unplugged cable is the evidence, the
   photograph is its record, and these are corroboration.
-- **Exercise the transfer medium's failure modes.** A torn or interrupted copy
-  is caught by `SHA256SUMS` — but no recovery step is written for one.
+- **Exercise the transfer medium's *failure* modes.** A clean copy onto FAT32
+  removable media is now measured and verified on the medium (§3.5.2), which the
+  earlier record listed as unproven. What is still untested is the bad case: a
+  torn or interrupted copy, a failing stick, a write that completes short. Those
+  are caught by `SHA256SUMS` — but no recovery step is written for one, beyond
+  copying again.
 
 ---
 

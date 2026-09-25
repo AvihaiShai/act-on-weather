@@ -279,7 +279,7 @@ bundle's own shape, and are recorded here so nobody has to re-derive them:
 |---|---|---|
 | largest single file | `models/*.gguf`, 1,282,439,264 B; `images.tar` 1,231,824,896 B | both under FAT32's 4 GiB per-file cap, so no split or reassembly step is needed, and none exists |
 | executable bits | `git ls-files -s scripts/ demos/` reports mode `100644` for every `.sh`; every documented invocation is `bash scripts/<x>.sh`, and the container entrypoints are `["bash", …]` | a medium that cannot carry a mode bit breaks nothing |
-| symlinks and path length | no tracked symlink (`git ls-files -s` has no `120000` entry); longest bundle path 41 characters | a case-insensitive, symlink-less filesystem carries the folder intact |
+| symlinks and path length | no tracked symlink (`git ls-files -s` has no `120000` entry); longest bundle path 63 characters | a case-insensitive, symlink-less filesystem carries the folder intact |
 
 What is **not** closed is the copy itself. The transport measured in §3 was a
 hypervisor filesystem share at 218 MiB/s, which no USB 2.0 device and few USB
@@ -327,7 +327,7 @@ written to fail, so that one is explicitly not a CI artefact.
 | commit | `f19224130aa859257f71f276f9bac53d30c7bb2e` | `bf4a2dfd49bc20c1a09f1a2abf646b6891395a7c` |
 | CI run | `36037543463` (`push`; guard, unit, lint, build-and-scan, publish-images and ui-gate all green) | `36041468062` |
 | `SHA256SUMS` digest | `sha256:6dd3652ea70b2af1d358ea2cad52a09bf86d4d230f188dba951fababd9fd3ab9` | `sha256:52e5b1c75064d76f5e46cb604f5c481cfb1fbdb78099b66829c94dc44d068d2f` |
-| bundle | 2.4 GB, 194 files, `images.tar` 1,231,824,896 bytes, 10 images | same shape |
+| bundle | 2.4 GB, 194 listed files, `images.tar` 1,231,824,896 bytes, 10 images | 196 listed files; otherwise the same shape |
 
 Both artifacts' `services` and `ui` digests were checked against the registry
 before packaging: both `application/vnd.docker.distribution.manifest.list.v2+json`,
@@ -443,8 +443,12 @@ adding if this is ever run often.
   drilled A/B bundles. The newer release run `36071276502` validates a clean
   single install on `b21885a`, but it does not repeat the A/B upgrade and
   recovery drill for that commit.
-- **A real transfer medium.** See §2: the file-size, mode-bit and path
-  properties are measured, the copy itself is not.
+- **A real transfer medium — now partly closed.** The file-size, mode-bit and
+  path properties were measured in §2; as of 2026-09-26 the copy itself has
+  been made onto FAT32 removable media and verified *on the medium*, with the
+  out-of-band anchor enforced and `sha256(images.tar)` identical to source. See
+  [EVIDENCE-physical-airgap.md §3.5.2](EVIDENCE-physical-airgap.md). What is
+  still unexercised is the failure case: a torn, short or interrupted copy.
 - **The per-release clean-engine gate passed for `b21885a`.** Release run
   [`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502)
   started a second Docker daemon, verified a distinct engine ID and zero images
