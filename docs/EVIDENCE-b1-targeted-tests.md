@@ -1,8 +1,14 @@
 # Evidence: targeted test coverage (B1)
 
-**Dated 2026-09-25.** Branch `review/b1-targeted-tests`, based on `a21dff9`.
-**Revised after review of `bf1d2a8`** — §1 and §2.1 record what that review
-corrected and why the first fix was not good enough.
+**Dated 2026-09-25, re-verified 2026-09-26.** Branch `review/b1-targeted-tests`,
+based on `a21dff9`. **Revised after review of `bf1d2a8`** — §1 and §2.1 record
+what that review corrected and why the first fix was not good enough.
+
+**This branch is two commits behind `origin/main`**, which advanced to `1890eba`
+(PR #49, the F10 physical air-gap proof) after this work started. There is **no
+file overlap** between the two, so the rebase should be clean. Every number
+below is measured against `a21dff9`; `1890eba` adds tests of its own, so the
+unit count will be higher after a rebase and that is not a regression.
 
 B1 asks for "full tests for all components". This work does **not** claim to
 close it, and nothing here should be read as "B1 is now met" —
@@ -311,6 +317,7 @@ service, so a separate stack already running on this machine was untouched.
 |---|---|---|
 | baseline unit | `docker run --rm --network none aow/tests:b1-review` on `a21dff9` | 1486 passed, 2 skipped, 13.9s |
 | unit | same, on this branch | **1530 passed, 2 skipped**, 14.3s |
+| unit, re-verified 2026-09-26 | image rebuilt from scratch after a host restart | **1530 passed, 2 skipped**, 15.2s |
 | ruff check | `docker run --rm --network none aow/tests:b1-review ruff check services tests scripts` | passed |
 | ruff format | `… ruff format --check services tests scripts` | 108 files already formatted |
 | snapshot manifest | `python3 scripts/snapshot_manifest.py --check` | passed (it counts data, not migrations) |
@@ -423,3 +430,96 @@ not a list of what is safe.
   restore path and a packaged bundle install are release gates that this
   session did not run, and saying they passed would be a claim about something
   nobody checked.
+
+---
+
+## 7. Proposed README wording — NOT YET APPLIED
+
+`CLAUDE.md` requires that a behaviour change update `README.md` in the same
+change. This branch does not, deliberately: `README.md` was held out of its
+scope, and at the time of writing it is being rewritten in the main checkout by
+another session. Editing it here would have produced a near-certain conflict
+with that rewrite, and `DEVOPS_REVIEW.md` records that two tools contending for
+that one file have already destroyed work once.
+
+**So the wording lives here, and applying it is an open task.** Apply it *after*
+the in-flight README rewrite lands, against the rewritten text rather than by
+patching these snippets in blind — the surrounding sentences may have changed.
+
+Nothing in `README.md` is made **false** by this branch. This was checked rather
+than assumed: no test count, no migration count and no schema listing is cited
+anywhere in it; `POST /itineraries` appears only in the write-API authentication
+section; and the committed claim in the offline-limits table — "questions beyond
+it are **refused**, not guessed" (`README.md:612` at `a21dff9`) — remains true,
+because it is about a window a question is entirely beyond. What is missing is
+documentation of three new behaviours.
+
+Line numbers below are for `README.md` **as committed at `a21dff9`**. The copy in
+the main checkout is mid-rewrite and its line numbers and phrasing differ, which
+is the other reason to apply this against the rewritten text rather than by
+line.
+
+### 7.1 Into `## Delivery guarantees, and their boundary`
+
+One row for the failure table, after the `poison message` row:
+
+```markdown
+| the same city-day refreshed twice, redelivered out of order | the older forecast is discarded; the stored row keeps its `as_of` and its revision |
+```
+
+And a paragraph after that table:
+
+> An older forecast redelivered behind a newer one never overwrites it. Two
+> refreshes of the same city-day are two different messages with two different
+> `message_id`s, so `ingest_log` does not deduplicate them — both are stored, and
+> both are supposed to be. What protects the row is that the upsert compares
+> `as_of` and discards the stale one, which also stops a stale re-score of every
+> recommendation for that day. Requeues reorder the queue, so this is a state the
+> stack genuinely reaches. Asserted on every PR by
+> `tests/integration/stale_forecast.py`.
+
+### 7.2 Into `### What gets worded, and what does not`, or as a subsection beside it
+
+> **A snapshot that has partly expired.** A question whose whole window is
+> outside the stored forecast is refused. A question that straddles the edge —
+> the ordinary case a few days after staging — is answered for the days that
+> have rows, and states the others. The days it may speak about come from the
+> forecast rows actually retrieved for that city, not from the advertised
+> coverage window: `weather_first_date` and `weather_last_date` are a global
+> MIN/MAX over every city, so a day inside them is not evidence that this city
+> has a row for it. Missing days are named exactly — consecutive dates as a
+> range, separate ones listed — and the explanation says whether the forecast
+> ends before them, begins after them, or covers them and holds no row. The
+> model is told which dates it may not describe, and any wording that describes
+> one anyway is discarded by the grounding check.
+
+The line at README:47 is worth extending in the same pass, from "a question past
+the window is refused rather than guessed" to something that also covers the
+partial case, for example: "a question past the window is refused rather than
+guessed, and one that only partly reaches past it is answered for the days that
+have data and states the days that do not."
+
+### 7.3 Into `## Updating stored information (M12)`
+
+> **Saving a trip carries its own provenance.** `POST /itineraries` takes the
+> `as_of` of the forecast snapshot the plan's scores were computed from. It comes
+> from the caller because only the caller knows it, and the UI sends the value it
+> already shows under the plan it built. The handler reads nothing from the
+> database, which is what makes a save survive a database outage: it is fsynced
+> into the outbox and answered `202` like any other write. A caller that omits
+> `as_of` is still accepted and the record stores NULL — the field is nullable as
+> of migration `008`. It is deliberately not filled in: refusing would break
+> callers written before the field existed, and substituting the clock would put
+> a provenance on a stored record that nothing scored the plan against. The UI
+> renders the absent case as "scoring timestamp not recorded" and skips the
+> staleness comparison rather than showing a verdict it cannot support.
+
+### 7.4 Also worth a look when applying the above
+
+- The **`## Requirements traceability`** matrix marks **B1** partial. That is
+  still correct and should stay. It may be worth pointing the B1 row at this
+  file, since it is the evidence for what was added and for what is still open.
+- The **`## Known limitations`** section is where the two defects left open in
+  §6 belong if they are still open at submission: the undated-weather-prose hole
+  in `grounding.violations`, and `build_itinerary` still filtering days through
+  the global `queries.in_coverage`.
