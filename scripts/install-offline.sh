@@ -18,6 +18,16 @@ test -f .env || { echo "copy .env.example to .env and set passwords first" >&2; 
 # images.bundle.lock against the CI manifest and the committed IMAGES.lock,
 # and images.tar against images.bundle.lock by verified manifest digest.
 bash scripts/verify-bundle.sh .
+if [ -f FAULT-INJECTION.json ]; then
+  # Said again here, after verification and before anything on this host
+  # changes. An operator who scrolled past the banner during verify is about to
+  # migrate a database with a migration written to fail.
+  echo "refusing to install a fault-injection test artifact without AOW_ALLOW_FAULT_INJECTION=1" >&2
+  echo "  This folder is a deliberately broken TEST artifact (FAULT-INJECTION.json)." >&2
+  echo "  Set that variable only on a disposable host used for the rollback drill." >&2
+  test -n "${AOW_ALLOW_FAULT_INJECTION:-}" || exit 1
+  echo "AOW_ALLOW_FAULT_INJECTION is set: installing a fault-injection artifact deliberately"
+fi
 export AOW_IMAGE_VERSION="$(cat release-version.txt)"
 [[ "$AOW_IMAGE_VERSION" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid release version" >&2; exit 1; }
 
@@ -52,6 +62,16 @@ fi
 # tagged them reads as clean here. It is a floor under the claim, not a proof of
 # it -- what proves the archive is self-contained is verify-bundle.sh above,
 # which reads the archive's own bytes and never asks the daemon anything.
+
+# Which engine this was, and what it held. The alias census below answers
+# "had this engine seen this release?"; these two lines answer "which engine,
+# and was it empty?" -- the half of an air-gap claim that no check inside the
+# bundle can make, because the bundle cannot see the machine. Both were
+# previously available only from the CI clean-engine job, which left an
+# operator on a real host copying them into a checklist by hand.
+echo "engine: $(docker info --format '{{.ID}}') docker $(docker version --format '{{.Server.Version}}') on $(docker info --format '{{.OperatingSystem}}') $arch"
+echo "store before load: $(docker image ls -qa | grep -c . || true) images, $(docker volume ls -q | grep -c . || true) volumes, $(docker ps -aq | grep -c . || true) containers"
+
 already=()
 while read -r alias _; do
   test -n "$alias" || continue

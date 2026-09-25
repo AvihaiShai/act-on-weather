@@ -418,7 +418,45 @@ def test_out_of_band_digest_is_checked_when_supplied(bundle: Path) -> None:
     assert "supplied out of band" in output(result)
 
     good = hashlib.sha256((bundle / "SHA256SUMS").read_bytes()).hexdigest()
-    assert verify(bundle, AOW_SHA256SUMS=good).returncode == 0
+    passed = verify(bundle, AOW_SHA256SUMS=good)
+    assert passed.returncode == 0
+    assert "out-of-band anchor: ENFORCED" in passed.stdout
+
+
+def test_the_transcript_says_when_no_external_anchor_was_supplied(bundle: Path) -> None:
+    # AOW_SHA256SUMS is optional, and install-offline.sh does not set it. So the
+    # ordinary offline install is the bundle checking itself, and the only thing
+    # that can tell a reader which kind of run they are looking at is the log.
+    # Before this line existed, a skipped anchor check and a passed one produced
+    # identical output -- the digest is printed either way -- which made the
+    # strongest sentence in the release proof unverifiable from its own evidence.
+    env = {k: v for k, v in os.environ.items() if k != "AOW_SHA256SUMS"}
+    result = subprocess.run(
+        [BASH, "scripts/verify-bundle.sh", "."],
+        cwd=bundle,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, output(result)
+    assert "out-of-band anchor: NOT SUPPLIED" in result.stdout
+    assert "this folder checking itself" in result.stdout
+    assert "ENFORCED" not in result.stdout
+
+
+def test_the_offline_proof_cannot_fall_back_to_building(bundle: Path) -> None:
+    # compose.tools.yml still carries a `build:` section for the demos image, so
+    # `docker compose run` without --no-build treats a missing bundle tag as a
+    # reason to build -- and demos/Dockerfile's `apk add` needs the egress the
+    # proof exists to show is absent. On a disconnected host that turns a tag
+    # problem into a network error, which is the most misleading failure this
+    # script could produce.
+    prove = (REPO / "scripts" / "prove-offline.sh").read_text()
+    run_line = next(line for line in prove.splitlines() if "run --rm" in line)
+    assert "--no-build" in run_line
+    assert "--pull never" in run_line
 
 
 def test_verification_never_calls_docker() -> None:
@@ -478,3 +516,135 @@ def _rewrite_member(
         if (name == member or (match is not None and data == match))
         else data,
     )
+
+
+# ------------------------------------------------------- fault injection --
+#
+# The rollback drill needs a release that alters the schema and then fails. CI
+# can never publish one -- `main` is branch-protected on four required jobs, and
+# package-offline.sh refuses any tree that is not the commit in its images.lock
+# -- so the artifact is derived here from a bundle that was CI-proven. These
+# cases are about the one risk that creates: that a deliberately broken folder
+# is later mistaken for a release.
+
+
+def _migratable(bundle: Path) -> None:
+    """Give the synthetic bundle a compose.yml the fault script can extend."""
+    _write(
+        bundle / "compose.yml",
+        "name: aow\nservices:\n  migrate:\n    command: >\n"
+        "      psql -v ON_ERROR_STOP=1\n"
+        "           -f /db/migrations/001_init.sql\n"
+        "           -f /db/migrations/002_activities.sql\n",
+    )
+    rewrite_sums(bundle)
+
+
+def _inject(bundle: Path, dest: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [BASH, "scripts/make-fault-injection-bundle.sh", str(bundle), str(dest)],
+        cwd=REPO,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+
+
+def test_fault_injection_artifact_still_verifies_but_announces_itself(
+    bundle: Path, tmp_path: Path
+) -> None:
+    _migratable(bundle)
+    dest = tmp_path / "faultinj"
+    made = _inject(bundle, dest)
+    assert made.returncode == 0, output(made)
+
+    # It has to verify -- the drill installs it -- and it must be impossible to
+    # read that success as a release.
+    assert "THIS IS A FAULT-INJECTION TEST ARTIFACT" in made.stdout
+    assert (dest / "FAULT-INJECTION.json").is_file()
+    assert (dest / "db/migrations/900_fault_injection.sql").is_file()
+    assert "-f /db/migrations/900_fault_injection.sql" in (dest / "compose.yml").read_text(
+        encoding="utf-8"
+    )
+
+    result = verify(dest)
+    assert result.returncode == 0, output(result)
+    assert "THIS IS A FAULT-INJECTION TEST ARTIFACT" in result.stdout
+
+
+def test_the_marker_cannot_be_removed_without_breaking_verification(
+    bundle: Path, tmp_path: Path
+) -> None:
+    # The banner is only worth something if deleting it costs more than
+    # ignoring it. The marker is sealed into SHA256SUMS like any other file.
+    _migratable(bundle)
+    dest = tmp_path / "faultinj"
+    assert _inject(bundle, dest).returncode == 0
+
+    (dest / "FAULT-INJECTION.json").unlink()
+    result = verify(dest)
+    assert result.returncode != 0
+    assert "FAULT-INJECTION.json" in output(result)
+
+
+def test_the_images_are_left_alone_so_they_stay_ci_anchored(bundle: Path, tmp_path: Path) -> None:
+    # Only the tree is mutated. Every container image is still the digest-pinned
+    # set CI published, which is what keeps the drill a drill of this release
+    # rather than of some unrelated folder.
+    _migratable(bundle)
+    dest = tmp_path / "faultinj"
+    assert _inject(bundle, dest).returncode == 0
+
+    for name in (
+        "images.tar",
+        "images.bundle.lock",
+        "ci-images.lock",
+        "IMAGES.lock",
+        "models.lock",
+        "release-version.txt",
+    ):
+        assert (bundle / name).read_bytes() == (dest / name).read_bytes(), name
+
+
+def test_the_installer_refuses_a_fault_injection_artifact_by_default() -> None:
+    # Said at the moment it matters: after verification, before the migration
+    # runs. An operator who scrolled past the banner is about to break a schema.
+    source = (REPO / "scripts" / "install-offline.sh").read_text(encoding="utf-8")
+    assert "AOW_ALLOW_FAULT_INJECTION" in source
+    guard_at = source.index("refusing to install a fault-injection test artifact")
+    load_at = source.index("docker load -i images.tar")
+    assert guard_at < load_at
+
+
+def test_fault_injection_refuses_an_unverifiable_source(bundle: Path, tmp_path: Path) -> None:
+    # Deriving from a folder that never verified would prove nothing about
+    # either artifact.
+    _migratable(bundle)
+    _write(bundle / "compose.yml", "name: aow\n# tampered after sealing\n")
+    made = _inject(bundle, tmp_path / "faultinj")
+    assert made.returncode != 0
+    assert not (tmp_path / "faultinj" / "FAULT-INJECTION.json").exists()
+
+
+def test_fault_injection_refuses_to_derive_from_itself(bundle: Path, tmp_path: Path) -> None:
+    _migratable(bundle)
+    first = tmp_path / "faultinj"
+    assert _inject(bundle, first).returncode == 0
+    again = _inject(first, tmp_path / "faultinj2")
+    assert again.returncode != 0
+    assert "already a fault-injection artifact" in output(again)
+
+
+def test_the_generated_migration_alters_before_it_fails(bundle: Path, tmp_path: Path) -> None:
+    # The drill's whole point is that rolling the images back cannot undo the
+    # schema change, so the migration must succeed at something first. Verified
+    # against a real Postgres 17 separately; this pins the shape.
+    _migratable(bundle)
+    dest = tmp_path / "faultinj"
+    assert _inject(bundle, dest).returncode == 0
+
+    sql = (dest / "db/migrations/900_fault_injection.sql").read_text(encoding="utf-8")
+    created_at = sql.index("CREATE TABLE IF NOT EXISTS fault_injection_marker")
+    failed_at = sql.index("this_column_does_not_exist_and_the_migration_must_fail_here")
+    assert created_at < failed_at

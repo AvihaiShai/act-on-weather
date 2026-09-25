@@ -4,8 +4,12 @@ What was actually run, on what, and what it did and did not establish. The
 README summarises this; the detail is here so a reviewer can judge the evidence
 rather than the summary.
 
-Everything below was executed. Nothing in this document is a plan, and where a
-check was not run it says so.
+Sections 1 to 3 were executed, and where a check inside them was not run they
+say so. Section 4 is the opposite: it is what remains unproven, and its last
+subsection is a procedure nobody has run yet. That subsection is the only plan
+in this file, it is labelled as one, and the procedure itself now lives in
+[EVIDENCE-physical-airgap.md](EVIDENCE-physical-airgap.md) so that a plan and a
+record are never filed under the same heading.
 
 ---
 
@@ -461,48 +465,51 @@ there were no repository rulesets. This is a dated settings read, separate
 from the earlier release workflow promotion records, whose default token
 received HTTP 403 and recorded `verified: false`.
 
-### Closing the physical air gap: the operator procedure
+### How the physical air gap would be closed — a plan, not a record
 
-This is the one item no amount of work on this machine can close, because
-`Microsoft-Hyper-V` and `Microsoft-Hyper-V-All` both report
-`InstallState=2 (Disabled)` here and enabling them needs elevation plus a
-reboot. It is left open deliberately. An operator with the equipment closes it
-like this:
+**Nothing in this subsection has been run.** It is the one item no amount of
+work on this machine can close: as of 2026-09-25 this project has one physical
+machine and no removable media attached, so there is no second host to carry a
+bundle to. A VM on this machine would not satisfy the standard either.
 
-1. A second x86_64 machine, Ubuntu 24.04 with `docker-ce`, that has never held
-   this project's images. Confirm with `docker images` reporting none and
-   `docker info` reporting a different engine ID from the packaging host.
-2. Disable its networking in hardware before the first boot of the stack:
-   ethernet unplugged, Wi-Fi off at the hardware switch or with the adapter
-   removed. Not a firewall rule — the point of this exercise is that the
-   isolation is not enforced by software the stack could influence.
-3. Carry `dist/aow-<sha>/` in on removable media. Copy it with `tar` or
-   `rsync`, not a file manager (§2).
-4. Run, in order: `sha256sum -c SHA256SUMS`;
-   `AOW_SHA256SUMS=sha256:<digest carried out of band> bash scripts/verify-bundle.sh .`;
-   `AOW_REQUIRE_CLEAN_IMAGE_STORE=1 bash scripts/install-offline.sh`;
-   `bash scripts/prove-offline.sh`.
-5. Capture the first-install and offline-answer evidence below. To repeat the
-   upgrade and restore sequence in exercises 12–16 of §3, also bring two
-   distinct CI-proven releases and a deliberately failing test migration,
-   prepared on the connected staging machine. Record their commits and
-   migration lists; the old A/B measurements do not cover today's tree.
+The procedure, the evidence capture sheet, the pass/fail criteria and the exact
+list of what is still missing now live in
+**[EVIDENCE-physical-airgap.md](EVIDENCE-physical-airgap.md)**, kept separate
+from this file precisely so that a plan is never read as a record. That document
+also carries what *was* done in preparation and measured: a release artifact
+built and independently verified for `a21dff9`, with the out-of-band anchor
+enforced and a measured pull count of zero.
 
-Evidence checklist for that run — what has to be captured for it to count:
+What changed here as a result, because the old checklist asked for evidence no
+command produced:
 
-- [ ] `docker info` from both hosts, showing different engine IDs
-- [ ] `docker images` and `docker volume ls` on the target, both empty, **before** the load
-- [ ] a photograph or console record of the disconnected link, plus `ip link` showing the interface down
-- [ ] `sha256sum` of `images.tar` on the source medium and again on the target
-- [ ] the out-of-band `SHA256SUMS` digest, recorded separately from the folder
-- [ ] `install-offline.sh` output including the clean-store census line and the pull count
-- [ ] `prove-offline.sh` exit code and all five sections
-- [ ] the two reviewer questions and the out-of-coverage question, with their as-of stamps
-- [ ] wall-clock timings for transport, verify, install and first answer
+- `scripts/airgap-evidence.sh` captures engine identity, the full store census,
+  link state, bundle digests, exit codes, elapsed time and a **measured** pull
+  count. "0 pull attempts" is no longer a sentence with nothing behind it.
+- `scripts/verify-bundle.sh` now states whether the out-of-band anchor was
+  `ENFORCED` or `NOT SUPPLIED`. A skipped check and a passed check used to
+  produce identical output.
+- `scripts/install-offline.sh` now prints the engine ID and a full
+  image/volume/container census before the load.
+- `scripts/prove-offline.sh` gained `--no-build`, so a missing bundle tag can no
+  longer become a build that needs the egress the proof exists to disprove.
+- `scripts/airgap-evidence.sh --out` replaces `| tee`, which returned *tee's*
+  exit status and so reported a failed install as a pass. It also refuses to
+  write inside a release folder, because the old checklist's `tee evidence/…`
+  created a file `SHA256SUMS` does not list -- the evidence run would have made
+  the next verification fail.
+- `scripts/make-fault-injection-bundle.sh` closes the one gap the drill in §3
+  could not reproduce. CI can never publish a migration written to fail, so the
+  artifact is derived from a verified bundle, its provenance is sealed into
+  `FAULT-INJECTION.json`, and both the verifier and the installer refuse to let
+  it pass for a release. Its failure mode is measured rather than assumed:
+  against a real Postgres 17, `psql` exits 3 **and the schema change survives**,
+  which is exactly why an image rollback is not sufficient recovery.
 
-Until that exists, the strongest claim this project makes is the one in §2: a
-separate Docker engine with an empty image store and no reachable egress. Not
-separate physical hardware, and not a separate VM.
+Until that run exists, the strongest claim this project makes is the one in §2:
+a separate Docker engine with an empty image store and no reachable egress, plus
+the hosted clean-engine gate. Not separate physical hardware, and not a separate
+VM.
 
 ---
 
