@@ -104,12 +104,28 @@ fi
 # scripts under test read the same variable from the environment, so setting it
 # once covers all three.
 COMPOSE_FILES=(-f compose.yml)
+if [ -f release-version.txt ]; then
+  # The backup and restore scripts are separate processes with their own
+  # Compose calls. Pass the same release overlay to them as to this drill.
+  if [ -n "${AOW_COMPOSE_OVERLAY:-}" ] && [ "$AOW_COMPOSE_OVERLAY" != compose.bundle.yml ]; then
+    fail "an installed release requires compose.bundle.yml as its drill overlay"
+    exit 1
+  fi
+  export AOW_COMPOSE_OVERLAY=compose.bundle.yml
+fi
 if [ -n "${AOW_COMPOSE_OVERLAY:-}" ]; then
   [ -f "$AOW_COMPOSE_OVERLAY" ] || { fail "no such Compose overlay: $AOW_COMPOSE_OVERLAY"; exit 1; }
   COMPOSE_FILES+=(-f "$AOW_COMPOSE_OVERLAY")
 fi
 
-dcp() { docker compose --env-file "$ENV_FILE_ARG" -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
+dcp() {
+  if [ -f release-version.txt ] && [ "$1" = up ]; then
+    shift
+    docker compose --env-file "$ENV_FILE_ARG" -p "$PROJECT" "${COMPOSE_FILES[@]}" up --pull never "$@"
+  else
+    docker compose --env-file "$ENV_FILE_ARG" -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"
+  fi
+}
 
 # The separate reader. POSTGRES_USER/POSTGRES_DB come from the shell, not from
 # the env file, so they are the compose defaults -- which is exactly what the

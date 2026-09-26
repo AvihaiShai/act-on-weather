@@ -500,8 +500,10 @@ PR #10 was closed as superseded.
   and varied store history alone: a *freshly published* image of the same media type on
   the same engine.
 - Timings are from single runs, not averages.
-- `release-smoke.py` asserts **data** for weather and scores but only **liveness** for
-  agent, llm, ui and edge. It is a partial gate and `docs/RELEASE.md` says so.
+- `release-smoke.py` asserts **data** for weather and scores, health for agent,
+  llm and ui, and both proxy routes through edge. The UI check reaches the
+  Streamlit HTML shell; it does not execute a page. It is a partial gate and
+  `docs/RELEASE.md` says so.
 - The first full hosted release run completed on `b6b38f9` but its promotion
   record's model field was malformed. PR #37 repaired the writer; the corrected
   artifact was inspected from the successful retry of run `36052133435` (§4).

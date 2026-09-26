@@ -149,7 +149,8 @@ It will say so, and it will not pretend otherwise. The run names the cities the
 provider did not answer for, says their stored forecast is unchanged and still
 carries its older as-of, files the outcome at `GET /refresh/last`, and closes
 with a report that states the refresh did not complete rather than letting the
-success banner stand. **`bootstrap.sh` exits 2**, so a scripted run notices too.
+success banner stand. **`bootstrap.sh` exits 3** (2 is reserved for bad arguments),
+so a scripted run can distinguish an incomplete refresh from a usage error.
 
 The stack is still up and still usable. The refresh can succeed for some cities
 and fail for others, which is why the per-city result is worth reading — and why

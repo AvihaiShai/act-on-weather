@@ -77,6 +77,7 @@ done
 # without it: the bundle loads its images as aow-bundle/<alias>:<commit>,
 # which is not what compose.yml names.
 test -f "$out/compose.bundle.yml" || { echo "compose.bundle.yml is not in the bundle: commit it first" >&2; exit 1; }
+test -f "$out/compose.tools.bundle.yml" || { echo "compose.tools.bundle.yml is not in the bundle: commit it first" >&2; exit 1; }
 cp models/Qwen3-1.7B-Q4_K_M.gguf "$out/models/"
 # Not "images.lock": the repository already tracks IMAGES.lock, and a
 # staging machine with a case-insensitive filesystem (Windows, macOS by

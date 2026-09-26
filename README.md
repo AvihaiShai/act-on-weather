@@ -88,9 +88,9 @@ Windows or macOS, Docker Engine with the Compose plugin on Linux.
 | **Architecture** | verified on linux/amd64. The pinned digests are multi-arch manifests that include arm64, but that combination is untested. The offline release bundle is amd64-only and refuses anything else. |
 
 Some optional paths need more than Docker: `bash` for `make bootstrap`,
-`make verify`, `make backup` and `make restore`; `python3` on the host as well
-for `make verify`; and `git`, `gh`, `python3` and `sha256sum` for building a
-release bundle.
+`make verify`, `make backup` and `make restore`; and `git`, `gh`, `python3` and
+`sha256sum` for building a release bundle. `make verify` runs its Python
+snapshot check in a pinned container.
 
 ---
 
@@ -120,8 +120,9 @@ bash scripts/bootstrap.sh --refresh
 
 The closing report states whether the refresh completed. If it did not, some
 cities may have advanced while others retain older forecasts; check the per-city
-result and each as-of stamp. The command exits non-zero while leaving the stack
-up and usable.
+result and each as-of stamp. The command exits 3 while leaving the stack up and
+usable. Exit 2 means the arguments were invalid; exit 1 means setup or health
+failed.
 
 It creates `.env` only if there is none, generating a distinct random password
 for each `change-me` inside the pinned `python:3.12-slim` image with no network.
@@ -378,6 +379,11 @@ re-fetched while connected. There is no absolute guarantee here.
 docker compose -f compose.tools.yml run --rm demos offline
 ```
 
+In an installed offline release, use `make offline` so the proof runner uses
+the image aliases loaded from the bundle. The Makefile also selects those
+aliases for the other proof and refresh targets when `release-version.txt` is
+present. It passes `--pull never` to their one-shot containers.
+
 That proof checks four things structurally — `backend` really is `internal`, four
 representative services (the model server, the agent, the consumer and the API)
 each fail to open an outbound connection, no hosted-model SDK or endpoint exists
@@ -560,6 +566,11 @@ README put the place count at 289 while the snapshot already held 620.
 | `make dlq` / `make redrive` | list and redrive quarantined messages |
 | `make backup` / `make restore DIR=…` | `pg_dump` plus the three outboxes and the broker definitions; restore defaults to an isolated Compose project |
 | `make monitor` / `make monitor-down` | start and stop the opt-in Prometheus and Grafana overlay, Grafana at <http://127.0.0.1:3000> |
+
+In an installed release, these Makefile commands and the backup/restore scripts
+read `release-version.txt` and select the local bundle images. The proof and
+refresh runners use `--pull never`; restore uses it for service creation and
+startup too.
 
 **The `demos` and `refresh` containers mount the Docker socket**, which is
 root-equivalent access to the host's daemon. That is deliberate: the drills stop

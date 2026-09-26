@@ -33,7 +33,8 @@
 # Exit codes:
 #   0  the stack is up and healthy (or --no-start finished its work)
 #   1  a step failed; the message says which one and what to run next
-#   2  bad usage, or --refresh did not complete (the stack is up either way)
+#   2  bad usage
+#   3  --refresh did not complete (the stack is up either way)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -987,5 +988,5 @@ note "Stop it with 'docker compose down'; that keeps the database and the queue.
 # whose fetch failed did not do what it was asked to do, and a caller that only
 # checks the exit status has to be able to tell. The report above says which.
 if [ "$REFRESH_RESULT" = failed ]; then
-  exit 2
+  exit 3
 fi

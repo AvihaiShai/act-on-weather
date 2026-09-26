@@ -118,6 +118,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -f release-version.txt ]; then
+  export AOW_IMAGE_VERSION="$(tr -d '\r\n' < release-version.txt)"
+  OVERLAY="${OVERLAY:-compose.bundle.yml}"
+fi
+
 COMPOSE_FILES=(-f compose.yml)
 if [ -n "$OVERLAY" ]; then
   [ -f "$OVERLAY" ] || { echo "no such Compose overlay: $OVERLAY" >&2; exit 1; }
