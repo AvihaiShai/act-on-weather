@@ -86,7 +86,7 @@ if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
   # Generated in a container, because this repository has no host-side Python.
   for key in POSTGRES_PASSWORD POSTGRES_WRITER_PASSWORD POSTGRES_READER_PASSWORD RABBITMQ_PASSWORD; do
     printf '%s=%s\n' "$key" \
-      "$(docker run --rm "${AOW_SERVICES_IMAGE:-aow/services:dev}" \
+      "$(docker run --rm --pull never "${AOW_SERVICES_IMAGE:-aow/services:dev}" \
            python -c 'import secrets; print(secrets.token_hex(24))' | tr -d '\r')" \
       >> "$ENV_FILE"
   done
@@ -200,6 +200,13 @@ note "services:  $SERVICES"
 note "env file:  $ENV_FILE${GENERATED_ENV:+  (generated for this run)}"
 note "compose:   ${COMPOSE_FILES[*]}"
 note "image:     ${AOW_SERVICES_IMAGE:-aow/services:dev}  (the helper containers)"
+helper="${AOW_SERVICES_IMAGE:-aow/services:dev}"
+if ! docker image inspect "$helper" >/dev/null 2>&1; then
+  echo "the helper image $helper is not present on this engine." >&2
+  echo "  After a bundle install it is aow-bundle/services:<commit>; set" >&2
+  echo "  AOW_SERVICES_IMAGE, or run this proof from a checkout that built it." >&2
+  exit 1
+fi
 dcp down -v --remove-orphans >/dev/null 2>&1 || true
 # shellcheck disable=SC2086 -- a deliberately word-split service list
 dcp up -d --no-build $SERVICES >/dev/null 2>&1 || { fail "the drill stack did not start"; exit 1; }
@@ -408,7 +415,7 @@ RTO_S=$(( (RESTORE_END - RESTORE_START) + (VERIFY_END - VERIFY_START) ))
 # Computed in a container because `date -d` is GNU-only and macOS does not have
 # it; DISRUPTION_EPOCH is kept as a plain epoch for the same reason.
 read -r RPO_SPAN_S RPO_WINDOW_S <<EOF
-$(docker run --rm -e A="$BACKUP_STARTED_AT" -e B="$B_LAST_ACCEPTED_AT" -e D="$DISRUPTION_AT" \
+$(docker run --rm --pull never -e A="$BACKUP_STARTED_AT" -e B="$B_LAST_ACCEPTED_AT" -e D="$DISRUPTION_AT" \
   "${AOW_SERVICES_IMAGE:-aow/services:dev}" python -c '
 import os
 from datetime import datetime
