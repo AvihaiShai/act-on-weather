@@ -193,7 +193,17 @@ have_image() { docker image inspect "$1" >/dev/null 2>&1; }
 #
 # RESTART_COUNT: how many times Docker has restarted a service's container.
 # Anything unreadable answers 0, so a service is never held back by a failure
-# to measure it. The container id is looked up once per service and kept: the
+# to measure it. The two `|| true`s are what make that true and are not
+# decoration: `set -e` is in force, this function is called as a plain
+# statement inside the poll loop rather than in a condition, and `pipefail`
+# makes the whole substitution non-zero when docker exits non-zero. Without
+# them the script died at the assignment, before the fallback below could run
+# -- with no "bootstrap failed:" line, no "next:" line and a bare exit 1,
+# which is exactly the failure this file exists to prevent. `2>/dev/null`
+# hides the message but not the status. The case that matters is a cached
+# container id that Docker has since replaced, because the id is looked up
+# once and kept for the whole wait.
+# The container id is looked up once per service and kept: the
 # loop polls every 5s for up to 15 minutes and `compose ps -q` is not free. The
 # memo is a flat string rather than an associative array, because `declare -A`
 # needs bash 4 and macOS still ships bash 3.2.
@@ -204,11 +214,11 @@ read_restart_count() {
   _rc_cid="${_CID_CACHE##* $_rc_svc=}"
   _rc_cid="${_rc_cid%% *}"
   if [ -z "$_rc_cid" ]; then
-    _rc_cid="$(dc ps -q "$_rc_svc" 2>/dev/null | tr -d '\r' | head -n1)"
+    _rc_cid="$(dc ps -q "$_rc_svc" 2>/dev/null | tr -d '\r' | head -n1 || true)"
     if [ -z "$_rc_cid" ]; then RESTART_COUNT=0; return; fi
     _CID_CACHE="$_CID_CACHE$_rc_svc=$_rc_cid "
   fi
-  _rc_count="$(docker inspect -f '{{.RestartCount}}' "$_rc_cid" 2>/dev/null | tr -d '\r')"
+  _rc_count="$(docker inspect -f '{{.RestartCount}}' "$_rc_cid" 2>/dev/null | tr -d '\r' || true)"
   case "$_rc_count" in '' | *[!0-9]*) RESTART_COUNT=0 ;; *) RESTART_COUNT="$_rc_count" ;; esac
 }
 
@@ -409,8 +419,18 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
 
     # Write beside the target and move it into place, so an interrupted run
     # cannot leave a half-written .env that `up` would read.
+    #
+    # Created 0600 before a single password is written into it. The redirect
+    # below would otherwise create it under the ambient umask -- 0644 on most
+    # hosts -- and it would stay that way for the whole `docker run`, which is
+    # a second or more on a cold image. Tightening it afterwards closes the
+    # window between the chmod and the move; it does not close that one. This
+    # does, and it is the only way to make the file unreadable by anyone else
+    # for its entire life rather than for most of it.
     tmp="$ENV_FILE.bootstrap.$$"
     trap 'rm -f "$tmp"' EXIT
+    (umask 077; : >"$tmp") || die "could not create a temporary file beside $ENV_FILE." \
+                                  "check that the directory holding $ENV_FILE is writable, then rerun this script"
     if ! generated="$(docker run --rm -i --network none "$PYIMAGE" python -c "$GEN_ENV_PY" \
         < "$TEMPLATE" 2>&1 >"$tmp" | tail -n 1 | tr -d '\r')"; then
       die "generating $ENV_FILE failed." "run 'docker run --rm $PYIMAGE python -V' to check the helper image"
@@ -433,12 +453,12 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
       die "$ENV_FILE appeared while this script was generating one; refusing to overwrite it." \
           "check $ENV_FILE, then rerun this script"
     fi
-    # chmod before the mv, not after. The redirect that created $tmp used the
-    # ambient umask, which is 0644 on most hosts, so tightening it afterwards
-    # left five generated passwords group- and world-readable for the width of
-    # the window between the two calls. Doing it here means the file is never
-    # readable by anyone else at any point, which is what the rest of this
-    # block already takes care to guarantee.
+    # chmod before the mv, not after: tightening the mode once the file is
+    # already at its final name leaves the passwords group- and world-readable
+    # for the width of the window between the two calls. The `umask 077` above
+    # is what covers the longer window, the one the generator runs inside; this
+    # is the belt to that pair of braces, and it also covers a host where the
+    # subshell's umask did not take.
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$ENV_FILE"
     trap - EXIT
@@ -494,6 +514,15 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
 
     # Everything else in compose.tools.yml is the proof runner, which the app
     # does not need in order to run.
+    # Captured into a variable with its own `|| die`, for the same reason the
+    # two lists above are. A failing command substitution inside a `<<<`
+    # redirection does not trip `set -e`: the loop simply reads nothing, runs
+    # zero times, and the check below reports "the tooling images are here
+    # too" on a machine where the list was never read. That is the one shape
+    # of failure this whole step exists to catch, so it must not be the one
+    # shape it cannot see.
+    tools_images="$(dc -f compose.tools.yml config --images | tr -d '\r' | LC_ALL=C sort -u)" \
+      || die "could not list the tooling images from compose.tools.yml." "fix $ENV_FILE and rerun"
     missing_tools=''
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
@@ -501,7 +530,7 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
       have_image "$ref" || missing_tools="$missing_tools $ref"
       # sort -u: two services share the demos image, and naming it twice in
       # the warning reads like two separate problems.
-    done <<< "$(dc -f compose.tools.yml config --images | tr -d '\r' | LC_ALL=C sort -u)"
+    done <<< "$tools_images"
     if [ -n "$missing_tools" ]; then
       warn "the stack can start, but these tooling images are missing:$missing_tools"
       note "They run the proofs; they are not needed to run the app. Build"
@@ -617,6 +646,7 @@ started_at="$(date +%s)"
 deadline=$((started_at + TIMEOUT))
 last_line=''
 last_print=0
+first_poll=1
 
 while :; do
   # --all, because `migrate` runs once and exits 0 and would otherwise vanish
@@ -625,10 +655,14 @@ while :; do
 
   pending=''
   broken=''
+  absent=0
+  counted=0
   for svc in $services; do
+    counted=$((counted + 1))
     line="$(printf '%s\n' "$ps_out" | grep -m1 "^$svc|" || true)"
     if [ -z "$line" ]; then
       pending="$pending $svc(no container)"
+      absent=$((absent + 1))
       continue
     fi
     IFS='|' read -r _ state health code <<<"$line"
@@ -671,6 +705,30 @@ while :; do
     die "a container exited with a failure:$broken" \
         "docker compose logs --tail 50$(printf '%s' "$broken" | sed 's/([^)]*)//g')"
   fi
+
+  # `--wait-only` on a stack that was never started is the one case where
+  # waiting cannot possibly help. Every service reads "(no container)" and the
+  # loop would sit out the whole deadline -- fifteen minutes by default --
+  # before failing with a `next:` line that tells the reader to run
+  # `docker compose logs` against containers that do not exist. The capability
+  # probe above does not catch this: it checks that `ps --format` runs, and on
+  # an empty project it runs perfectly and prints nothing.
+  #
+  # The confirming `ps --all -q` separates "nothing is running" from "that one
+  # `ps` call hiccuped", because only the first is worth dying on. It costs one
+  # extra call, once, on the poll that was going to fail anyway.
+  if [ "$WAIT_ONLY" -eq 1 ] && [ "$first_poll" -eq 1 ] \
+     && [ "$counted" -gt 0 ] && [ "$absent" -eq "$counted" ] \
+     && [ -z "$(dc ps --all -q 2>/dev/null | tr -d '\r' || true)" ]; then
+    if [ "$SKIP_STAGE" -eq 1 ]; then
+      start_cmd="bash scripts/bootstrap.sh --offline"
+    else
+      start_cmd="bash scripts/bootstrap.sh"
+    fi
+    die "no container exists for any service in this Compose project, so there is nothing to wait for. --wait-only polls a stack that is already up; it does not start one." \
+        "$start_cmd"
+  fi
+  first_poll=0
 
   if [ -z "$pending" ]; then
     elapsed=$(( $(date +%s) - started_at ))
