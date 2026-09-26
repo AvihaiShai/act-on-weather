@@ -51,6 +51,12 @@ COPY services/ ./services/
 # the UI, so it is exercised like any other code rather than only by running the
 # command. It is also what `ruff check scripts` lints in CI.
 COPY scripts/ ./scripts/
+# test_backup_restore.py reads demos/06_backup_restore.sh: the restore refuses a
+# target project that still has containers running, and the one thing that must
+# stay true of that guard is that the drill -- whose disruption is its own
+# `down -v` -- is never caught by it. That is an assertion about the drill's
+# order, so the drill has to be here to read.
+COPY demos/ ./demos/
 COPY tests/ ./tests/
 
 RUN useradd -u 10001 -m appuser && chown -R appuser /app
