@@ -405,21 +405,37 @@ from inside a verified release bundle. Set real passwords in `.env` on the first
 install.
 
 **On an upgrade, reuse the previous release's `.env` verbatim.** This is a hard
-requirement, not a convenience: a new release installs over the same volumes, so
-the database still holds the roles the old passwords created. A `.env` with
-freshly generated passwords leaves the stack unable to authenticate against its
-own data. The installer refuses that combination up front, before it loads
-anything.
+requirement, not a convenience, and the installer enforces it rather than
+advising it: a new release installs over the same volumes, so the database still
+holds the roles the old passwords created. It compares `POSTGRES_USER`,
+`POSTGRES_DB` and `POSTGRES_PASSWORD` against the running container's and
+refuses up front, naming the key that differs, before it loads anything.
+Without that check a regenerated password dumps the old database, loads
+gigabytes of images, and only then dies at `migrate` on a failed
+authentication.
+
+**An upgrade also needs the previous release running, so that it can be dumped.**
+The pre-upgrade `pg_dump` is the rollback point, and it is verified — a
+truncated or empty dump is refused before anything is loaded. If the previous
+`pgdata` volume exists but no Postgres is running, the installer **refuses to
+continue** and tells you to start the previous release and re-run, because the
+alternative it used to take was to skip the dump silently, and a silently
+skipped dump is what makes a migration irreversible. `AOW_SKIP_PREUPGRADE_DUMP=1`
+is the explicit way through for an operator who accepts having no rollback
+point; it records that choice in the transcript.
 
 The installer prints the Docker engine ID and the image, volume and container
-counts before loading the bundle, checks the prerequisites and that `.env`
-renders the Compose files before the multi-gigabyte load rather than after it,
-and takes a `pg_dump` of a previous release whether that release is running or
-stopped — a skipped dump is what makes a migration irreversible. It refuses a
-fault-injection test artifact unless `AOW_ALLOW_FAULT_INJECTION=1` is set
-deliberately. The packaged `scripts/prove-offline.sh` runs with `--no-build
---pull never`, so a missing image fails the proof instead of starting a build or
-a pull.
+counts before loading the bundle, and checks the prerequisites and that `.env`
+renders the Compose files before the multi-gigabyte load rather than after it.
+It refuses a fault-injection test artifact unless `AOW_ALLOW_FAULT_INJECTION=1`
+is set deliberately. The packaged `scripts/prove-offline.sh` runs with
+`--no-build --pull never`, so a missing image fails the proof instead of
+starting a build or a pull.
+
+What a finished install has actually shown is that the API serves stored
+forecasts and scores **from inside the stack** — the smoke test runs in the
+`api` container and never traverses nginx, so the published ports are reported,
+not probed. Open <http://127.0.0.1:8080> to check those.
 
 ### Connected refresh
 
