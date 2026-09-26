@@ -60,22 +60,30 @@ MID1=$(curl -s -X POST "$API/recommendations" -H 'Content-Type: application/json
   -d '{"city":"lisbon","forecast_date":"'"$(psql_q 'SELECT min(forecast_date) FROM weather_daily')"'","activity":"drill one paddleboarding"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["message_id"])')
 note "accepted message_id: $MID1"
-DEPTH1=0
-for _ in $(seq 1 10); do
-  DEPTH1=$(queue_depth aow.ingest) || { fail "broker unavailable during consumer-down drill"; break; }
-  [ "$DEPTH1" -gt 0 ] && break
-  sleep 2
-done
-if [ "$DEPTH1" -gt 0 ]; then
-  pass "the accepted record is waiting in the queue with no consumer (depth $DEPTH1)"
-else
-  fail "no queued record while the consumer was stopped"
-fi
+
+# Wait for this record's own publish first, then read the queue. The other
+# order was both the source of the flake and a weaker assertion than it looked:
+# `queue_depth > 0` is satisfied by *any* message, so it could pass on somebody
+# else's record while MID1 was still sitting unpublished in the API's outbox --
+# and when it did, the publish check below lost the race and failed on a system
+# that was working correctly.
 if wait_published "$MID1" 30; then
   pass "the traced ID was published before the consumer restarted"
 else
   fail "the traced ID never reached the broker during the consumer outage"
 fi
+# Once this record's own publish is confirmed and nothing is reading the queue,
+# the message has nowhere else to be, so this is a single read rather than a
+# poll: a zero here is a real finding, not a timing artefact.
+DEPTH1="$(queue_depth aow.ingest)" || DEPTH1=''
+case "$DEPTH1" in
+  '' | *[!0-9]*)
+    fail "could not read the aow.ingest depth while the consumer was stopped" ;;
+  0)
+    fail "the record was published but nothing is queued with the consumer stopped" ;;
+  *)
+    pass "the published record is waiting in the queue with no consumer (depth $DEPTH1)" ;;
+esac
 note "trace: $(trace "$MID1")"
 
 dc start consumer >/dev/null 2>&1
@@ -150,11 +158,20 @@ from services.common.outbox import Outbox
 row = Outbox(config.OUTBOX_PATH).status_of('$MID3')
 print('   ', dict(row) if row else 'MISSING')
 "
-if [ "$(trace "$MID3" | python3 -c 'import json,sys; print(json.load(sys.stdin)["published_at"])')" = "None" ]; then
-  pass "accepted, published_at IS NULL -- the record is owed, on disk"
-else
-  fail "the record was somehow published with no broker"
-fi
+# The same `published` helper drill 1 uses, rather than a bare subscript. The
+# subscript raises on anything that is not an outbox row -- a 404 body, an API
+# that is not answering -- and the caller then compares an empty string, which
+# fails here for the right reason but names the wrong cause. Three outcomes,
+# three messages.
+PUB3="$(published "$MID3")"
+case "$PUB3" in
+  None)
+    pass "accepted, published_at IS NULL -- the record is owed, on disk" ;;
+  unknown | '')
+    fail "could not read the outbox row for the traced ID; the API did not answer" ;;
+  *)
+    fail "the record was somehow published with no broker (published_at=$PUB3)" ;;
+esac
 
 dc start rabbitmq >/dev/null 2>&1
 note "rabbitmq restarted; waiting for the backlog to drain"
