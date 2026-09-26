@@ -23,8 +23,8 @@
 #
 # RERUNNING IT IS SAFE, and that is a requirement rather than a happy
 # accident:
-#   * an existing .env is never read for its values, never rewritten and never
-#     replaced -- it is only checked for leftover `change-me` placeholders;
+#   * an existing .env is never rewritten or replaced. Its bind address is
+#     read for the final report; passwords are only checked for placeholders;
 #   * the model is re-hashed, never re-downloaded (scripts/stage_model.py);
 #   * the pull is skipped when the four pinned images are already here;
 #   * no volume is ever removed. This script never runs `down`, with or
@@ -431,8 +431,8 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
   fi
 
   if [ -f "$ENV_FILE" ]; then
-    # Somebody's working configuration. Not read for its values, not rewritten,
-    # not backed up -- only checked for the one thing that stops `up`.
+    # Somebody's working configuration. Never rewritten or backed up. Check
+    # for placeholders here; the bind address is read only in the final report.
     note "$ENV_FILE exists; keeping it exactly as it is. Nothing was generated."
     left="$(grep -c -E '^[A-Za-z_][A-Za-z0-9_]*=change-me[[:space:]]*$' "$ENV_FILE" || true)"
     case "$left" in '' | *[!0-9]*) left=0 ;; esac

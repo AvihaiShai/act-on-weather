@@ -1,9 +1,15 @@
 # Evidence: the physical air-gap proof (F10)
 
 **Status: OPEN.** The preparation is complete and measured; the proof itself has
-not been run, because this project has one physical machine and no removable
-media. Section 5 names exactly what is missing. Nothing in this document claims
+not been run, because this project has one physical machine and no disposable
+second host. The release files have been verified on removable media, but the
+offline Docker installation files are still missing. Section 5 names exactly
+what is missing. Nothing in this document claims
 a physical air gap has been demonstrated.
+
+The staged USB bundle is from `1890eba`. It is useful for the planned A/B
+recovery drill, but a physical proof of a later release must package, transfer
+and verify that later exact commit too.
 
 Everything in sections 3 and 4 was executed on 2026-09-25 and the numbers are
 transcribed from the runs. Sections 6 and 7 are a plan for someone with the
@@ -388,8 +394,9 @@ Measured on this machine on 2026-09-25:
 The Hyper-V feature state could not be re-read without elevation. It does not
 matter: a VM on this machine would not satisfy F10 either.
 
-**To close F10, four things are needed and none of them can be produced from
-this repository:**
+**To close F10, the following prerequisites must be accounted for.** The
+removable-media transfer has since been completed (§3.5.2); the historical
+host census above records the earlier staging day.
 
 1. **A second physical x86_64 machine** that has never held these images:
    Ubuntu 24.04, ≥8 GiB RAM available to Docker, ≥9 GiB free disk (≈6 GiB for
@@ -402,15 +409,17 @@ this repository:**
    set alongside it, **a 16 GB stick** is the comfortable choice. The largest
    single file is the model at 1,282,439,264 bytes (1.19 GiB), under FAT32's
    4 GiB per-file cap — but exFAT avoids the question. Copy with `tar` or
-   `rsync`, never a file manager (§6.2).
+   `rsync`, never a file manager (§6.2). **Prepared:** the three artifacts and
+   capture script are verified on a 32 GiB FAT32 stick (§3.5.2).
 3. **Docker CE installation media for an offline Ubuntu host** — the `.deb` set
    including `docker-compose-plugin`, since `apt` cannot reach the archive on a
    disconnected machine and Compose **v2** is required. This is the step most
    likely to be discovered too late, standing at an unplugged machine.
 4. **An out-of-band channel for the `SHA256SUMS` digest** (§3.3). If the same
    person carries the digest and the media, the anchor checks that the media was
-   not corrupted, not that it was not substituted. Say which of the two the run
-   claims.
+   not corrupted, not that it was not substituted. The recorded digests were
+   enforced during staging; the target run must record how its operator obtained
+   the digest separately from the medium and what trust claim follows.
 
 ---
 
@@ -803,7 +812,7 @@ that has never held these images, with no network present.
 | Clean-engine release gate | **run for this exact commit**, release run 36137483144, distinct engine, 0/0/0 store, data smoke PASS (§3.2.1) — a connected CI runner, so **not** an air-gap proof |
 | Evidence tooling | **implemented and tested**: 15 new cases for the capture script, 9 new and 1 extended in the bundle-tamper suite, all passing |
 | Procedure | **substantially fixed but not yet operator-clean**: the `.env`, `docker` group, disconnection-order, evidence-path, exit-code and destructive-drill gaps are closed; an independent read found remaining defects in §6 (see `DEVOPS_REVIEW.md`) that must be fixed before anyone follows it |
-| Physical proof | **OPEN** — blocked on a second physical host, removable media, offline Docker install media and an out-of-band channel (§5) |
+| Physical proof | **OPEN** — the media is prepared, but the second physical host and offline Docker install media are missing. The target run must also record its independent digest channel (§5) |
 
 Until that run exists, the strongest claim this project makes remains the one in
 [RELEASE-PROOF §2](RELEASE-PROOF.md#what-this-is-not): a separate Docker engine

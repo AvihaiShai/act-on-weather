@@ -830,6 +830,7 @@ def test_a_landmark_question_is_not_forced_onto_the_history_row(monkeypatch):
         "No events are happening in London this week.",
         "Nothing is on in London during those dates.",
         "There are no concerts available in London this week.",
+        "There is no concert on 2026-09-26.",
     ],
 )
 def test_an_absence_claimed_about_the_city_is_rejected(answer):
@@ -1277,6 +1278,35 @@ def test_a_clause_scoped_to_the_record_is_not_placing_an_event():
         f"{DAY3.isoformat()} is the Free Friday Lunchtime Concert."
     )
     assert grounding.violations(answer, brief) == [], answer
+
+
+@pytest.mark.parametrize("when", ["September 26", "Saturday"])
+def test_unambiguous_yearless_or_weekday_event_claim_is_checked(when):
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    found = grounding.violations(f"A concert is scheduled on {when}.", brief)
+    assert any(
+        DAY3.isoformat() in reason and "no stored event row covers" in reason for reason in found
+    )
+
+
+def test_weather_after_the_event_date_does_not_disable_the_event_check():
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    found = grounding.violations(
+        f"A concert is scheduled on {DAY3.isoformat()}, which will be sunny.", brief
+    )
+    assert any(
+        DAY3.isoformat() in reason and "no stored event row covers" in reason for reason in found
+    )
 
 
 def test_the_weather_in_one_clause_does_not_excuse_a_listing_in_another():

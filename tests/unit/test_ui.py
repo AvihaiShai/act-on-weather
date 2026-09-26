@@ -75,8 +75,10 @@ def _payload_for(url: str, overrides: dict | None = None):
     other case -- `/refresh/last` with nothing recorded, for instance.
     """
     path = urlparse(url).path.strip("/")
-    if overrides and path in overrides:
-        return overrides[path]
+    if overrides:
+        for key in (path, path.split("/")[0]):
+            if key in overrides:
+                return overrides[key]
     for key in (path, path.split("/")[0]):
         if key in FIXTURES:
             return FIXTURES[key]
@@ -471,8 +473,11 @@ def _build(monkeypatch, plan=None, sent=None):
     return built
 
 
-def _reopen(monkeypatch, row):
-    at = _run(monkeypatch, overrides={SAVED: row})
+def _reopen(monkeypatch, row, weather=None):
+    overrides = {SAVED: row}
+    if weather is not None:
+        overrides["weather"] = weather
+    at = _run(monkeypatch, overrides=overrides)
     at = _open_page(at, "trip-planner")
     reopened = next(b for b in at.button if b.label == "Open").click().run()
     assert not reopened.exception, [e.value for e in reopened.exception]
@@ -544,26 +549,16 @@ def test_a_built_plan_with_no_as_of_says_so_rather_than_saying_never(monkeypatch
     assert "as of never" not in captions
 
 
-def test_a_saved_plan_whose_forecast_moved_on_says_so(monkeypatch):
-    """The staleness notice, which the fixture could never trigger.
-
-    The saved itinerary's `as_of` is exactly `coverage.weather_as_of`, so both
-    branches of `render_plan_staleness` were unreachable: inverting its
-    comparison, or deleting the function body, left the suite green while
-    stale scores redrew under the header's current stamp.
-
-    Coverage backfill, not a regression guard: `render_plan_staleness` predates
-    the `as_of` change and this passes with that change reverted. The test that
-    does guard it is the NULL case below.
-    """
+def test_a_legacy_saved_plan_does_not_claim_a_global_stamp_is_city_provenance(monkeypatch):
+    """Old plans have only a global stamp, which may come from another city."""
     reopened = _reopen(monkeypatch, _saved_row(as_of="2026-09-20T06:00:00Z"))
 
     info = " ".join(element.value for element in reopened.info)
-    assert "has been refreshed since this was saved" in info
-    assert "2026-09-23 18:16 UTC" in info, "the notice must name the current stamp"
+    assert "has been refreshed since this was saved" not in info
 
     captions = " ".join(c.value for c in reopened.caption)
-    assert "scored from weather as of 2026-09-20 06:00 UTC" in captions
+    assert "recorded weather timestamp 2026-09-20 06:00 UTC" in captions
+    assert "per-day provenance unavailable" in captions
 
 
 def test_a_saved_plan_with_no_scoring_as_of_is_not_called_stale(monkeypatch):
@@ -580,3 +575,35 @@ def test_a_saved_plan_with_no_scoring_as_of_is_not_called_stale(monkeypatch):
     assert "scoring timestamp not recorded" in captions
     assert "as of never" not in captions
     assert not any("refreshed since this was saved" in e.value for e in reopened.info)
+
+
+def test_other_city_refresh_does_not_mark_plan_stale(monkeypatch):
+    weather = [
+        row for row in FIXTURES["weather"] if row["forecast_date"] in {"2026-09-23", "2026-09-24"}
+    ]
+    row = _saved_row(as_of=weather[0]["as_of"])
+    for day in row["days"]:
+        day["weather_as_of"] = next(
+            item["as_of"] for item in weather if item["forecast_date"] == day["date"]
+        )
+    reopened = _reopen(monkeypatch, row, weather=weather)
+
+    assert not any("refreshed since this was saved" in e.value for e in reopened.info)
+
+
+def test_refresh_of_one_saved_day_is_caught_even_when_latest_stamp_is_unchanged(monkeypatch):
+    weather = [
+        dict(row)
+        for row in FIXTURES["weather"]
+        if row["forecast_date"] in {"2026-09-23", "2026-09-24"}
+    ]
+    weather[1]["as_of"] = "2026-09-25T18:16:43.925372Z"
+    row = _saved_row(as_of=weather[1]["as_of"])
+    for day in row["days"]:
+        day["weather_as_of"] = next(
+            item["as_of"] for item in weather if item["forecast_date"] == day["date"]
+        )
+    weather[0]["as_of"] = "2026-09-24T18:16:43.925372Z"
+    reopened = _reopen(monkeypatch, row, weather=weather)
+
+    assert any("refreshed since this was saved" in e.value for e in reopened.info)

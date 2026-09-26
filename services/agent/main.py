@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date
+from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
 
@@ -418,11 +418,10 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
     # than another, after a partial refresh, or when a single day failed to
     # ingest -- and a day missing from the middle of the window is invisible to
     # any first-to-last comparison, however it is scoped.
-    stored = {
-        str(row["forecast_date"]) for row in queries.forecast(conn, body.city, start=start, end=end)
-    }
-    covered = [d for d in requested if d.isoformat() in stored]
-    uncovered = [d.isoformat() for d in requested if d.isoformat() not in stored]
+    forecast_rows = queries.forecast(conn, body.city, start=start, end=end)
+    covered, missing = queries.stored_forecast_days(requested, forecast_rows)
+    uncovered = [day.isoformat() for day in missing]
+    weather_by_day = {str(row["forecast_date"]): row["as_of"] for row in forecast_rows}
     if not covered:
         raise HTTPException(
             422,
@@ -518,6 +517,9 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
         days.append(
             {
                 "date": key,
+                "weather_as_of": weather_by_day[key].isoformat()
+                if not isinstance(weather_by_day[key], str)
+                else weather_by_day[key],
                 "activity": top["label"] if top else None,
                 "activity_slug": top["activity"] if top else None,
                 "activity_icon": top["icon"] if top else None,
@@ -597,9 +599,10 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
         "start_date": covered[0].isoformat(),
         "end_date": covered[-1].isoformat(),
         "days": days,
-        "as_of": coverage.get("weather_as_of").isoformat()
-        if coverage.get("weather_as_of") and not isinstance(coverage.get("weather_as_of"), str)
-        else coverage.get("weather_as_of"),
+        "as_of": max(
+            datetime.fromisoformat(str(weather_by_day[day.isoformat()]).replace("Z", "+00:00"))
+            for day in covered
+        ).isoformat(),
         "coverage": {
             "first": coverage["weather_first_date"],
             "last": coverage["weather_last_date"],
