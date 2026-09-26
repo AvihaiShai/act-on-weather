@@ -659,7 +659,10 @@ def test_an_unfinished_dump_stops_the_install_before_any_image_is_loaded(
     file is the whole rollback path for a migration an image rollback cannot
     undo. Both the truncated and the empty case are refused here.
     """
-    for label, body in (("truncated", "-- PostgreSQL database dump\nDROP TABLE x;\n"), ("empty", "")):
+    for label, body in (
+        ("truncated", "-- PostgreSQL database dump\nDROP TABLE x;\n"),
+        ("empty", ""),
+    ):
         marker = tmp_path / f"load-called-{label}"
         result = install(
             release, tmp_path, AOW_STUB_DUMP=body, AOW_STUB_LOAD_MARKER=str(marker), **UPGRADE
