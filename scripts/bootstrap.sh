@@ -46,6 +46,10 @@ TIMEOUT=900
 SKIP_STAGE=0
 START=1
 WAIT_ONLY=0
+REFRESH=0
+# Set once the refresh has run, and read by the final report so it can never
+# describe snapshot data as freshly fetched: not-attempted | ok | failed.
+REFRESH_RESULT=not-attempted
 
 # README: 8 GB for Docker (the caps in compose.yml total 6.7 GB) and about
 # 6 GB of disk. Both are warnings, not gates: they are measured through
@@ -97,7 +101,22 @@ What it does, in order:
   5. start         -- docker compose up -d
   6. health        -- poll until every service is healthy, then print the URLs
 
+With --refresh, one more:
+  7. refresh       -- open the egress window and fetch a fresh forecast
+
+What --refresh does and does not update:
+  refreshed   the weather forecast, per city, through the outbox and the queue
+  NOT         places, city facts and events. Those are the committed snapshot
+              in data/snapshot/; the event set is a manually verified sample
+              with a validity timer. Rebuilding them is `make snapshot`, a
+              maintainer step that rewrites files in the repository and expects
+              the diff to be reviewed. There is no marine data at all.
+  A failed fetch is reported as a failure and leaves the stored snapshot in
+  place. It is never presented as fresh.
+
 Options:
+  --refresh       after the stack is healthy, fetch a fresh forecast. Needs a
+                  network. Cannot be combined with --offline.
   --offline, --skip-stage
                   skip connected staging. Checks that .env renders the Compose
                   files, all images are local, and the staged model matches
@@ -120,6 +139,7 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --refresh) REFRESH=1; shift ;;
     --skip-stage | --offline) SKIP_STAGE=1; shift ;;
     --no-start) START=0; shift ;;
     --wait-only) WAIT_ONLY=1; shift ;;
@@ -134,6 +154,17 @@ done
 case "$TIMEOUT" in
   '' | *[!0-9]*) echo "--timeout takes a number of seconds" >&2; exit 2 ;;
 esac
+
+# Caught here rather than fifteen minutes later, at the point where the fetch
+# would fail for a reason the flags already made inevitable.
+if [ "$REFRESH" -eq 1 ] && [ "$SKIP_STAGE" -eq 1 ]; then
+  echo "--refresh needs a network and --offline promises none; pick one" >&2
+  exit 2
+fi
+if [ "$REFRESH" -eq 1 ] && [ "$START" -eq 0 ]; then
+  echo "--refresh acts on a running stack, so it cannot be used with --no-start" >&2
+  exit 2
+fi
 
 # `docker compose` the way demos/lib.sh does it: with --env-file while the file
 # exists, plain before it does, so step 1 and step 2 work on a fresh clone.
@@ -506,12 +537,115 @@ while :; do
 done
 
 # ------------------------------------------------------------------------
+# 7. Refresh (only with --refresh)
+# ------------------------------------------------------------------------
+# Deliberately after the health gate: scripts/refresh.sh acts on a running
+# stack, and a refresh against a half-started one fails in ways that look like
+# a network fault.
+#
+# The exit codes are refresh.sh's own, and they are worth keeping apart --
+# "the fetch failed" and "the egress window would not close" need different
+# reactions from whoever is reading this.
+if [ "$REFRESH" -eq 1 ]; then
+  step "Refresh  Fetching a fresh forecast"
+  note "This opens a bounded egress window, attaches only the ingestor to it,"
+  note "fetches, and closes the window again. Places, facts and events are not"
+  note "touched -- they are the committed snapshot."
+
+  # AOW_PROJECT is what the refresh container uses to decide which stack to
+  # act on, and it defaults to `aow` inside compose.tools.yml -- not to the
+  # project this script is driving. So someone who isolates a second copy with
+  # COMPOSE_PROJECT_NAME alone, which is the documented way to run one, would
+  # have the fetch open an egress window on the *other* stack and refresh that
+  # one instead. Default it here so the two cannot disagree.
+  # Exported rather than prefixed onto the call, because `dc` is a shell
+  # function and an assignment prefix on one of those does not behave the same
+  # way it does on a command.
+  export AOW_PROJECT="${AOW_PROJECT:-${COMPOSE_PROJECT_NAME:-aow}}"
+  note "refreshing the '$AOW_PROJECT' project"
+
+  refresh_rc=0
+  dc -f compose.tools.yml run --rm refresh || refresh_rc=$?
+
+  case "$refresh_rc" in
+    0)
+      REFRESH_RESULT=ok
+      pass "forecast refreshed, egress window verified closed"
+      ;;
+    3)
+      # The one outcome that is worse than a stale forecast.
+      REFRESH_RESULT=failed
+      printf '\n%s   EGRESS WINDOW STILL OPEN%s\n' "$C_RED" "$C_OFF"
+      note "scripts/refresh.sh could not close the egress window (exit 3)."
+      note "The ingestor may still reach the internet. Close it before using"
+      note "this stack as an offline demonstration:"
+      note "  docker network ls | grep aow-refresh"
+      note "  docker network rm <that network>"
+      ;;
+    *)
+      REFRESH_RESULT=failed
+      warn "the refresh did not complete (exit $refresh_rc)"
+      case "$refresh_rc" in
+        1) note "the stack was not in a state where a refresh can run" ;;
+        2) note "the fetch failed for at least one city; the egress window is closed" ;;
+        4) note "accepted and queued, but nothing reached the database in time" ;;
+        *) note "see the output above" ;;
+      esac
+      note "The stored forecast is unchanged: it is the committed snapshot, not"
+      note "a fresh fetch. Retry with: docker compose -f compose.tools.yml run --rm refresh"
+      ;;
+  esac
+fi
+
+# ------------------------------------------------------------------------
 # Report
 # ------------------------------------------------------------------------
 step "Ready"
-note "UI   http://localhost:8080"
-note "API  http://localhost:8000/docs"
+# compose.yml publishes on ${AOW_BIND_ADDR:-127.0.0.1}, so the report has to
+# read the same variable. It used to print localhost unconditionally, which is
+# right on a default run and wrong on every isolated second copy -- and the
+# isolated copy is exactly the case where someone is least able to guess the
+# address they should be using.
+bind="${AOW_BIND_ADDR:-127.0.0.1}"
+if [ "$bind" = 127.0.0.1 ]; then
+  host=localhost
+else
+  host="$bind"
+fi
+note "UI   http://$host:8080"
+note "API  http://$host:8000/docs"
 printf '\n'
-note "Both are published on 127.0.0.1 only. If your browser resolves localhost"
-note "to ::1 and does not fall back, use http://127.0.0.1:8080."
+
+# Said on every run, not only the interesting ones. A reviewer who cannot tell
+# which rows were fetched today and which shipped with the clone cannot judge
+# any answer the system gives, and the UI's as-of stamps are only meaningful
+# next to a statement of what was supposed to have happened.
+case "$REFRESH_RESULT" in
+  ok)
+    note "Data: the weather forecast was fetched just now. Places, city facts"
+    note "and events are the committed snapshot -- they are never auto-fetched."
+    ;;
+  failed)
+    printf '%s   Data: THE FETCH FAILED.%s The forecast shown is the committed\n' "$C_YELLOW" "$C_OFF"
+    note "snapshot, not fresh data. Every answer and chart still carries its"
+    note "own as-of stamp, so nothing here is presented as newer than it is."
+    ;;
+  *)
+    note "Data: the committed snapshot, as cloned. Nothing was fetched -- rerun"
+    note "with --refresh on a connected machine to update the forecast."
+    ;;
+esac
+printf '\n'
+note "Both are published on $bind only, never on a routable interface."
+if [ "$bind" = 127.0.0.1 ]; then
+  note "If your browser resolves localhost to ::1 and does not fall back, use"
+  note "http://127.0.0.1:8080."
+fi
 note "Stop it with 'docker compose down'; that keeps the database and the queue."
+
+# The stack is up either way, and the URLs above work either way -- but a run
+# whose fetch failed did not do what it was asked to do, and a caller that only
+# checks the exit status has to be able to tell. The report above says which.
+if [ "$REFRESH_RESULT" = failed ]; then
+  exit 2
+fi
