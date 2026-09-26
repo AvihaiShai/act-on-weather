@@ -70,9 +70,13 @@ git archive --format=tar HEAD | tar -xf - -C "$out"
 # that is still only in the working tree would leave a bundle that cannot
 # verify or install itself, and `git diff HEAD` above cannot see that because
 # an untracked file is not a difference.
-for needed in install-offline.sh verify-bundle.sh verify-bundle-images.sh bundle-image-manifests.sh; do
+for needed in install-offline.sh verify-bundle.sh verify-bundle-images.sh bundle-image-manifests.sh release-smoke.py; do
   test -f "$out/scripts/$needed" || { echo "scripts/$needed is not in the bundle: commit it first" >&2; exit 1; }
 done
+# Not in scripts/, and the installer cannot run a single Compose command
+# without it: the bundle loads its images as aow-bundle/<alias>:<commit>,
+# which is not what compose.yml names.
+test -f "$out/compose.bundle.yml" || { echo "compose.bundle.yml is not in the bundle: commit it first" >&2; exit 1; }
 cp models/Qwen3-1.7B-Q4_K_M.gguf "$out/models/"
 # Not "images.lock": the repository already tracks IMAGES.lock, and a
 # staging machine with a case-insensitive filesystem (Windows, macOS by

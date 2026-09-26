@@ -1,7 +1,7 @@
 """The UI (M9, M10).
 
-Seven tabs across the top, one rule: nothing is rendered without the as-of stamp
-of the data behind it. The coverage strip is drawn in the header, from
+Nine pages in the navigation, one rule: nothing is rendered without the as-of
+stamp of the data behind it. The coverage strip is drawn in the header, from
 `GET /coverage`, and every chart and answer sits under it.
 
 The UI holds no business logic and no database credentials. It calls the API,

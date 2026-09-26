@@ -38,7 +38,13 @@ while time.monotonic() < deadline:
         if ready():
             print("PASS: API, stored forecast, scores, agent, model, UI and edge")
             break
-    except (OSError, ValueError, KeyError, StopIteration):
+    # AttributeError and TypeError are here because get() returns raw bytes for a
+    # body that is not JSON: `health.get(...)` and `coverage["entities"]` then
+    # raise, and an uncaught raise abandons the whole retry budget on the first
+    # attempt -- the opposite of what a start-up probe should do. A service that
+    # answers with an HTML error page while it is still coming up is exactly the
+    # case this loop exists for.
+    except (OSError, ValueError, KeyError, StopIteration, AttributeError, TypeError):
         pass
     time.sleep(5)
 else:

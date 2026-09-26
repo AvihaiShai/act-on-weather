@@ -110,6 +110,17 @@ so its output cannot satisfy the bundle's digest lock.
 7. Stages the model (`docker compose -f compose.tools.yml run --rm stage`,
    the same command `make stage-fetch` runs) and lets `sha256sum -c
    models.lock` fail the job if it does not match.
+
+   **This gate needs the repository variable `MODEL_BASE_URL` set**, to a
+   mirror that actually carries the pinned Q4_K_M weights. The workflow's own
+   fallback points at `huggingface.co/Qwen/Qwen3-1.7B-GGUF`, which publishes
+   only Q8_0 -- `compose.tools.yml` records that measurement and defaults to
+   the `ggml-org` mirror for exactly this reason. With the variable unset this
+   step therefore fails on an HTTP 404 rather than on a checksum mismatch,
+   which is a confusing way to discover a configuration gap. It is safe either
+   way: `stage_model.py` verifies the hash after download, so a wrong mirror
+   can never stage the wrong weights. `ci.yml` passes the same variable with no
+   fallback at all.
 8. Builds the bundle: `bash scripts/package-offline.sh release/images.lock`,
    unmodified. After `docker save`, the package script fills any omitted
    services/UI config or layer blobs directly from GHCR by digest and hashes
@@ -157,12 +168,21 @@ throwaway Compose project (`COMPOSE_PROJECT_NAME=aow-release-<run id>`),
 generated passwords and cleanup with `down --volumes --remove-orphans`.
 `install-offline.sh` itself runs `--no-build --pull never` and its own
 `scripts/release-smoke.py`; the workflow does not duplicate either command.
-Release run [`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502)
-validated this second-daemon step for merge commit `b21885a`: the runner logged
+
+**What has actually passed this gate, and for which commit.** Release run
+[`36222925158`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36222925158)
+validated the second-daemon step for commit `bfbb48a`, whose `sha` input is
+anchored by its own `aow-promotion-<sha>` artifact: the runner logged
 different engine IDs, an empty image and volume store before loading, complete
-archive verification for all 10 image aliases, and a passing data smoke.
-Earlier hosted release runs installed on the packaging daemon, so their passes
-do not supply this evidence.
+archive verification for every image alias in the bundle, and a passing data
+smoke. Earlier hosted release runs installed on the packaging daemon, so their
+passes do not supply this evidence.
+
+That evidence covers `bfbb48a` and nothing else. **A commit later than the one
+named above carries no clean-engine proof until `release.yml` is dispatched for
+it**, because this gate runs only on that manual dispatch -- not on push, and
+not on merge. Read the promotion record of the release you are installing rather
+than assuming the head of `main` has been promoted.
 
 That smoke test asserts more than liveness, but not a deep functional check:
 it confirms `/health` is ok, `/coverage` reports the `weather` entity has
@@ -174,15 +194,27 @@ edge proxy. It does not exercise agent tool-calling, does not check an LLM
 recommendation was written, and does not render the UI. Read
 `scripts/release-smoke.py` directly for the exact checks.
 
-The second daemon is still on the connected hosted runner. The source-level
-gate checks a clean image store and `--pull never`, but it does not cut host
-egress or prove a physical transfer. F10's manual rig in
-`docs/RELEASE-PROOF.md` §2 used a separate Docker engine with nftables
-blocking DNS, raw-IP TCP and HTTPS, tested from a container on a routable
-network. That rig was not separate physical hardware either. Run `36071276502`
-adds clean-engine install evidence for the exact tar built by that run; it does
-not replace the manual no-egress
-test or a drill on physically disconnected hardware.
+**Three claims live near each other here, and merging them would be the
+single most misleading thing this document could do.** They are:
+
+| claim | what establishes it | what it is not |
+|---|---|---|
+| **The archive is self-contained** | `scripts/verify-bundle-images.sh`, by manifest digest, from the bundle's own bytes | a statement about any host; it is a property of a file, checkable anywhere |
+| **It installs on an empty image store with no pulls** | the gate above -- a second daemon, distinct engine ID, zero images and volumes, `--pull never` | **not** an air-gapped install. It runs on a **connected GitHub-hosted runner**, in a second privileged daemon on the same VM. The engine is clean; the machine is on the internet |
+| **A physical air gap** | nothing in this repository | see [EVIDENCE-physical-airgap.md](EVIDENCE-physical-airgap.md). A VM, a second daemon, a CI runner and a firewall rule are each recorded there as *not* closing it |
+
+So the phrase "air-gapped install proof" appears nowhere in this document for
+the middle row, and should not be added to it. F10's manual rig in
+`docs/RELEASE-PROOF.md` §2 went further than the CI gate -- a separate Docker
+engine with nftables blocking DNS, raw-IP TCP and HTTPS, probed from a container
+on a routable network -- and that rig was still not separate physical hardware.
+The clean-engine gate adds install evidence for the exact tar built by its own
+run; it replaces neither the manual no-egress test nor a drill on physically
+disconnected hardware.
+
+"Air-gapped" is reserved in this project for two things: the runtime property
+Docker enforces on every host (`backend` is `internal: true`, so no application
+service has a route out), and F10 once it is genuinely closed.
 
 ## Operator procedure: staging machine
 
@@ -230,6 +262,24 @@ one-way transfer station, sneakernet). Nothing in this repository automates
 that hop, and nothing should: automating a network path into an air-gapped
 host would defeat the point of it being air-gapped.
 
+**Four parts of this are human acts that no script performs.** They are listed
+because each one is easy to assume has been handled:
+
+- **The transfer itself.** No tool in this repository moves the bundle. A
+  person carries it.
+- **The bundle must arrive extracted**, as a directory, not as an archive of a
+  directory. `verify-bundle.sh` and `install-offline.sh` both run from inside
+  `dist/aow-<sha>/` and read its files by name.
+- **Copy it with `tar` or `rsync`, not a desktop file manager.** The bundle is
+  verified byte for byte against `SHA256SUMS`, and a file manager is free to
+  normalise line endings, drop modes or skip a file it considers unimportant.
+  Any of those turns a good bundle into a failed verification.
+- **The out-of-band `SHA256SUMS` digest has to travel by a different route**
+  than the bundle. `verify-bundle.sh` prints that digest and, given
+  `AOW_SHA256SUMS`, checks it -- but a digest that arrived on the same USB
+  stick as the files it describes anchors nothing, and the script says so in
+  its transcript rather than letting a skipped check read like a passed one.
+
 ## Operator procedure: offline host
 
 From inside the copied `dist/aow-<sha>/` folder:
@@ -242,28 +292,57 @@ bash scripts/verify-bundle.sh .          # the whole gate: SHA256SUMS, no unlist
                                          # checked by manifest digest
 # if the packaging run's SHA256SUMS digest reached you out of band, pin it:
 AOW_SHA256SUMS=sha256:<digest> bash scripts/verify-bundle.sh .
-cp .env.example .env                     # FIRST install only: set real passwords.
-                                         # On an upgrade, copy the previous
-                                         # release folder's .env across instead --
-                                         # see the README's offline-install section.
+cp .env.example .env                     # FIRST install only -- see below.
+                                         # On an upgrade, copy the PREVIOUS
+                                         # release folder's .env across instead.
 bash scripts/install-offline.sh          # docker load, migrate, start, smoke-test
 bash scripts/prove-offline.sh            # run the packaged offline proof
 ```
 
-The [README](../README.md#installing-a-packaged-release) summarizes the install
-guards; the command sequence above is the offline-host procedure. If
-`install-offline.sh` finds a running previous release under the same Compose
-project, it takes a `pg_dump` backup before touching anything -- see
-`scripts/restore-offline.sh`
-if a rollback is needed afterward.
+`.env` is written by hand, on the offline host, in the release folder. Nothing
+generates it there: the bundle ships `.env.example` with placeholders, and a
+first install means opening it and replacing every `change-me` with a different
+password.
+
+**On an upgrade, reuse the previous release's `.env` verbatim, and leave the
+previous release running while you do it.** Both halves are requirements:
+
+- A new release installs over the **same volumes** -- that is what makes it an
+  upgrade rather than a parallel install -- so the database still holds the
+  roles the old passwords created. Regenerated passwords therefore produce a
+  stack that cannot authenticate against its own data, after the installer has
+  already dumped the old database and loaded gigabytes of images. The installer
+  refuses that combination up front instead, comparing `POSTGRES_USER`,
+  `POSTGRES_DB` and `POSTGRES_PASSWORD` against the running container's and
+  naming the key that differs.
+- The pre-upgrade `pg_dump` is the rollback point, and the previous release has
+  to be **running** for it to be taken. It is verified rather than assumed: a
+  truncated or empty dump is refused before anything is loaded. If the previous
+  `pgdata` volume exists and no Postgres is running, the installer refuses to
+  continue and asks you to start the previous release and re-run -- it used to
+  skip the dump silently, which is precisely what made a migration
+  irreversible. `AOW_SKIP_PREUPGRADE_DUMP=1` proceeds without a rollback point
+  and records that in the transcript. See `scripts/restore-offline.sh` for the
+  rollback itself.
+
+The [README](../README.md#installing-a-packaged-release) summarizes these
+guards; the command sequence above is the offline-host procedure.
+
+The installer also checks the host before it commits to anything: the
+architecture and toolchain it actually needs (Linux with GNU coreutils and
+`bash` 4.4 or newer, not merely amd64), the prerequisites, and that `.env`
+renders the Compose files -- all **before** the multi-gigabyte `docker load`,
+rather than after it.
 
 ## What this boundary does and does not claim
 
-- Automated and proven by CI/CD: the commit is tested, the images it
-  publishes are independently re-verified against the registry at release
-  time (not just trusted from a file), the bundle-building recipe is
-  exercised end to end for that exact commit, and the promotion decision is
-  recorded with enough detail to reconstruct it later.
+- Automated and proven by CI/CD, **on a connected hosted runner**: the commit
+  is tested, the images it publishes are independently re-verified against the
+  registry at release time (not just trusted from a file), the bundle-building
+  recipe is exercised end to end for that exact commit, the bundle installs on
+  an empty image store with no pulls, and the promotion decision is recorded
+  with enough detail to reconstruct it later. All of that is per-commit: it
+  says nothing about a commit no one has dispatched the workflow for.
 - Manual and documented, not automated: reproducing the bundle bytes on a
   staging machine, the install, and the proof. This is the honest shape of an
   air-gapped release -- nothing in this repository claims to deploy across that
