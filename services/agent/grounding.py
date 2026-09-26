@@ -440,6 +440,15 @@ class Brief:
     # checked against something, and separate from `days` because a question
     # can cover a day the forecast has no row for.
     window_days: list[str] = field(default_factory=list)
+    # Whether the question was scoped to the weather at all, and which of the
+    # asked days a forecast row actually came back for. These narrow
+    # `allowed_dates` and nothing else. `window_days` stays the whole asked
+    # window on purpose: it is what the traveller typed and what our own gap
+    # sentence prints, so it is vocabulary, and narrowing it there made the
+    # figures in that sentence unquotable by the model we showed it to.
+    weather_scoped: bool = False
+    covered_days: list[str] = field(default_factory=list)
+    uncovered_days: list[str] = field(default_factory=list)
     days: list[DayFact] = field(default_factory=list)
     verdicts: list[VerdictFact] = field(default_factory=list)
     places: list[PlaceFact] = field(default_factory=list)
@@ -465,6 +474,15 @@ class Brief:
         return " ".join(f"{f.title} {f.summary}" for f in self.facts).lower()
 
     def allowed_dates(self) -> set[str]:
+        # For a question about the weather the window here is the days a
+        # forecast row actually came back for, not the days that were asked
+        # about: a half-expired snapshot must not leave the validator willing
+        # to accept a sentence about a day with no data. The flag, not the
+        # emptiness of the list, is what decides -- no covered day at all is a
+        # real answer, and falling back to the asked window would restore the
+        # hole. Only this allow-list narrows; `vocabulary` keeps the whole
+        # asked window.
+        window = self.covered_days if self.weather_scoped else self.window_days
         return (
             {d.day for d in self.days}
             # Every day a multi-day event runs, not only its first: naming the
@@ -472,7 +490,7 @@ class Brief:
             # by the row, and the validator must not read it as invented.
             | {day for e in self.events for day in e.days()}
             | {v.day for v in self.verdicts}
-            | set(self.window_days)
+            | set(window)
         )
 
     def vocabulary(self) -> str:
@@ -536,6 +554,9 @@ def build(result: Retrieval) -> Brief:
         country=str(city.get("country") or ""),
         question=resolution.question,
         window_days=[d.isoformat() for d in resolution.window.days()] if resolution.window else [],
+        weather_scoped=result.weather_scoped,
+        covered_days=list(result.covered_days),
+        uncovered_days=list(result.uncovered_days),
         event_categories=list(getattr(resolution, "event_categories", []) or []),
         interests=list(resolution.interests),
         named_activities=list(resolution.activities),
@@ -646,6 +667,55 @@ def _stale_feed_sentence(result: Retrieval, category: str | None = None) -> str:
     )
 
 
+def _date_runs(days: list[str]) -> str:
+    """Consecutive dates as ranges, everything else listed.
+
+    A single first-to-last span is wrong the moment the missing days are not
+    one block: asked about a week whose middle day failed to ingest, "no
+    weather for 2026-09-25 to 2026-10-01" denies five days that are stored.
+    Only genuinely consecutive dates are collapsed.
+    """
+    runs: list[list[date]] = []
+    for value in sorted(date.fromisoformat(d) for d in days):
+        if runs and value - runs[-1][-1] == timedelta(days=1):
+            runs[-1].append(value)
+        else:
+            runs.append([value])
+    return ", ".join(str(run[0]) if len(run) == 1 else f"{run[0]} to {run[-1]}" for run in runs)
+
+
+def _partial_coverage_sentence(result: Retrieval, city: str) -> str:
+    """Name the missing days, and explain the absence without overclaiming.
+
+    The explanation has to match where the days sit relative to the stored
+    window. Saying "the forecast ends on X" is true for days past the end and
+    false for days before the start -- and for a day inside the window with no
+    row it is not merely imprecise, it points at the wrong cause entirely.
+    """
+    missing = result.uncovered_days
+    first = str(result.coverage.get("weather_first_date") or "")
+    last = str(result.coverage.get("weather_last_date") or "")
+    before = [d for d in missing if first and d < first]
+    after = [d for d in missing if last and d > last]
+
+    if first and last and after and not before and len(after) == len(missing):
+        why = f"The stored forecast ends on {last}"
+    elif first and last and before and not after and len(before) == len(missing):
+        why = f"The stored forecast begins on {first}"
+    elif first and last:
+        # Either both ends, or a day inside the window that has no row for this
+        # city -- `coverage` is a global MIN/MAX, so being inside it proves
+        # nothing about this city.
+        why = f"The stored forecast covers {first} to {last} and has no row for {city} on them"
+    else:
+        why = "No forecast is stored at all"
+
+    return (
+        f"No weather is stored for {_date_runs(missing)} in {city}. {why}, so those days "
+        f"are left out rather than guessed. Refresh the snapshot while connected to extend it."
+    )
+
+
 def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
     from .router import activity_meta
 
@@ -680,6 +750,11 @@ def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
                 )
             )
 
+    if result.uncovered_days:
+        gaps.append(
+            Gap("coverage:partial", _partial_coverage_sentence(result, brief.city)),
+        )
+
     if result.resolution.categories and not brief.places:
         wanted = ", ".join(i.replace("_", " ") for i in brief.interests) or "those interests"
         gaps.append(Gap("places", f"No place is on record in {brief.city} for {wanted}."))
@@ -713,6 +788,14 @@ def prompt_block(brief: Brief) -> str:
     if brief.days:
         lines.append("\nStored daily forecast:")
         lines.extend(f"  {day.day}: {day.text}" for day in brief.days)
+
+    # Said before the rows rather than after them: the model has just been told
+    # which dates were asked about, and without this the next thing it sees is
+    # a shorter list of days with no explanation of why it is shorter.
+    partial = [g for g in brief.gaps if g.subject == "coverage:partial"]
+    if partial:
+        lines.append("\nDATES WITH NO STORED WEATHER -- do not describe these days at all:")
+        lines.extend(f"  {gap.text}" for gap in partial)
 
     activity_gaps = [g for g in brief.gaps if g.subject.startswith("activity:")]
     if activity_gaps:
@@ -858,8 +941,8 @@ def render(brief: Brief) -> str:
 def violations(answer: str, brief: Brief) -> list[str]:
     """Sentences in `answer` that assert something no fact in `brief` carries.
 
-    Eleven checks, each written for a failure that was actually observed. They
-    are numbered 1-9; 3b and 6b are variants of the check they sit beside,
+    Twelve checks, each written for a failure that was actually observed. They
+    are numbered 1-9; 3b, 4b and 6b are variants of the check they sit beside,
     lettered rather than renumbered so a log line written last month still
     names the same check. All of them work on the model's prose only -- the gap
     block and the as-of footer are appended afterwards and are code's own
@@ -885,8 +968,19 @@ def violations(answer: str, brief: Brief) -> list[str]:
     # Whether the question was about scheduled things, which is what lets check
     # 6b read a clause that says "nothing is on" without naming an event.
     asked_about_events = bool(brief.event_categories or brief.events)
+    # Our own gap sentences, one at a time. The prompt shows the model these
+    # and asks it not to repeat them; the small model sometimes repeats them
+    # anyway, which is why `gap_block` already drops a verbatim repeat. Code's
+    # own words cannot be the model's invention, and without this the dates and
+    # figures they name -- which are precisely the days no row carries -- fail
+    # checks 7 and 9, throw the whole answer away, and tell the operator the
+    # rows do not support a sentence we wrote ourselves. A paraphrase is still
+    # checked: only the wording we guarantee is exempt.
+    own_words = {s.lower() for gap in brief.gaps for s in _sentences(gap.text)}
 
     for raw in _sentences(answer):
+        if raw.lower() in own_words:
+            continue
         # Checks 1-6 run per clause, so a negation in the tail of a sentence
         # cannot cover an assertion at its head.
         for clause in _clauses(raw):
@@ -990,6 +1084,38 @@ def violations(answer: str, brief: Brief) -> list[str]:
             verdict = any(_says(sentence, word) for word in VERDICT_WORDS)
             if verdict and not brief.verdicts:
                 found.append("gives a suitability verdict with no stored score")
+
+            # 4b. The weather described where no forecast row was retrieved.
+            #
+            #     Every other weather check needs a date to test. Check 7 tests
+            #     the days a sentence names, and a sentence that names none
+            #     walks past all of them: "Rome is warm and dry this week"
+            #     against a brief holding no `DayFact` is the whole forecast
+            #     invented, and it passed clean. The shape that produces it is
+            #     ordinary rather than exotic -- `queries.coverage` is a global
+            #     MIN/MAX, so the coverage gate lets the question through
+            #     because some *other* city is still inside the window, the
+            #     retrieval comes back with no row for this one, and the model
+            #     writes the week from its weights.
+            #
+            #     Shaped like check 4 above: the trigger is the absence of the
+            #     rows, not a bad value in the prose. The escape hatches are
+            #     the ones our own gap sentence uses -- a negated clause and a
+            #     clause scoped to the record are talking about the absence
+            #     rather than asserting through it -- plus a weather word the
+            #     retrieved background prose already carries, which is a
+            #     paraphrase of a stored fact and not a forecast.
+            #
+            #     It is all-or-nothing on the rows, deliberately. A partially
+            #     covered week has `DayFact`s, so an undated claim over it is
+            #     not caught here; catching that needs a notion of which day a
+            #     clause is about, which this file does not have and should not
+            #     guess at.
+            if not brief.days and not negated and not on_record:
+                for word in WEATHER_WORDS:
+                    if _says(sentence, word) and not _says(supporting, word):
+                        found.append("describes the weather with no stored forecast row")
+                        break
 
             # 5. A verdict on an activity this city has no row for. The
             #    observed shape is agreement followed by an invented

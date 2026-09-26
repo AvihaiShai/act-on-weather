@@ -327,6 +327,16 @@ def test_itinerary_title_uses_correct_day_count(monkeypatch, length, expected):
     monkeypatch.setattr(main.queries, "cities", lambda _conn: [city])
     monkeypatch.setattr(main.queries, "coverage", lambda _conn: coverage)
     monkeypatch.setattr(main.queries, "recommendations", lambda *_args, **_kwargs: [])
+    # The planner decides which days it may plan from this city's own forecast
+    # rows; the coverage window is a global MIN/MAX and cannot answer that.
+    monkeypatch.setattr(
+        main.queries,
+        "forecast",
+        lambda *_a, **_k: [
+            {"forecast_date": today + timedelta(days=offset), "as_of": str(today)}
+            for offset in range(length)
+        ],
+    )
     monkeypatch.setattr(main.queries, "places", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(main.queries, "events", lambda *_args, **_kwargs: [])
     # Asked only when the retrieval above comes back empty, so a gap can

@@ -302,6 +302,19 @@ class Retrieval:
     # and when the newest of them was last checked. It turns a bare "nothing on
     # record" into a statement about the feed rather than about the city.
     expired_events: dict[str, Any] = field(default_factory=dict)
+    # Whether this question was scoped to the weather at all. A pure `where`
+    # question is answerable from a fully expired snapshot, so it must never be
+    # narrowed by the two lists below -- and an empty `covered_days` means
+    # "this question asked about weather and got no day", which is a different
+    # thing from "weather was never in scope". Only the flag tells them apart.
+    weather_scoped: bool = False
+    # Days inside the asked window that the stored forecast has a row for, and
+    # days it does not, both derived from the rows that came back. The
+    # whole-window case is a refusal above; this is the partial case, which is
+    # what a snapshot looks like a few days after it was staged and is
+    # therefore the ordinary state rather than the odd one.
+    covered_days: list[str] = field(default_factory=list)
+    uncovered_days: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any(
@@ -447,8 +460,13 @@ class Router:
         weather_needed = (
             bool({"weather", "activities"} & set(resolution.intents)) and not resolution.where_only
         )
-        covered_days = [d for d in window.days() if queries.in_coverage(coverage, d)]
-        in_cov = bool(covered_days)
+        # Named for what it is: the asked days that fall inside the *global*
+        # coverage window. `queries.coverage` is a MIN/MAX over every city, so
+        # this says nothing about whether this city has a row -- that is
+        # `result.covered_days` below, derived from the rows that came back.
+        # The two were both called `covered_days` and are not the same thing.
+        in_window_days = [d for d in window.days() if queries.in_coverage(coverage, d)]
+        in_cov = bool(in_window_days)
         if weather_needed and not in_cov:
             first, last = coverage["weather_first_date"], coverage["weather_last_date"]
             return Retrieval(
@@ -462,9 +480,10 @@ class Router:
                 ),
             )
 
-        start = covered_days[0] if covered_days else window.start
-        end = covered_days[-1] if covered_days else window.end
+        start = in_window_days[0] if in_window_days else window.start
+        end = in_window_days[-1] if in_window_days else window.end
         result = Retrieval(resolution, coverage, in_cov)
+        result.weather_scoped = bool(weather_needed)
         city_id = resolution.city["id"]
 
         # A question that asked only where is not asked about the weather, so
@@ -489,6 +508,22 @@ class Router:
                 result.recommendations = [
                     row for row in result.recommendations if row["activity"] in named
                 ]
+
+            # Which days the answer may speak about, taken from the rows that
+            # actually came back rather than from the coverage window.
+            #
+            # `queries.coverage` reports a global MIN/MAX over `weather_daily`
+            # across every city, and `in_coverage` never sees the city, so the
+            # window above says "covered" for a day that this city has no row
+            # for -- whenever one city was ingested further ahead than another,
+            # or a single day failed to ingest. Deriving this from the returned
+            # rows is the only version that is true per city, and it is also
+            # what makes a missing day in the *middle* of the window visible.
+            stored = {str(row["forecast_date"]) for row in result.forecast}
+            result.covered_days = [d.isoformat() for d in window.days() if d.isoformat() in stored]
+            result.uncovered_days = [
+                d.isoformat() for d in window.days() if d.isoformat() not in stored
+            ]
 
         # The `where` route. An activity the question named is located from its
         # own declared venue categories, not from the general places list --

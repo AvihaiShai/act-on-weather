@@ -45,6 +45,18 @@ verified listing has expired and a default run reports no current events. The
 expiry is derived, not written into the rows: `AOW_EVENT_RECHECK_DAYS` (default
 21) from each listing's `checked_at`. Every answer and every chart carries its
 as-of stamp, and a question past the window is refused rather than guessed.
+
+A question that only *partly* reaches past the window — the ordinary case a few
+days after the snapshot was taken — is answered for the days that have rows and
+names the days that do not, rather than being refused whole or quietly
+shortened. Which days those are comes from the forecast rows stored for that
+city, not from the window above: the coverage in this table is the span across
+all five cities, so a date inside it is not by itself evidence that a given city
+has a row for it. The missing dates are listed in the answer, the model is told
+it may not describe them, and any wording that describes one anyway is
+discarded. The trip planner reads the same rows: it plans the days the chosen
+city actually has, names the rest as a stated gap rather than offering them
+unscored, and refuses outright for a city it holds nothing for in the window.
 [Connected refresh](#connected-refresh) moves the weather window forward.
 
 The verified event set is 55 rows across all five cities, and it is a
@@ -310,6 +322,22 @@ record; none of them lose it. The mechanism is at-least-once delivery plus
 idempotent writes, keyed on the `message_id` that is inserted into `ingest_log`
 in the same transaction as the business write.
 
+**An older record redelivered late does not overwrite a newer one.** Two
+refreshes of the same city and day are two messages with two `message_id`s, so
+the idempotency key does not collapse them — both are stored, and both should
+be. What protects the row is that the weather upsert compares `as_of` and
+discards the older one, which also stops a stale re-score of that day's
+recommendations. Requeues reorder a queue, so this is a state the stack reaches
+in ordinary operation rather than a theoretical one.
+
+**A write never reads the database.** `POST /itineraries` carries the `as_of` of
+the forecast snapshot its scores were computed from, supplied by the caller,
+because a handler that went to Postgres for that value would block for the length
+of an outage and lose a save the outbox was ready to accept. A caller that omits
+it is accepted anyway and the record stores no scoring timestamp; the UI then
+says so rather than comparing the plan against the current window, because an
+invented provenance is worse than a missing one.
+
 **Not covered**, stated plainly: a destroyed volume, a full disk, and data that
 was never accepted in the first place. Weather that was never fetched can be
 re-fetched while connected. There is no absolute guarantee here.
@@ -397,13 +425,16 @@ docker run --rm aow/tests:dev
 
 Dependencies are baked into that image at build time, so the run itself makes no
 network call; CI runs the same container with `--network none`. `make test` is
-the shorthand. The unit suite is 38 modules under `tests/unit/`, covering the
+the shorthand. The unit suite is 44 modules under `tests/unit/`, covering the
 rule engine's truth table, envelope round-tripping and the rejection of malformed
 messages, payload validation, the outbox's two load-bearing properties (accepting
 the same message twice is a no-op, and an accepted-but-unpublished record
-survives the process dying), the agent's date parsing and intent matching, the
-planner, API responses, UI rendering, the compose port bindings, and the snapshot
-counts quoted in this file. The release artefacts have their own suites:
+survives the process dying), the consumer's ack decision (acked on success,
+dead-lettered on a poison message, requeued on anything else), the agent's date
+parsing and intent matching, what an answer may say when the snapshot covers only
+part of the question, the planner, API responses including a save accepted while
+the database is unreachable, UI rendering, the compose port bindings, and the
+snapshot counts quoted in this file. The release artefacts have their own suites:
 `test_bundle_tamper.py`, `test_bundle_archive.py` and `test_airgap_evidence.py`
 cover bundle integrity, archive completeness and the evidence-capture tool.
 
@@ -439,7 +470,13 @@ stopped, the broker stopped and the database stopped, and through the ingestor
 with the broker stopped and the database stopped. It then reconciles and replays
 a confirmed envelope, restarts everything, and asks a separate reader connection
 for all of the traced IDs at once. Any missing ID fails the job, and so does any
-duplicate.
+duplicate. The same script also redelivers an older forecast for a city-day that
+already has a newer one, and then redelivers one with an identical `as_of`, and
+asserts the stored row keeps its `as_of` and its revision through both — the
+ordering case the idempotency key cannot catch, because the two refreshes are
+two different messages. And it saves an itinerary with no scoring timestamp at
+all, against a real database, which is the only way to prove the column is
+genuinely nullable rather than merely declared so.
 
 The `guard` job is what keeps this README honest. It fails the build if a pulled
 image or a Dockerfile base is not pinned by digest, if a digest disagrees with
@@ -597,18 +634,23 @@ tunnel has every route.
   facts and throws away wording that fails, falling back to a deterministic
   rendering of the same rows. Each check closes a failure that was actually
   observed; together they do not amount to "nothing unsupported can ever be
-  said". Three gaps are known and open:
+  said". A weather claim must now rest on a stored row whether or not it
+  names a day: with no forecast row retrieved for the city, "Rome is warm and
+  dry this week" is rejected, while "no forecast is on record for Rome" is not.
+  What the guard still gives up is narrower, and all of it is deliberate:
   * an event claim that names **no calendar date** — "there are concerts all
     week" — is outside the dated-claim check, which needs a date in the clause
     to test, and so is one that names a **relative or year-less** day ("on
     Friday"), which the date parser will not guess at;
-  * an **undated weather claim** has no check at all: "Rome is warm and dry
-    this week" passes against an empty brief, where a dated equivalent would
-    not;
-  * **`build_itinerary` filters days through the global coverage query**
-    (`services/agent/main.py`), which carries no city predicate, so the planner
-    can still offer a day the selected city has no row for; it renders as "no
-    scored activity" rather than as a stated gap.
+  * the weather check is **all-or-nothing on the retrieved rows**. It fires
+    when the city has no row at all, not when it has some: over a week that is
+    half covered, "warm and dry all week" still passes, because deciding which
+    day an undated clause is about is a judgement the validator does not make;
+  * only the **verbatim** coverage-gap sentence is exempt from the date and
+    figure checks. The model is handed that sentence and asked not to repeat
+    it; when it paraphrases instead, the paraphrase is rejected. The traveller
+    still gets the correct answer from the deterministic rendering, but the
+    operator note reads as a grounding failure when it is a rewording.
 
   The dated event-claim check deliberately gives up two more shapes, because
   the first version of it rejected correct answers on the assignment's own
@@ -621,7 +663,9 @@ tunnel has every route.
 
   The dated event-claim check is measured in
   [docs/EVIDENCE-fresh-demo.md](docs/EVIDENCE-fresh-demo.md) §12.1; §12.5 and
-  §12.6 record what it does not cover and why it was narrowed.
+  §12.6 record what it does not cover and why it was narrowed. The
+  weather-claim check and the per-city coverage work are measured in
+  [docs/EVIDENCE-b1-targeted-tests.md](docs/EVIDENCE-b1-targeted-tests.md).
 * **The enricher polls** rather than binding to the weather stream. A deliberate
   trade: no second delivery branch means no silent partial fan-out.
 * **Per-message accounting starts at an accepted outbox envelope.** Enrichment
@@ -707,7 +751,7 @@ command you can run.
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh, re-enrichment | `… demos update`; `make refresh-check` |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml` and `release.yml`; release tooling in `scripts/`, including `airgap-evidence.sh` (captures engine identity, image/volume census, link state, bundle digests and exit codes) and `make-fault-injection-bundle.sh` (derives the deliberately-broken artifact for the rollback drill) | `gh run list`; [docs/RELEASE.md](docs/RELEASE.md) |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates; component and end-to-end depth remains incomplete | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md) |
+| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates; component and end-to-end depth remains incomplete | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
 | B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at <http://127.0.0.1:3000> |
 | B3 | Automatic recovery from failures | **partial** — reconnect with backoff, `restart: unless-stopped`, healthchecks, automatic re-enrichment, and an operator backup/restore with a measured RPO and RTO | `make backup-restore`; then `… demos no-data-loss` |
 

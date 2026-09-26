@@ -513,6 +513,13 @@ def plan(monkeypatch, rows: list[dict]):
     )
     monkeypatch.setattr(main.queries, "places", lambda *_a, **_k: [])
     monkeypatch.setattr(main.queries, "events", lambda *_a, **_k: [])
+    # The one day this city holds. The planner reads it rather than the global
+    # coverage window, so a fixture without it plans nothing at all.
+    monkeypatch.setattr(
+        main.queries,
+        "forecast",
+        lambda *_a, **_k: [{"forecast_date": TODAY, "as_of": str(TODAY)}],
+    )
     monkeypatch.setattr(
         main.queries, "expired_events", lambda *_a, **_k: {"expired": 0, "last_checked": None}
     )

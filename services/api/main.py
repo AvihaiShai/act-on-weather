@@ -495,12 +495,35 @@ class ItineraryIn(RequestIn):
     start_date: date
     end_date: date
     days: list[dict[str, Any]] = Field(default_factory=list)
+    # Optional for compatibility with callers written before it existed; see
+    # `save_itinerary` for what a missing value stores and why it is not
+    # substituted.
+    as_of: datetime | None = None
 
 
 @app.post("/itineraries", status_code=202)
 def save_itinerary(body: ItineraryIn) -> dict[str, Any]:
+    """Queue a saved trip. Touches nothing but the outbox.
+
+    `as_of` is the forecast snapshot the plan's scores were computed from, and
+    it comes from the caller because only the caller knows it. The UI sends
+    the value it already displays under the plan it built.
+
+    This handler used to read it from the database instead. That broke the
+    module's contract in the way that matters: `db.Pool.conn` retries forever,
+    so with Postgres down the save blocked its worker for the whole outage
+    while DELETE and PATCH went on accepting -- and the fallback stamped the
+    plan with this service's clock, a time no forecast ever carried, which the
+    UI then compared against the live window and announced as "refreshed since
+    this was saved".
+
+    A caller that omits `as_of` is still accepted, and the record stores NULL.
+    The UI renders that as "not recorded" and skips the staleness comparison.
+    Refusing the request would break existing callers; substituting a clock
+    would put an invented provenance on a stored record, and of the two only
+    the missing one can be read for what it is.
+    """
     itinerary_id = str(uuid.uuid4())
-    cov = queries.coverage(pool.conn)
     message_id = accept(
         config.RK_ITINERARY,
         {
@@ -510,9 +533,7 @@ def save_itinerary(body: ItineraryIn) -> dict[str, Any]:
             "start_date": body.start_date.isoformat(),
             "end_date": body.end_date.isoformat(),
             "days": body.days,
-            "as_of": (cov.get("weather_as_of") or datetime.now(UTC)).isoformat()
-            if not isinstance(cov.get("weather_as_of"), str)
-            else cov["weather_as_of"],
+            "as_of": body.as_of.isoformat() if body.as_of else None,
         },
         city=body.city,
     )
