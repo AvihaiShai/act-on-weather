@@ -7,9 +7,21 @@ offline Docker installation files are still missing. Section 5 names exactly
 what is missing. Nothing in this document claims
 a physical air gap has been demonstrated.
 
-The staged USB bundle is from `1890eba`. It is useful for the planned A/B
-recovery drill, but a physical proof of a later release must package, transfer
-and verify that later exact commit too.
+The staged USB holds the historical `1890eba` A/B drill set and, as of
+2026-09-26, a separately verified `8975403` bundle. The latter's
+`sha256(SHA256SUMS)` is
+`884bf45a4a64876c534383e4f2a2626bf3f967b2807072dad5895920c04e9b15`.
+The historical measurements below still refer to `1890eba`.
+
+**VM follow-up, 2026-09-26:** On an Ubuntu 24.04.5 VM with its virtual NIC
+disconnected, the `8975403` bundle verified with the digest above, installed
+into an empty Docker 29.8.1 image store, and passed the stored-data and nine-page
+UI smoke. The installer evidence reported exit 0 and zero image pulls. The
+separate `prove-offline.sh` command then failed before its demo started:
+Compose v5.5.1 rejects `docker compose run --no-build`. The fix removes the
+development build recipe from the tools bundle overlay with `!reset null` and
+uses `run --pull never`; release packaging now checks the rendered model. This
+VM remains on the development computer, so this run does not close F10.
 
 Everything in sections 3 and 4 was executed on 2026-09-25 and the numbers are
 transcribed from the runs. Sections 6 and 7 are a plan for someone with the

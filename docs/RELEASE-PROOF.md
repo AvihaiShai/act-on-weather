@@ -508,6 +508,10 @@ command produced:
   image/volume/container census before the load.
 - `scripts/prove-offline.sh` gained `--no-build`, so a missing bundle tag can no
   longer become a build that needs the egress the proof exists to disprove.
+  A later Ubuntu VM run with Compose v5.5.1 found that `compose run` rejects
+  this flag. The current tools bundle overlay removes the build recipe with
+  `!reset null`, while the proof runner retains `--pull never`; see
+  [EVIDENCE-physical-airgap.md](EVIDENCE-physical-airgap.md).
 - `scripts/airgap-evidence.sh --out` replaces `| tee`, which returned *tee's*
   exit status and so reported a failed install as a pass. It also refuses to
   write inside a release folder, because the old checklist's `tee evidence/…`

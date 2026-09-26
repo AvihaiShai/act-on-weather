@@ -21,10 +21,9 @@ PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a
 # An installed offline release carries release-version.txt, and its images are
 # the bundle aliases (aow-bundle/<alias>:<commit>) rather than the aow/*:dev tags
 # compose.yml names. So on such a host every command that has to resolve an
-# image needs compose.bundle.yml, and must be told not to pull or build when it
-# cannot find one -- compose.yml still carries `build:` sections, so a missing
-# image otherwise becomes a build, and demos/Dockerfile's apk add then reports a
-# network error for what was really a tag problem.
+# image needs compose.bundle.yml. The stack commands use --no-build --pull never;
+# the tools bundle overlay removes demos.build, because `compose run` does not
+# accept --no-build. A missing tool image must fail before reaching the network.
 #
 # A developer checkout has no version file, so both variables are empty there
 # and every command below is exactly what it was, with one caveat: naming

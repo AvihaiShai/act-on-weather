@@ -435,9 +435,9 @@ The installer prints the Docker engine ID and the image, volume and container
 counts before loading the bundle, and checks the prerequisites and that `.env`
 renders the Compose files before the multi-gigabyte load rather than after it.
 It refuses a fault-injection test artifact unless `AOW_ALLOW_FAULT_INJECTION=1`
-is set deliberately. The packaged `scripts/prove-offline.sh` runs with
-`--no-build --pull never`, so a missing image fails the proof instead of
-starting a build or a pull.
+is set deliberately. The packaged tools overlay removes the demo image's
+development build recipe, and `scripts/prove-offline.sh` uses `--pull never`,
+so a missing image fails the proof instead of starting a build or a pull.
 
 What a finished install has actually shown is that the API serves stored
 forecasts and scores **from inside the stack** — the smoke test runs in the
