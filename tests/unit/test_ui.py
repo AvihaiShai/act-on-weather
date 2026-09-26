@@ -549,26 +549,16 @@ def test_a_built_plan_with_no_as_of_says_so_rather_than_saying_never(monkeypatch
     assert "as of never" not in captions
 
 
-def test_a_saved_plan_whose_forecast_moved_on_says_so(monkeypatch):
-    """The staleness notice, which the fixture could never trigger.
-
-    The saved itinerary's `as_of` is exactly `coverage.weather_as_of`, so both
-    branches of `render_plan_staleness` were unreachable: inverting its
-    comparison, or deleting the function body, left the suite green while
-    stale scores redrew under the header's current stamp.
-
-    Coverage backfill, not a regression guard: `render_plan_staleness` predates
-    the `as_of` change and this passes with that change reverted. The test that
-    does guard it is the NULL case below.
-    """
+def test_a_legacy_saved_plan_does_not_claim_a_global_stamp_is_city_provenance(monkeypatch):
+    """Old plans have only a global stamp, which may come from another city."""
     reopened = _reopen(monkeypatch, _saved_row(as_of="2026-09-20T06:00:00Z"))
 
     info = " ".join(element.value for element in reopened.info)
-    assert "has been refreshed since this was saved" in info
-    assert "2026-09-23 18:16 UTC" in info, "the notice must name the current stamp"
+    assert "has been refreshed since this was saved" not in info
 
     captions = " ".join(c.value for c in reopened.caption)
-    assert "scored from weather as of 2026-09-20 06:00 UTC" in captions
+    assert "recorded weather timestamp 2026-09-20 06:00 UTC" in captions
+    assert "per-day provenance unavailable" in captions
 
 
 def test_a_saved_plan_with_no_scoring_as_of_is_not_called_stale(monkeypatch):

@@ -699,10 +699,17 @@ def render_plan(plan: dict, cov) -> None:
     saved = plan.get("saved")
     st.markdown(f"### {plan['title']}")
     if saved:
-        st.caption(
-            f"Saved itinerary · Updated {fmt_ts(saved['updated_at'])} · "
-            f"{scored_from(plan.get('as_of'))}"
+        provenance = (
+            scored_from(plan.get("as_of"))
+            if all(day.get("weather_as_of") for day in plan["days"])
+            else (
+                f"recorded weather timestamp {fmt_ts(plan['as_of'])}; "
+                "per-day provenance unavailable"
+                if plan.get("as_of")
+                else scored_from(None)
+            )
         )
+        st.caption(f"Saved itinerary · Updated {fmt_ts(saved['updated_at'])} · " f"{provenance}")
         render_plan_staleness(plan)
     else:
         built = (
@@ -764,7 +771,7 @@ def render_plan_staleness(plan: dict) -> None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
     stamped_days = [day for day in saved_days.values() if day.get("weather_as_of")]
-    if stamped_days:
+    if len(stamped_days) == len(saved_days):
         changed = any(
             date_key in current_days
             and stamp(current_days[date_key]["as_of"]) != stamp(day["weather_as_of"])
@@ -772,8 +779,7 @@ def render_plan_staleness(plan: dict) -> None:
             if day.get("weather_as_of")
         )
     else:
-        current = max((stamp(row["as_of"]) for row in current_days.values()), default=None)
-        changed = bool(current and plan.get("as_of") and current != stamp(plan["as_of"]))
+        changed = False  # Older plans stored no per-day provenance to compare.
     if changed:
         current = max((stamp(row["as_of"]) for row in current_days.values()), default=None)
         st.info(
