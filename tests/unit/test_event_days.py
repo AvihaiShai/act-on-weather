@@ -285,6 +285,14 @@ def itinerary(monkeypatch):
     monkeypatch.setattr(agent_main.queries, "recommendations", lambda *_a, **_k: scores)
     monkeypatch.setattr(agent_main.queries, "places", lambda *_a, **_k: [])
     monkeypatch.setattr(agent_main.queries, "events", fake_events)
+    # London holds a row for every day in the window. The planner reads these
+    # rather than the coverage window, because that window is a global MIN/MAX
+    # and says nothing about which days *this* city has.
+    monkeypatch.setattr(
+        agent_main.queries,
+        "forecast",
+        lambda *_a, **_k: [{"forecast_date": d, "as_of": coverage["weather_as_of"]} for d in days],
+    )
     # Asked only when the retrieval above comes back empty, so a gap can
     # say whether the feed went stale or was never there.
     monkeypatch.setattr(

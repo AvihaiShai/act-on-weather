@@ -400,14 +400,35 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
     coverage = queries.coverage(conn)
     start = body.start_date or dates.today_in(city["timezone"])
     end = body.end_date or start
-    covered = [
-        d for d in dates.DateRange(start, end, "").days() if queries.in_coverage(coverage, d)
-    ]
+    requested = list(dates.DateRange(start, end, "").days())
+
+    # Which days this *city* has a forecast row for, taken from the rows
+    # themselves rather than from the coverage window.
+    #
+    # `COVERAGE_SQL` reports MIN/MAX over `weather_daily` with no city
+    # predicate, and `queries.in_coverage` never sees a city, so the window
+    # calls a day covered whenever *any* city holds a row for it. Planning off
+    # that offered days this city has nothing for, and every consequence was a
+    # claim the data does not support: the UI drew them as "no scored activity"
+    # under a poor-band score pill, which reads as a verdict on the weather
+    # rather than as a gap; `requested_days_outside_coverage` came back empty,
+    # so the one warning that would have said so never fired; and the title and
+    # `end_date` counted them, so a saved plan recorded a range nothing was
+    # scored across. It happens whenever one city was ingested further ahead
+    # than another, after a partial refresh, or when a single day failed to
+    # ingest -- and a day missing from the middle of the window is invisible to
+    # any first-to-last comparison, however it is scoped.
+    stored = {
+        str(row["forecast_date"]) for row in queries.forecast(conn, body.city, start=start, end=end)
+    }
+    covered = [d for d in requested if d.isoformat() in stored]
+    uncovered = [d.isoformat() for d in requested if d.isoformat() not in stored]
     if not covered:
         raise HTTPException(
             422,
-            f"no stored weather for {start} to {end}; the forecast covers "
-            f"{coverage['weather_first_date']} to {coverage['weather_last_date']}",
+            f"no stored weather for {city['name']} between {start} and {end}; the forecast "
+            f"covers {coverage['weather_first_date']} to {coverage['weather_last_date']} "
+            f"across all cities",
         )
 
     router = Router(conn)
@@ -583,7 +604,10 @@ def build_itinerary(body: ItineraryIn) -> dict[str, Any]:
             "first": coverage["weather_first_date"],
             "last": coverage["weather_last_date"],
         },
-        "requested_days_outside_coverage": [
-            d.isoformat() for d in dates.DateRange(start, end, "").days() if d not in covered
-        ],
+        # Every asked-for day this city has no row for, whether it fell outside
+        # the stored window or inside it. The UI renders this as "No stored
+        # weather for: ... Those days are left out rather than guessed", which
+        # is the same sentence the agent's partial-coverage gap uses -- one
+        # wording for one fact, wherever the reader meets it.
+        "requested_days_outside_coverage": uncovered,
     }
