@@ -440,6 +440,15 @@ class Brief:
     # checked against something, and separate from `days` because a question
     # can cover a day the forecast has no row for.
     window_days: list[str] = field(default_factory=list)
+    # Whether the question was scoped to the weather at all, and which of the
+    # asked days a forecast row actually came back for. These narrow
+    # `allowed_dates` and nothing else. `window_days` stays the whole asked
+    # window on purpose: it is what the traveller typed and what our own gap
+    # sentence prints, so it is vocabulary, and narrowing it there made the
+    # figures in that sentence unquotable by the model we showed it to.
+    weather_scoped: bool = False
+    covered_days: list[str] = field(default_factory=list)
+    uncovered_days: list[str] = field(default_factory=list)
     days: list[DayFact] = field(default_factory=list)
     verdicts: list[VerdictFact] = field(default_factory=list)
     places: list[PlaceFact] = field(default_factory=list)
@@ -465,6 +474,15 @@ class Brief:
         return " ".join(f"{f.title} {f.summary}" for f in self.facts).lower()
 
     def allowed_dates(self) -> set[str]:
+        # For a question about the weather the window here is the days a
+        # forecast row actually came back for, not the days that were asked
+        # about: a half-expired snapshot must not leave the validator willing
+        # to accept a sentence about a day with no data. The flag, not the
+        # emptiness of the list, is what decides -- no covered day at all is a
+        # real answer, and falling back to the asked window would restore the
+        # hole. Only this allow-list narrows; `vocabulary` keeps the whole
+        # asked window.
+        window = self.covered_days if self.weather_scoped else self.window_days
         return (
             {d.day for d in self.days}
             # Every day a multi-day event runs, not only its first: naming the
@@ -472,7 +490,7 @@ class Brief:
             # by the row, and the validator must not read it as invented.
             | {day for e in self.events for day in e.days()}
             | {v.day for v in self.verdicts}
-            | set(self.window_days)
+            | set(window)
         )
 
     def vocabulary(self) -> str:
@@ -535,16 +553,10 @@ def build(result: Retrieval) -> Brief:
         window=str(resolution.window) if resolution.window else "",
         country=str(city.get("country") or ""),
         question=resolution.question,
-        # The days the answer may speak about without a row naming them. For a
-        # question about the weather this is the days a forecast row actually
-        # came back for, not the days that were asked about: a half-expired
-        # snapshot must not leave the validator willing to accept a sentence
-        # about a day with no data. The flag, not the emptiness of the list, is
-        # what decides -- no covered day at all is a real answer here, and
-        # falling back to the asked window in that case would restore the hole.
-        window_days=result.covered_days
-        if result.weather_scoped
-        else ([d.isoformat() for d in resolution.window.days()] if resolution.window else []),
+        window_days=[d.isoformat() for d in resolution.window.days()] if resolution.window else [],
+        weather_scoped=result.weather_scoped,
+        covered_days=list(result.covered_days),
+        uncovered_days=list(result.uncovered_days),
         event_categories=list(getattr(resolution, "event_categories", []) or []),
         interests=list(resolution.interests),
         named_activities=list(resolution.activities),
@@ -956,8 +968,19 @@ def violations(answer: str, brief: Brief) -> list[str]:
     # Whether the question was about scheduled things, which is what lets check
     # 6b read a clause that says "nothing is on" without naming an event.
     asked_about_events = bool(brief.event_categories or brief.events)
+    # Our own gap sentences, one at a time. The prompt shows the model these
+    # and asks it not to repeat them; the small model sometimes repeats them
+    # anyway, which is why `gap_block` already drops a verbatim repeat. Code's
+    # own words cannot be the model's invention, and without this the dates and
+    # figures they name -- which are precisely the days no row carries -- fail
+    # checks 7 and 9, throw the whole answer away, and tell the operator the
+    # rows do not support a sentence we wrote ourselves. A paraphrase is still
+    # checked: only the wording we guarantee is exempt.
+    own_words = {s.lower() for gap in brief.gaps for s in _sentences(gap.text)}
 
     for raw in _sentences(answer):
+        if raw.lower() in own_words:
+            continue
         # Checks 1-6 run per clause, so a negation in the tail of a sentence
         # cannot cover an assertion at its head.
         for clause in _clauses(raw):
