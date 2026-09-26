@@ -240,19 +240,25 @@ bash scripts/package-offline.sh release/images.lock
 `package-offline.sh` also refuses to overwrite an existing `dist/aow-<sha>/`.
 It packages the committed tree, so untracked source changes are not shipped.
 This reproduces `dist/aow-<sha>/` with the same pinned images and model,
-verified against the same `images.lock` the release workflow checked. The rebuilt folder does **not** contain `promotion-record.json`: only
-`release.yml` writes one, into its own copy of the bundle, which is deleted
-with the runner. Download it from the `aow-promotion-<sha>` workflow artifact
-and drop it into `dist/aow-<sha>/` if you want a second confirmation beyond the
-script's own checks -- `scripts/verify-bundle.sh` tolerates it there as the one
-file the documented procedure legitimately adds.
+verified against the same `images.lock` the release workflow checked. The
+rebuilt folder does **not** contain `promotion-record.json`: only `release.yml`
+writes one, into its own copy of the bundle, which is deleted with the runner.
+Download the `aow-promotion-<sha>` artifact and keep its record outside the
+locally rebuilt bundle. Its `bundle_checksums` and `SHA256SUMS` describe the
+runner's bundle, not the one you just built.
 
-Compare its `images` block against what you built. Compare the **locks**, not
-the tar: `images.bundle.lock` and `models.lock` are content-addressed and must
-match exactly, but `SHA256SUMS` will not, because `docker save` output is not
-bit-reproducible across engines -- something this project measured rather than
-assumed (see `docs/RELEASE-PROOF.md`, where packaging the same release on a
-classic-store engine re-serialised all eight image digests).
+Compare the record's `images` references with your `images.bundle.lock` by
+alias. `services` and `ui` must equal the registry digests in the record and
+in `images.lock`; the seven pinned upstream references must also match.
+`models.lock` must match exactly. `demos` is built separately on each staging
+machine and is labelled `self_attested_build` in the record, so its image digest
+may differ. The local bundle's own verifier must still match its `demos` image
+to its own `images.bundle.lock`. Neither the whole `images.bundle.lock` nor
+`SHA256SUMS` is guaranteed to match the hosted artifact. In the 2026-09-26
+`fb2a1e4` release, the nine other image references matched, while the hosted
+and local `demos` digests differed (`7468fb02…` and `01b27e7e…`). The hosted
+clean-engine install therefore tested the same release code and pinned runtime
+images, but a separately built proof-tool image.
 The archive completion step uses the existing `docker login ghcr.io`
 credentials (including Docker credential helpers), or anonymous access when
 the package is public. `GHCR_USER` and `GHCR_TOKEN` can override the Docker
