@@ -61,7 +61,7 @@ Windows or macOS, Docker Engine with the Compose plugin on Linux.
 
 | | |
 |---|---|
-| **Compose v2** | the `docker compose` subcommand, with a space. Standalone `docker-compose` v1 cannot read the top-level `name:` key these files use. Verified on Docker Engine 29.8 with Compose v5.5.1. |
+| **Compose v2** | the `docker compose` subcommand, with a space. Standalone `docker-compose` v1 cannot read the top-level `name:` key these files use. `scripts/bootstrap.sh` needs more than that floor — it uses `ps --format` with a Go template, `config --images` and `up --pull` — so it wants **v2.21 or newer**; it probes for the capability and says so rather than hanging. The by-hand path below needs only v2. Verified on Docker Engine 29.8 with Compose v5.5.1, and on Engine 28.5.2 with Compose v2.40.3. |
 | **Memory** | 8 GB for Docker. The `compose.yml` caps total 6.7 GB, 3 GB of it the model server. |
 | **Disk** | about 6 GB of images and model, plus ~1.2 GB more if you build the test image. |
 | **CPU** | CPU-only, and that is the only mode. No GPU override ships. `LLM_THREADS` in `.env` (default 4) is the knob. |
@@ -107,14 +107,16 @@ up and usable.
 
 It creates `.env` only if there is none, generating a distinct random password
 for each `change-me` inside the pinned `python:3.12-slim` image with no network.
-**An existing `.env` is never read, rewritten or replaced.** Re-running is safe:
-it never regenerates a password, never re-downloads the model, and never removes
-a volume.
+**An existing `.env` is never rewritten or replaced**, and bootstrap never reads
+it for its values — it only checks it for leftover `change-me` placeholders.
+(Compose itself reads it, as it must, to render the Compose files.) Re-running
+is safe: it never regenerates a password, never re-downloads the model, and
+never removes a volume.
 
 | flag | |
 |---|---|
 | `--refresh` | once the stack is healthy, fetch a fresh forecast, then close the egress window and assert it is closed. Needs a network, so it is refused together with `--offline`. It fetches the forecast and nothing else — see [Known limitations](#known-limitations) |
-| `--offline` (`--skip-stage`) | skip the connected commands and check instead that this machine is already staged |
+| `--offline` (`--skip-stage`) | skip the connected commands and check instead that this machine is already staged: `.env` renders the Compose files, every image the stack needs is local, and the staged model still matches `models.lock`. A missing proof-runner image (`aow/demos:dev`) is a warning, not a failure — nothing in `docker compose up` needs it. |
 | `--no-start` | stop after staging |
 | `--wait-only` | poll a stack that is already up |
 | `--timeout N` | seconds to wait for health (default 900; `llm` reports unhealthy for about 3 minutes while it loads the model) |
@@ -146,6 +148,9 @@ docker compose -f compose.tools.yml build demos
 ```
 
 `pull` fetches the four upstream images (~2.2 GB), every one pinned by digest.
+It is the long step, and the only one that depends on somebody else's network:
+on a slow or throttled registry it can take tens of minutes. Interrupting it
+and rerunning is safe — finished layers are cached and the pull resumes.
 `stage` downloads the model (~1.2 GB) into `models/` and checks it against
 `models.lock`; an already-staged model is re-verified rather than re-fetched, so
 running it twice is safe and quick. `build` builds the five Python services and
@@ -587,6 +592,36 @@ tunnel has every route.
   source.
 * **A user-entered activity is scored against general outdoor comfort**, not a
   rule tuned for it, and the answer says so.
+* **The grounding guard is a set of specific checks, not a general proof.**
+  `services/agent/grounding.py` validates the model's prose against the typed
+  facts and throws away wording that fails, falling back to a deterministic
+  rendering of the same rows. Each check closes a failure that was actually
+  observed; together they do not amount to "nothing unsupported can ever be
+  said". Three gaps are known and open:
+  * an event claim that names **no calendar date** — "there are concerts all
+    week" — is outside the dated-claim check, which needs a date in the clause
+    to test, and so is one that names a **relative or year-less** day ("on
+    Friday"), which the date parser will not guess at;
+  * an **undated weather claim** has no check at all: "Rome is warm and dry
+    this week" passes against an empty brief, where a dated equivalent would
+    not;
+  * **`build_itinerary` filters days through the global coverage query**
+    (`services/agent/main.py`), which carries no city predicate, so the planner
+    can still offer a day the selected city has no row for; it renders as "no
+    scored activity" rather than as a stated gap.
+
+  The dated event-claim check deliberately gives up two more shapes, because
+  the first version of it rejected correct answers on the assignment's own
+  London question: a date that sits **before** the claim word is read as the
+  window the sentence opens with rather than the event's date, and a clause
+  that is **also describing the weather** is left alone. Both are cases where
+  one clause carries a forecast date and a listing date at once, which is a
+  sentence the model writes constantly. The trade is a rare miss against a
+  common false positive, and checks 1 and 7 still apply to those clauses.
+
+  The dated event-claim check is measured in
+  [docs/EVIDENCE-fresh-demo.md](docs/EVIDENCE-fresh-demo.md) §12.1; §12.5 and
+  §12.6 record what it does not cover and why it was narrowed.
 * **The enricher polls** rather than binding to the weather stream. A deliberate
   trade: no second delivery branch means no silent partial fan-out.
 * **Per-message accounting starts at an accepted outbox envelope.** Enrichment
