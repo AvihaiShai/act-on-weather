@@ -154,7 +154,9 @@ The policy for this system, and why:
   number written down in a runbook goes stale quietly. `backup-state.sh` prints
   the byte count and SHA-256 of every artefact as it takes it, and
   `manifest.json` keeps them: read the last backup you took rather than trusting
-  a sentence.
+  a sentence. §9 transcribes one run's breakdown, tied to that run and to no
+  other — it is a sample of what this stack produced once, not a retention
+  figure to plan against.
 
 Pruning is manual. Before deleting a directory, check that the seven most
 recent **separate backup days** and four weekly backups remain, then remove
@@ -430,17 +432,63 @@ larger dump are a **plausible** mechanism for 31 s → 35 s. One sample on each
 side of a merge, on a shared development daemon, cannot attribute the
 difference, and it is not claimed as a measured cause.
 
-A CI figure exists too and is deliberately not in the table above, because a
-GitHub-hosted runner is a different machine and not comparable:
-[CICD_EVIDENCE.md](CICD_EVIDENCE.md) records the `restore-drill` job of CI
-run `36055211121` at RPO 15 s, at-risk window 19 s, RTO 20 s.
+CI figures exist too and are deliberately not in the table above, because a
+GitHub-hosted runner is a different machine and not comparable. Two runs are on
+record, kept apart the same way, each named by its run id, its job, its backup's
+`started_at` and its commit:
 
-**No backup-size breakdown is quoted here.** Every run prints one —
-`scripts/backup-state.sh` reports `<artefact>  <bytes> bytes  sha256:<...>` for
-each of the five artefacts, and the drill prints the `ingest_log` row count —
-but neither run above was transcribed with its sizes, and a number nobody wrote
-down is not a measurement. Transcribe it from the next run rather than
-reconstructing it.
+* **CI run `36256406183`, job `restore-drill`, `started_at`
+  2026-09-26T16:45:31Z, commit `bbee42c`** — the current commit. RPO span
+  (backup start → last lost write) **15 s**; at-risk window (backup start →
+  disruption) **19 s**; 2 of 2 set B records lost, which is the designed result.
+  **Two RTO numbers, from two different vantage points, and not
+  interchangeable:** `scripts/restore-state.sh` self-reported `RTO_SECONDS=20`,
+  which is its own invocation to its own verification passing — the window
+  described in §6 step 9 — while the drill's summary reported **22 s**, which is
+  that same restore plus the drill's own per-id `psql` assertions from a
+  separate reader (§7). **Two wall clocks, likewise distinct:** **92 s** for the
+  drill body, and **104 s** for the whole CI job step around it. Neither pair
+  may be collapsed into a single figure.
+* CI run `36055211121`, `restore-drill`, `started_at` 2026-09-24T20:31:40Z,
+  commit `862a08f` — RPO 15 s, at-risk window 19 s, RTO 20 s, 104 s. It was
+  recorded before the two RTO vantage points were written down separately, so
+  read its single RTO as the one figure it names and nothing more.
+
+Both are recorded in [CICD_EVIDENCE.md](CICD_EVIDENCE.md) §3.
+
+### The backup-size breakdown and row count
+
+Transcribed from the one run recorded with them: **CI run `36256406183`, job
+`restore-drill`, `started_at` 2026-09-26T16:45:31Z, commit `bbee42c`**. That is
+a GitHub-hosted runner, and the drill's own isolated Compose project — **not**
+the development machine of the table above, and **not** a production stack — so
+these bytes and rows belong to that run alone.
+
+| Artefact | Bytes, as `scripts/backup-state.sh` printed them |
+|---|---|
+| `outbox-ingestor.sqlite3` | 753,664 |
+| `postgres.dump` | 113,623 |
+| `outbox-api.sqlite3` | 20,480 |
+| `outbox-enricher.sqlite3` | 20,480 |
+| `rabbitmq-definitions.json` | 1,441 |
+
+Those five counts are what the script logged, each beside its SHA-256. **Their
+total, 909,688 bytes (888.4 KiB), is arithmetic done here: the script prints the
+five per-artefact counts and no sum, so the total is not itself a logged
+figure.** The ordering is the one §5 predicts — the ingestor's outbox and the
+Postgres dump are the two artefacts that grow with how many forecast days a
+five-city stack is holding, and the other three are effectively fixed.
+
+Row counts from the same run. `ingest_log` held **836 rows** once the snapshot
+had finished loading and before the drill accepted anything: a count for the
+drill's own isolated project, not a production figure. At backup time the
+ingestor's outbox held 836 envelopes, the API's 4 and the enricher's 0, each
+copied with `pending: 0` and `integrity: ok`. One message was sitting in
+`aow.ingest` and none in `aow.dlq`, and the backup recorded both as **not
+captured**, because message bodies are never backed up (§2). After the restore
+and `reconcile.py`, `ingest_log` held 840 rows: the 836 baseline, the three
+set A records accepted before the backup, and the one set C envelope that
+reconcile replayed.
 
 The RPO figures are a property of *these drills*, not of the system: they are
 simply how long each run kept writing after its backup. In production the RPO is

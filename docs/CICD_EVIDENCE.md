@@ -1,8 +1,10 @@
 # CI/CD evidence matrix — review item #4 (S1, B1)
 
-**Updated 2026-09-25.** Named run counts and timings are historical; the new
+**Updated 2026-09-26.** Named run counts and timings are historical; the new
 clean-daemon release gate passed in release run `36071276502`. Every row names
-a gate and a run, or says plainly that it is manual.
+a gate and a run, or says plainly that it is manual. The `restore-drill` row in
+§3 now names run `36256406183` on commit `bbee42c`; the run it supersedes is
+kept beside it rather than deleted.
 Written for a reviewer who wants to check the claims rather than read about them.
 
 Review item #4 asked whether CI/CD is adequate against **S1** ("Git repo with all code,
@@ -85,11 +87,40 @@ All timings from real GitHub-hosted runners, not estimates.
 | `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
 | `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | run `36057664448`: 155 same-origin, 0 external requests |
 | `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | run `36055211121`: **82s**, 8/8 grounded; upgraded cache action ran on a cache miss |
-| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | run `36055211121`, backup `started_at` 2026-09-24T20:31:40Z: **104s**, measured RPO 15s, at-risk window 19s, RTO 20s — a GitHub-hosted runner, so not comparable with the development-machine runs in [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) §9 |
+| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | run `36256406183`, backup `started_at` 2026-09-26T16:45:31Z, commit `bbee42c` — the current commit: measured RPO 15s, at-risk window 19s, **two RTO figures kept apart** (`RTO_SECONDS=20` self-reported by `restore-state.sh`, 22s in the drill's summary including its per-id `psql` assertions) and **two wall clocks kept apart** (92s drill body, 104s CI job step). See the row below the table, and §9 of [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) for the artefact sizes. A GitHub-hosted runner, so not comparable with the development-machine runs in that same §9 |
 | `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `5bb498f` (run `36057664448`) |
 
+**`restore-drill`: the run history, and why four numbers are not two.** The
+drill is re-run per commit, and each run keeps its own identity — run id, job,
+backup `started_at`, commit — because a figure is only worth reading next to the
+run that produced it.
+
+| Run | Commit | Backup `started_at` | RPO | At-risk window | RTO, self-reported | RTO, drill summary | Drill body | CI job step |
+|---|---|---|---|---|---|---|---|---|
+| **`36256406183`** — current | `bbee42c` | 2026-09-26T16:45:31Z | **15s** | **19s** | **20s** (`RTO_SECONDS=20`) | **22s** | **92s** | **104s** |
+| `36055211121` — superseded, not deleted | `862a08f` | 2026-09-24T20:31:40Z | 15s | 19s | 20s | not recorded separately | not recorded separately | 104s |
+
+Two distinctions the table exists to keep:
+
+* **The two RTOs are different vantage points, not a discrepancy.**
+  `scripts/restore-state.sh` measures itself, from invocation to its own
+  verification passing, and prints `RTO_SECONDS`. The drill's summary measures
+  the same restore *plus* the per-id `psql` assertions it then makes from a
+  separate reader. Quote whichever answers the question being asked, and say
+  which one it is; never average them or present one as "the" RTO.
+* **The two wall clocks are different scopes.** 92s is the drill body —
+  `demos/06_backup_restore.sh` from its first line to its last. 104s is the
+  whole `restore-drill` job step around it, which also brings the isolated stack
+  up and tears it down. Row `36055211121` records only the job-step figure, so
+  its blank cells are blank rather than back-filled.
+
+The `36055211121` row is kept because run ids in §8 below still refer to it.
+Both rows are GitHub-hosted runners and neither is comparable with the
+development-machine drills in [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md)
+§9.
+
 **Why `model-grounding` and `restore-drill` are release-candidate rather than per-PR:**
-not cost — 82s and 104s in run `36055211121` are cheap next to `build-and-scan`. Blast radius. The restore
+not cost — 82s and 104s in run `36055211121` (job-step wall clocks) are cheap next to `build-and-scan`. Blast radius. The restore
 drill destroys volumes, and a stateful full-stack drill is the wrong default for every
 dependabot bump. One "expensive or stateful" tier, not two conventions. They run on
 `workflow_dispatch`, a `release-candidate` label, or a `release/*` branch.
