@@ -316,6 +316,18 @@ services:
     environment:
       API_BASE: http://api:8000
     networks: [backend]
+    # Without this, nothing checks Streamlit. `edge`'s own healthcheck hits
+    # /healthz, which edge/nginx.conf answers itself with a static 200, so it
+    # proves nginx is listening and nothing more -- and bootstrap.sh would
+    # print "every service is healthy" having never touched the UI. Streamlit
+    # serves /_stcore/health on its own port; python is already in this image
+    # because it runs the app, so this needs no extra package.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
   edge:
     image: nginx:alpine@sha256:1ed1b0e1d7652937d6cbdaf4018c7b6fc009a7dd6c3047351e2eddda745de43f
