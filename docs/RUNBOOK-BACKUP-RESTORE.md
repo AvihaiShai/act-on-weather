@@ -148,9 +148,13 @@ The policy for this system, and why:
   the agent will correctly refuse to answer from them. They are still worth
   keeping for the irreplaceable part: itineraries, user corrections and the
   `record_history` behind them, none of which can be re-fetched from anywhere.
-* Size makes this cheap. A full backup of a five-city stack is well under a
-  megabyte at the volumes this system holds — the drill prints the byte count
-  of every artefact, so measure rather than budget.
+* Size makes this cheap, and no figure is quoted here on purpose. The two
+  artefacts that grow are the Postgres dump and the ingestor's outbox, both of
+  which scale with how many forecast days a five-city stack is holding, so a
+  number written down in a runbook goes stale quietly. `backup-state.sh` prints
+  the byte count and SHA-256 of every artefact as it takes it, and
+  `manifest.json` keeps them: read the last backup you took rather than trusting
+  a sentence.
 
 Pruning is manual. Before deleting a directory, check that the seven most
 recent **separate backup days** and four weekly backups remain, then remove
