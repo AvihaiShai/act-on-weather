@@ -310,6 +310,26 @@ def _dates_in(sentence: str) -> set[str]:
     return found
 
 
+def _claim_tail(clause: str, words: tuple[str, ...]) -> str:
+    """The part of a clause from its first event-claim word onward.
+
+    `_clauses` splits on a semicolon and on the contrastive conjunctions, and
+    on nothing else -- so "2026-09-26 will be sunny, and a concert is on the
+    25th" is one clause carrying two dates that belong to two different facts.
+    A date *before* the claim word is not where the model put the event: it is
+    the window the sentence opened with, or the weather it had just finished
+    describing. Reading those as the concert's date costs a correct answer its
+    wording, and the model writes both shapes constantly.
+
+    Returns "" when the clause holds no claim word at all, which is the caller
+    asking about a category it never asserted.
+    """
+    starts = [
+        m.start() for word in words for m in re.finditer(rf"(?<!\w){re.escape(word)}(?!\w)", clause)
+    ]
+    return clause[min(starts) :] if starts else ""
+
+
 def _tokens(sentence: str) -> list[str]:
     return re.findall(r"[A-Za-z][A-Za-z'’-]*", sentence)
 
@@ -909,9 +929,12 @@ def render(brief: Brief) -> str:
 def violations(answer: str, brief: Brief) -> list[str]:
     """Sentences in `answer` that assert something no fact in `brief` carries.
 
-    Nine checks, each written for a failure that was actually observed. All of
-    them work on the model's prose only -- the gap block and the as-of footer
-    are appended afterwards and are code's own words.
+    Eleven checks, each written for a failure that was actually observed. They
+    are numbered 1-9; 3b and 6b are variants of the check they sit beside,
+    lettered rather than renumbered so a log line written last month still
+    names the same check. All of them work on the model's prose only -- the gap
+    block and the as-of footer are appended afterwards and are code's own
+    words.
 
     The checks are deliberately narrow. A false positive costs a good answer
     its wording; it never costs the traveller a correct answer, because
@@ -940,6 +963,12 @@ def violations(answer: str, brief: Brief) -> list[str]:
         for clause in _clauses(raw):
             sentence = clause.lower()
             negated = bool(_NEGATION.search(sentence))
+            # Two things about the clause that check 3b needs and the checks
+            # around it already reason about in their own words: whether it
+            # scopes itself to the stored record, and whether it is talking
+            # about the forecast at all.
+            on_record = any(_says(sentence, phrase) for phrase in RECORD_PHRASES)
+            weather_said = any(_says(sentence, word) for word in WEATHER_WORDS)
             # "a concert hall" is a category, not a concert.
             scheduled = _without_place_categories(sentence)
             asserted = {
@@ -970,6 +999,63 @@ def violations(answer: str, brief: Brief) -> list[str]:
                         f"describes {event.title!r} ({event.category}) as a "
                         f"{event_label(category)}"
                     )
+
+            # 3b. A scheduled event placed on a day no event row covers.
+            #
+            #     Check 7 below cannot catch this, and that is the whole reason
+            #     this one exists. Check 7 tests every date in the sentence
+            #     against `allowed_dates()`, which unions the forecast days --
+            #     so on any question with a forecast, every day in the window
+            #     is already "allowed", and a weather row for the 26th makes
+            #     "a concert on the 26th" look supported.
+            #
+            #     Observed on the assignment's own London question: from a
+            #     single concert row on the 25th, the model answered "Concerts
+            #     are scheduled on 2026-09-25, 2026-09-26, 2026-09-27,
+            #     2026-09-29, and 2026-09-30" -- four invented listings, most
+            #     likely read off the per-day suitability scores, which do
+            #     exist for every day. Nothing in checks 1-3 fires: the
+            #     category has rows, no place is named, no stored event is
+            #     relabelled.
+            #
+            #     Only an event row can put an event on a day. `asserted &
+            #     present` rather than `asserted`, because a category with no
+            #     rows at all is check 1's job and should not be reported
+            #     twice.
+            #
+            #     Three things keep it narrow, because a clause names a date
+            #     for plenty of reasons that have nothing to do with an event.
+            #     Only dates after the claim word count (`_claim_tail`): the
+            #     clause is not split on a comma, so "2026-09-26 will be sunny,
+            #     and a concert is on the 25th" would otherwise place a concert
+            #     on the 26th. A clause that is also describing the weather is
+            #     left alone for the same reason -- a deliberate trade, since
+            #     it means "a concert on 2026-09-26, which will be sunny" is
+            #     missed, and a miss costs one wording while a false positive
+            #     costs every answer that mentions the forecast and a listing
+            #     in one breath. A clause scoped to the record is left alone
+            #     too: "between the 25th and the 30th the only concert on
+            #     record is on the 25th" states the window and then the row,
+            #     and both dates are honest.
+            #
+            #     A relative or year-less date is not reached at all: `_dates_in`
+            #     resolves neither "on Friday" nor "September 27", and guessing
+            #     which Friday would be the invention this file exists to stop.
+            #     The prompt renders every date in ISO, so the model echoes ISO.
+            if not negated and not on_record and not weather_said:
+                for category in sorted(asserted & present):
+                    covered = {
+                        day
+                        for event in brief.events
+                        if event.category == category
+                        for day in event.days()
+                    }
+                    tail = _claim_tail(scheduled, claims[category])
+                    for day in sorted(_dates_in(tail) - covered):
+                        found.append(
+                            f"places a {event_label(category)} on {day}, "
+                            "which no stored event row covers"
+                        )
 
             # 4. A verdict where the rule engine gave none.
             verdict = any(_says(sentence, word) for word in VERDICT_WORDS)

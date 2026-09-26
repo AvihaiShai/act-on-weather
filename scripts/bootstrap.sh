@@ -46,6 +46,10 @@ TIMEOUT=900
 SKIP_STAGE=0
 START=1
 WAIT_ONLY=0
+REFRESH=0
+# Set once the refresh has run, and read by the final report so it can never
+# describe snapshot data as freshly fetched: not-attempted | ok | failed.
+REFRESH_RESULT=not-attempted
 
 # README: 8 GB for Docker (the caps in compose.yml total 6.7 GB) and about
 # 6 GB of disk. Both are warnings, not gates: they are measured through
@@ -57,7 +61,10 @@ MIN_DISK_BYTES=$((6 * 1024 * 1024 * 1024))
 # become a third place the pin has to be updated. It is the same digest
 # compose.tools.yml gives the `stage` service, so pulling it here is staging
 # work rather than an extra download.
-PYIMAGE="$(awk '$1 == "PYIMAGE" { print $3 }' Makefile)"
+# `|| true` so a missing or unreadable Makefile reaches the named check in
+# step 1 rather than killing the script here, before `die` is even defined,
+# with awk's own error and no "next:" line.
+PYIMAGE="$(awk '$1 == "PYIMAGE" { print $3 }' Makefile 2>/dev/null || true)"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_BOLD=$'\033[1m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
@@ -97,11 +104,28 @@ What it does, in order:
   5. start         -- docker compose up -d
   6. health        -- poll until every service is healthy, then print the URLs
 
+With --refresh, one more:
+  7. refresh       -- open the egress window and fetch a fresh forecast
+
+What --refresh does and does not update:
+  refreshed   the weather forecast, per city, through the outbox and the queue
+  NOT         places, city facts and events. Those are the committed snapshot
+              in data/snapshot/; the event set is a manually verified sample
+              with a validity timer. Rebuilding them is `make snapshot`, a
+              maintainer step that rewrites files in the repository and expects
+              the diff to be reviewed. There is no marine data at all.
+  An incomplete refresh is reported as a failure. Some cities may already
+  have advanced; check the per-city result and each stored as-of stamp.
+
 Options:
+  --refresh       after the stack is healthy, fetch a fresh forecast. Needs a
+                  network. Cannot be combined with --offline.
   --offline, --skip-stage
                   skip connected staging. Checks that .env renders the Compose
-                  files, all images are local, and the staged model matches
-                  models.lock. It does not use a network.
+                  files, that every image the stack needs is already local,
+                  and that the staged model matches models.lock. A missing
+                  proof-runner image is a warning, not a failure: the app does
+                  not need it to run. It does not use a network.
   --no-start      stop after step 4. Does not start anything and does not wait.
   --wait-only     skip to step 6 and poll a stack that is already up. Use it
                   when --timeout ran out and you want to keep waiting.
@@ -120,6 +144,7 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --refresh) REFRESH=1; shift ;;
     --skip-stage | --offline) SKIP_STAGE=1; shift ;;
     --no-start) START=0; shift ;;
     --wait-only) WAIT_ONLY=1; shift ;;
@@ -135,6 +160,17 @@ case "$TIMEOUT" in
   '' | *[!0-9]*) echo "--timeout takes a number of seconds" >&2; exit 2 ;;
 esac
 
+# Caught here rather than fifteen minutes later, at the point where the fetch
+# would fail for a reason the flags already made inevitable.
+if [ "$REFRESH" -eq 1 ] && [ "$SKIP_STAGE" -eq 1 ]; then
+  echo "--refresh needs a network and --offline promises none; pick one" >&2
+  exit 2
+fi
+if [ "$REFRESH" -eq 1 ] && [ "$START" -eq 0 ]; then
+  echo "--refresh acts on a running stack, so it cannot be used with --no-start" >&2
+  exit 2
+fi
+
 # `docker compose` the way demos/lib.sh does it: with --env-file while the file
 # exists, plain before it does, so step 1 and step 2 work on a fresh clone.
 dc() {
@@ -146,6 +182,84 @@ dc() {
 }
 
 have_image() { docker image inspect "$1" >/dev/null 2>&1; }
+
+# Whether a service that has no healthcheck can yet be called up.
+#
+# These two functions set globals rather than echoing, because they memoise and
+# a `$(...)` call would run them in a subshell and throw every update away --
+# which is exactly the bug the first version of this had: the baseline was
+# never retained, so every poll looked like the first one and a healthy stack
+# waited out the full timeout.
+#
+# RESTART_COUNT: how many times Docker has restarted a service's container.
+# Anything unreadable answers 0, so a service is never held back by a failure
+# to measure it. The two `|| true`s are what make that true and are not
+# decoration: `set -e` is in force, this function is called as a plain
+# statement inside the poll loop rather than in a condition, and `pipefail`
+# makes the whole substitution non-zero when docker exits non-zero. Without
+# them the script died at the assignment, before the fallback below could run
+# -- with no "bootstrap failed:" line, no "next:" line and a bare exit 1,
+# which is exactly the failure this file exists to prevent. `2>/dev/null`
+# hides the message but not the status. The case that matters is a cached
+# container id that Docker has since replaced, because the id is looked up
+# once and kept for the whole wait.
+# The container id is looked up once per service and kept: the
+# loop polls every 5s for up to 15 minutes and `compose ps -q` is not free. The
+# memo is a flat string rather than an associative array, because `declare -A`
+# needs bash 4 and macOS still ships bash 3.2.
+_CID_CACHE=' '
+RESTART_COUNT=0
+read_restart_count() {
+  _rc_svc="$1"
+  _rc_cid="${_CID_CACHE##* $_rc_svc=}"
+  _rc_cid="${_rc_cid%% *}"
+  if [ -z "$_rc_cid" ]; then
+    _rc_cid="$(dc ps -q "$_rc_svc" 2>/dev/null | tr -d '\r' | head -n1 || true)"
+    if [ -z "$_rc_cid" ]; then RESTART_COUNT=0; return; fi
+    _CID_CACHE="$_CID_CACHE$_rc_svc=$_rc_cid "
+  fi
+  _rc_count="$(docker inspect -f '{{.RestartCount}}' "$_rc_cid" 2>/dev/null | tr -d '\r' || true)"
+  case "$_rc_count" in '' | *[!0-9]*) RESTART_COUNT=0 ;; *) RESTART_COUNT="$_rc_count" ;; esac
+}
+
+# STABILITY: '' when the service can be called up, otherwise the word to show.
+#
+# The absolute restart count is the wrong test, and it is an easy mistake to
+# make: the counter is cumulative for the life of the container, so a container
+# that ever restarted would be reported unhealthy by every later run of this
+# script, forever, until something recreated it. That is not hypothetical --
+# the no-data-loss drill stops and starts `consumer` four times by design and
+# leaves it at RestartCount=6 while perfectly healthy. Gating on "count > 0"
+# would make bootstrap hang on any machine where the proofs had been run, which
+# is worse than the defect it fixes.
+#
+# What is meaningful is a restart *while we are watching*, so the first sample
+# only records a baseline and reports `settling`. That costs a healthy stack
+# one extra poll interval, and it is the whole reason this can tell a crash
+# loop from a container that simply restarted an hour ago. The baseline is
+# never moved afterwards, so a service that restarts once stays flagged for the
+# rest of the wait instead of being declared settled between two restarts.
+#
+# Known limit, stated rather than hidden: Docker's restart backoff grows to
+# 60s, so a loop slower than the remaining wait can still go unseen. This
+# catches the fast loop a misconfigured broker or database produces, which is
+# the case that was reporting success.
+_RESTART_BASE=' '
+STABILITY=''
+read_stability() {
+  _rg_svc="$1"
+  read_restart_count "$_rg_svc"
+  _rg_base="${_RESTART_BASE##* $_rg_svc=}"
+  _rg_base="${_rg_base%% *}"
+  if [ -z "$_rg_base" ]; then
+    _RESTART_BASE="$_RESTART_BASE$_rg_svc=$RESTART_COUNT "
+    STABILITY=settling
+  elif [ "$RESTART_COUNT" -gt "$_rg_base" ]; then
+    STABILITY=restarting
+  else
+    STABILITY=''
+  fi
+}
 
 # Used for the disk measurement and for generating the passwords. Pulls only
 # if the image is not already here and staging is allowed. Offline mode never
@@ -200,7 +314,7 @@ if [ "$compose_major" -lt 2 ]; then
   die "Compose $compose_version is too old; v2 or newer is required for the top-level 'name:' key." \
       "upgrade the Compose plugin, then check it with 'docker compose version'"
 fi
-pass "Compose plugin v$compose_version"
+pass "Compose plugin v${compose_version#v}"
 
 case "$PYIMAGE" in
   python:*@sha256:*) : ;;
@@ -238,8 +352,12 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
   # Free space on Docker's own filesystem, measured from inside a container
   # for the same reason: the host's df is not the number that matters.
   if pyimage_ready; then
+    # `|| echo 0` for the same reason as the MemTotal line above: this step is
+    # advisory, so a daemon that refuses `--network none`, or an image that
+    # will not run here, must warn rather than abort the whole bootstrap with
+    # a raw docker error and no "next:" line.
     disk_bytes="$(docker run --rm --network none "$PYIMAGE" \
-      python -c 'import shutil; print(shutil.disk_usage(".").free)' | tr -d '\r')"
+      python -c 'import shutil; print(shutil.disk_usage(".").free)' 2>/dev/null | tr -d '\r' || echo 0)"
     case "$disk_bytes" in '' | *[!0-9]*) disk_bytes=0 ;; esac
     if [ "$disk_bytes" -eq 0 ]; then
       warn "could not read Docker's free disk; the README asks for about 6 GB."
@@ -301,8 +419,18 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
 
     # Write beside the target and move it into place, so an interrupted run
     # cannot leave a half-written .env that `up` would read.
+    #
+    # Created 0600 before a single password is written into it. The redirect
+    # below would otherwise create it under the ambient umask -- 0644 on most
+    # hosts -- and it would stay that way for the whole `docker run`, which is
+    # a second or more on a cold image. Tightening it afterwards closes the
+    # window between the chmod and the move; it does not close that one. This
+    # does, and it is the only way to make the file unreadable by anyone else
+    # for its entire life rather than for most of it.
     tmp="$ENV_FILE.bootstrap.$$"
     trap 'rm -f "$tmp"' EXIT
+    (umask 077; : >"$tmp") || die "could not create a temporary file beside $ENV_FILE." \
+                                  "check that the directory holding $ENV_FILE is writable, then rerun this script"
     if ! generated="$(docker run --rm -i --network none "$PYIMAGE" python -c "$GEN_ENV_PY" \
         < "$TEMPLATE" 2>&1 >"$tmp" | tail -n 1 | tr -d '\r')"; then
       die "generating $ENV_FILE failed." "run 'docker run --rm $PYIMAGE python -V' to check the helper image"
@@ -325,9 +453,15 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
       die "$ENV_FILE appeared while this script was generating one; refusing to overwrite it." \
           "check $ENV_FILE, then rerun this script"
     fi
+    # chmod before the mv, not after: tightening the mode once the file is
+    # already at its final name leaves the passwords group- and world-readable
+    # for the width of the window between the two calls. The `umask 077` above
+    # is what covers the longer window, the one the generator runs inside; this
+    # is the belt to that pair of braces, and it also covers a host where the
+    # subshell's umask did not take.
+    chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$ENV_FILE"
     trap - EXIT
-    chmod 600 "$ENV_FILE" 2>/dev/null || true
     pass "created $ENV_FILE from $TEMPLATE with $generated generated password(s)"
     note "Each one is distinct and random, and none of them was printed. .env"
     note "is gitignored, so this file is the only copy of them."
@@ -347,15 +481,64 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     dc config --quiet || die "$ENV_FILE does not render the Compose files (the error above names the variable)." \
                              "fix $ENV_FILE and rerun"
     pass "$ENV_FILE renders every Compose file"
-    staged_images="$(
-      { dc config --images; dc -f compose.tools.yml config --images; } | LC_ALL=C sort -u
-    )" || die "could not list the required images." "fix $ENV_FILE and rerun"
-    test -n "$staged_images" || die "Compose listed no images to check." "check the Compose files"
+    # Two lists, not one union, because they have different consequences. The
+    # compose.yml images are what `up` needs: without one of them there is no
+    # stack, so a miss is fatal. The compose.tools.yml images only stage the
+    # model and run the proofs; `aow/demos:dev` in particular is built by the
+    # fourth line of README step 2, which reads optional. Treating it as fatal
+    # refused to start a perfectly startable stack and told the reviewer to
+    # "rerun on a machine with a network" -- advice that is both unnecessary
+    # and, for someone who is already air-gapped, impossible to follow.
+    # Each list is captured separately so that a failure of either is caught:
+    # in a `{ a; b; }` group the exit status is b's alone, so a's failure was
+    # swallowed and the check silently ran against half the images.
+    runtime_images="$(dc config --images | tr -d '\r')" \
+      || die "could not list the images the stack needs." "fix $ENV_FILE and rerun"
+    test -n "$runtime_images" || die "Compose listed no images to check." "check the Compose files"
     while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
       have_image "$ref" || die "$ref is not staged on this machine." \
                               "rerun without --offline on a machine with a network"
-    done <<< "$staged_images"
-    pass "every required image is already local"
+    done <<< "$runtime_images"
+    pass "every image the stack needs is already local"
+
+    # The stage service's own image is required after all: the model check
+    # immediately below runs inside it, and without it that check would fail
+    # with "the model is not staged", which would be the wrong diagnosis.
+    stage_image="$(dc -f compose.tools.yml config --images stage | tr -d '\r' | head -n1)" \
+      || die "could not read the stage image out of compose.tools.yml." "fix $ENV_FILE and rerun"
+    if [ -n "$stage_image" ] && ! have_image "$stage_image"; then
+      die "$stage_image is not staged, so the model cannot be verified offline." \
+          "rerun without --offline on a machine with a network"
+    fi
+
+    # Everything else in compose.tools.yml is the proof runner, which the app
+    # does not need in order to run.
+    # Captured into a variable with its own `|| die`, for the same reason the
+    # two lists above are. A failing command substitution inside a `<<<`
+    # redirection does not trip `set -e`: the loop simply reads nothing, runs
+    # zero times, and the check below reports "the tooling images are here
+    # too" on a machine where the list was never read. That is the one shape
+    # of failure this whole step exists to catch, so it must not be the one
+    # shape it cannot see.
+    tools_images="$(dc -f compose.tools.yml config --images | tr -d '\r' | LC_ALL=C sort -u)" \
+      || die "could not list the tooling images from compose.tools.yml." "fix $ENV_FILE and rerun"
+    missing_tools=''
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      [ "$ref" = "$stage_image" ] && continue
+      have_image "$ref" || missing_tools="$missing_tools $ref"
+      # sort -u: two services share the demos image, and naming it twice in
+      # the warning reads like two separate problems.
+    done <<< "$tools_images"
+    if [ -n "$missing_tools" ]; then
+      warn "the stack can start, but these tooling images are missing:$missing_tools"
+      note "They run the proofs; they are not needed to run the app. Build"
+      note "them while connected with:"
+      note "  docker compose -f compose.tools.yml build demos"
+    else
+      pass "the tooling images are here too"
+    fi
     # The runtime override wins over compose.tools.yml's connected default.
     # If a model is absent, stage_model.py can only try a local file URL and
     # fail; it cannot fetch from the public registry or an internal mirror.
@@ -378,8 +561,19 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     if [ "$pulled" -eq 0 ]; then
       note "the four pinned images are already on this host; skipping the pull."
     else
-      note "pulling the four pinned images (~2.2 GB); this is the long one..."
-      dc pull --quiet postgres rabbitmq llm edge \
+      note "pulling the four pinned images (~2.2 GB); this is the long one."
+      note "Progress is printed per layer below. On a slow or throttled"
+      note "registry this step can take tens of minutes; it was measured at"
+      note "one point taking 53 kB/s from ghcr.io, so a stalled-looking pull"
+      note "is usually just a slow one. Ctrl-C and rerun is safe -- finished"
+      note "layers are cached and the pull resumes."
+      # Deliberately not --quiet. This is the longest step in the script by a
+      # wide margin and the only one that depends on somebody else's network.
+      # With --quiet it printed nothing at all while it ran, so a reviewer had
+      # no way to tell a slow pull from a hung one, and no reason to believe
+      # waiting would help. Per-layer progress costs some scrollback and buys
+      # the one thing this step needs: visible evidence that it is moving.
+      dc pull postgres rabbitmq llm edge \
         || die "could not pull the pinned images." \
                "check the network and rerun, or rerun with --offline on a machine that is already staged"
     fi
@@ -432,34 +626,65 @@ note "The llm container loads a 1.2 GB model on first start and reports"
 note "unhealthy for about 3 minutes while it does. That is expected, and it is"
 note "why the deadline here is minutes rather than seconds."
 
-services="$(dc config --services)" \
+services="$(dc config --services | tr -d '\r')" \
   || die "cannot list the services; $ENV_FILE does not render the Compose files." "fix $ENV_FILE and rerun"
+
+# Probe `ps --format` once, before the loop, instead of letting it fail
+# silently inside it. A Compose that cannot render this Go template returns
+# nothing, every service then reads "(no container)", and the script waits out
+# the full timeout on a stack that is actually healthy -- a 15-minute silent
+# hang whose failure message points at the wrong thing. The version gate above
+# only enforces the major, which is the floor for the top-level `name:` key,
+# not for `ps --format`, `config --images` or `up --pull`; a capability probe
+# is the honest check because it tests what this script actually uses.
+if ! dc ps --all --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' >/dev/null 2>&1; then
+  die "this Compose plugin (v${compose_version#v}) cannot render 'docker compose ps --format', which this script needs to tell a healthy service from a starting one." \
+      "upgrade the Compose v2 plugin (v2.21 or newer), then check it with 'docker compose ps --format \"{{.Service}}|{{.State}}\"'"
+fi
 
 started_at="$(date +%s)"
 deadline=$((started_at + TIMEOUT))
 last_line=''
 last_print=0
+first_poll=1
 
 while :; do
   # --all, because `migrate` runs once and exits 0 and would otherwise vanish
   # from the list the moment it succeeds.
-  ps_out="$(dc ps --all --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null || true)"
+  ps_out="$(dc ps --all --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null | tr -d '\r' || true)"
 
   pending=''
   broken=''
+  absent=0
+  counted=0
   for svc in $services; do
+    counted=$((counted + 1))
     line="$(printf '%s\n' "$ps_out" | grep -m1 "^$svc|" || true)"
     if [ -z "$line" ]; then
       pending="$pending $svc(no container)"
+      absent=$((absent + 1))
       continue
     fi
     IFS='|' read -r _ state health code <<<"$line"
     case "$state" in
       running)
-        # No healthcheck means "running is all we can know"; compose.yml gives
-        # one to everything an operator would wait for.
         case "$health" in
-          '' | healthy) ;;
+          healthy) ;;
+          '')
+            # No healthcheck: `running` is all Compose can tell us, and it is
+            # not enough. ingestor, consumer and enricher have none (they run
+            # services/Dockerfile, which declares no HEALTHCHECK) and all three
+            # carry `restart: unless-stopped`. A consumer that cannot reach the
+            # broker therefore crash-loops with a backoff that starts at 100ms,
+            # while this loop samples every 5s -- so one sample landing between
+            # two restarts would report the whole stack healthy and exit 0 on a
+            # database that nothing is writing to. Restarts happening *while we
+            # wait* are the signal Compose does not surface in `ps`.
+            read_stability "$svc"
+            if [ -n "$STABILITY" ]; then
+              pending="$pending $svc($STABILITY)"
+            fi
+            ;;
           *) pending="$pending $svc($health)" ;;
         esac
         ;;
@@ -481,6 +706,30 @@ while :; do
         "docker compose logs --tail 50$(printf '%s' "$broken" | sed 's/([^)]*)//g')"
   fi
 
+  # `--wait-only` on a stack that was never started is the one case where
+  # waiting cannot possibly help. Every service reads "(no container)" and the
+  # loop would sit out the whole deadline -- fifteen minutes by default --
+  # before failing with a `next:` line that tells the reader to run
+  # `docker compose logs` against containers that do not exist. The capability
+  # probe above does not catch this: it checks that `ps --format` runs, and on
+  # an empty project it runs perfectly and prints nothing.
+  #
+  # The confirming `ps --all -q` separates "nothing is running" from "that one
+  # `ps` call hiccuped", because only the first is worth dying on. It costs one
+  # extra call, once, on the poll that was going to fail anyway.
+  if [ "$WAIT_ONLY" -eq 1 ] && [ "$first_poll" -eq 1 ] \
+     && [ "$counted" -gt 0 ] && [ "$absent" -eq "$counted" ] \
+     && [ -z "$(dc ps --all -q 2>/dev/null | tr -d '\r' || true)" ]; then
+    if [ "$SKIP_STAGE" -eq 1 ]; then
+      start_cmd="bash scripts/bootstrap.sh --offline"
+    else
+      start_cmd="bash scripts/bootstrap.sh"
+    fi
+    die "no container exists for any service in this Compose project, so there is nothing to wait for. --wait-only polls a stack that is already up; it does not start one." \
+        "$start_cmd"
+  fi
+  first_poll=0
+
   if [ -z "$pending" ]; then
     elapsed=$(( $(date +%s) - started_at ))
     pass "every service is healthy (${elapsed}s)"
@@ -491,8 +740,13 @@ while :; do
   if [ "$now" -ge "$deadline" ]; then
     printf '\n'
     dc ps --all || true
+    # The hint goes on its own line, because `next:` is an invitation to
+    # copy-paste and must therefore be a command and nothing else. Welding
+    # " -- or keep waiting with ..." onto the end produced a `next:` line that
+    # fails with "no such service: or" when a reviewer does exactly that.
+    printf 'nothing has failed yet; to keep waiting instead, run:\n  bash scripts/bootstrap.sh --wait-only --timeout 600\n' >&2
     die "still waiting after ${TIMEOUT}s for:$pending" \
-        "docker compose logs --tail 50$(printf '%s' "$pending" | sed 's/([^)]*)//g') -- or keep waiting with 'bash scripts/bootstrap.sh --wait-only --timeout 600'"
+        "docker compose logs --tail 50$(printf '%s' "$pending" | sed 's/([^)]*)//g')"
   fi
 
   # Print when something changes, and otherwise every 30s, so the output is a
@@ -506,12 +760,119 @@ while :; do
 done
 
 # ------------------------------------------------------------------------
+# 7. Refresh (only with --refresh)
+# ------------------------------------------------------------------------
+# Deliberately after the health gate: scripts/refresh.sh acts on a running
+# stack, and a refresh against a half-started one fails in ways that look like
+# a network fault.
+#
+# The exit codes are refresh.sh's own, and they are worth keeping apart --
+# "the fetch failed" and "the egress window would not close" need different
+# reactions from whoever is reading this.
+if [ "$REFRESH" -eq 1 ]; then
+  step "Refresh  Fetching a fresh forecast"
+  note "This opens a bounded egress window, attaches only the ingestor to it,"
+  note "fetches, and closes the window again. Places, facts and events are not"
+  note "touched -- they are the committed snapshot."
+
+  # AOW_PROJECT is what the refresh container uses to decide which stack to
+  # act on, and it defaults to `aow` inside compose.tools.yml -- not to the
+  # project this script is driving. So someone who isolates a second copy with
+  # COMPOSE_PROJECT_NAME alone, which is the documented way to run one, would
+  # have the fetch open an egress window on the *other* stack and refresh that
+  # one instead. Default it here so the two cannot disagree.
+  # Exported rather than prefixed onto the call, because `dc` is a shell
+  # function and an assignment prefix on one of those does not behave the same
+  # way it does on a command.
+  export AOW_PROJECT="${AOW_PROJECT:-${COMPOSE_PROJECT_NAME:-aow}}"
+  note "refreshing the '$AOW_PROJECT' project"
+
+  refresh_rc=0
+  dc -f compose.tools.yml run --rm refresh || refresh_rc=$?
+
+  case "$refresh_rc" in
+    0)
+      REFRESH_RESULT=ok
+      pass "forecast refreshed, egress window verified closed"
+      ;;
+    3)
+      # The one outcome that is worse than a stale forecast.
+      REFRESH_RESULT=failed
+      printf '\n%s   EGRESS WINDOW STILL OPEN%s\n' "$C_RED" "$C_OFF"
+      note "scripts/refresh.sh could not close the egress window (exit 3)."
+      note "The ingestor may still reach the internet. Close it before using"
+      note "this stack as an offline demonstration:"
+      note "  docker network ls | grep aow-refresh"
+      note "  docker network rm <that network>"
+      ;;
+    *)
+      REFRESH_RESULT=failed
+      warn "the refresh did not complete (exit $refresh_rc)"
+      case "$refresh_rc" in
+        1) note "the stack was not in a state where a refresh can run" ;;
+        2) note "the fetch failed for at least one city; the egress window is closed" ;;
+        4) note "accepted and queued, but nothing reached the database in time" ;;
+        *) note "see the output above" ;;
+      esac
+      note "Check the per-city result above and GET /refresh/last. Some forecasts"
+      note "may have advanced; each stored as-of stamp shows the current state."
+      note "Retry with: docker compose -f compose.tools.yml run --rm refresh"
+      ;;
+  esac
+fi
+
+# ------------------------------------------------------------------------
 # Report
 # ------------------------------------------------------------------------
 step "Ready"
-note "UI   http://localhost:8080"
-note "API  http://localhost:8000/docs"
+# compose.yml publishes on ${AOW_BIND_ADDR:-127.0.0.1}, so the report has to
+# read the same variable. It used to print localhost unconditionally, which is
+# right on a default run and wrong on every isolated second copy -- and the
+# isolated copy is exactly the case where someone is least able to guess the
+# address they should be using.
+bind="${AOW_BIND_ADDR:-127.0.0.1}"
+if [ "$bind" = 127.0.0.1 ]; then
+  host=localhost
+else
+  host="$bind"
+fi
+note "UI   http://$host:8080"
+note "API  http://$host:8000/docs"
 printf '\n'
-note "Both are published on 127.0.0.1 only. If your browser resolves localhost"
-note "to ::1 and does not fall back, use http://127.0.0.1:8080."
+
+# Said on every run, not only the interesting ones. A reviewer who cannot tell
+# which rows were fetched today and which shipped with the clone cannot judge
+# any answer the system gives, and the UI's as-of stamps are only meaningful
+# next to a statement of what was supposed to have happened.
+case "$REFRESH_RESULT" in
+  ok)
+    note "Data: the weather forecast was fetched just now. Places, city facts"
+    note "and events are the committed snapshot -- they are never auto-fetched."
+    ;;
+  failed)
+    printf '%s   Data: THE REFRESH DID NOT COMPLETE.%s Some cities may have\n' "$C_YELLOW" "$C_OFF"
+    note "advanced while others retain older forecasts. Check /refresh/last;"
+    note "each answer and chart carries the stored data's own as-of stamp."
+    ;;
+  *)
+    note "Data: the committed snapshot, as cloned. Nothing was fetched -- rerun"
+    note "with --refresh on a connected machine to update the forecast."
+    ;;
+esac
+printf '\n'
+case "$bind" in
+  127.* | ::1) note "Both are published on $bind only." ;;
+  *) note "Both are published on $bind; this can expose the unauthenticated API to other machines." ;;
+esac
+if [ "$bind" = 127.0.0.1 ]; then
+  note "If your browser resolves localhost to ::1 and does not fall back, use"
+  note "http://127.0.0.1:8080."
+fi
 note "Stop it with 'docker compose down'; that keeps the database and the queue."
+
+# The stack is up either way, and the URLs above work either way -- but a run
+# whose fetch failed did not do what it was asked to do, and a caller that only
+# checks the exit status has to be able to tell. The report above says which.
+if [ "$REFRESH_RESULT" = failed ]; then
+  exit 2
+fi
