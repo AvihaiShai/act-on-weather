@@ -25,27 +25,34 @@ def ready():
         return False
     if not get("http://127.0.0.1:8000/scores?city=rome"):
         return False
-    get("http://agent:8100/health")
-    get("http://llm:8080/health")
-    get("http://ui:8501/_stcore/health")
-    get("http://edge:8080/healthz")
-    return True
+    if get("http://agent:8100/health").get("status") != "ok":
+        return False
+    if get("http://llm:8080/health").get("status") != "ok":
+        return False
+    if get("http://ui:8501/_stcore/health").strip() != b"ok":
+        return False
+    # /healthz is answered by nginx itself. These requests cross the actual
+    # proxy route the operator's browser and API client use.
+    if get("http://edge:8000/health").get("status") != "ok":
+        return False
+    if not get("http://edge:8000/weather/rome"):
+        return False
+    return b"streamlit" in get("http://edge:8080/").lower()
 
 
-deadline = time.monotonic() + 480  # first CPU model load can take ~3 minutes
-while time.monotonic() < deadline:
-    try:
-        if ready():
-            print("PASS: API, stored forecast, scores, agent, model, UI and edge")
-            break
-    # AttributeError and TypeError are here because get() returns raw bytes for a
-    # body that is not JSON: `health.get(...)` and `coverage["entities"]` then
-    # raise, and an uncaught raise abandons the whole retry budget on the first
-    # attempt -- the opposite of what a start-up probe should do. A service that
-    # answers with an HTML error page while it is still coming up is exactly the
-    # case this loop exists for.
-    except (OSError, ValueError, KeyError, StopIteration, AttributeError, TypeError):
-        pass
-    time.sleep(5)
-else:
+def main():
+    deadline = time.monotonic() + 480  # first CPU model load can take ~3 minutes
+    while time.monotonic() < deadline:
+        try:
+            if ready():
+                print("PASS: stored forecast and scores; agent, model, UI and edge routes respond")
+                return
+        # Startup can temporarily return HTML, an empty response or no response.
+        except (OSError, ValueError, KeyError, StopIteration, AttributeError, TypeError):
+            pass
+        time.sleep(5)
     raise SystemExit("release smoke test failed; inspect docker compose logs")
+
+
+if __name__ == "__main__":
+    main()

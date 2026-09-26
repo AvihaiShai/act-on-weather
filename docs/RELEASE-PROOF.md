@@ -318,6 +318,12 @@ used `127.0.0.3`.
 
 ## 3. The drill
 
+This is a historical A/B drill on `f192241` and `bf4a2df`, before the current
+migration set. Its timings were measured through the development machine's
+Windows/WSL2 filesystem; they are observations of that run, not estimates for
+USB transfer or for a current-release upgrade. The clean-engine release gate
+proves a single install of `6ba3e78`; it does not repeat steps 13–16 below.
+
 Two releases, each packaged from its own green `main` CI build, plus one
 fault-injection release derived locally — CI would never publish a migration
 written to fail, so that one is explicitly not a CI artefact.

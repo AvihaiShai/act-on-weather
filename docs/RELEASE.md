@@ -170,29 +170,33 @@ generated passwords and cleanup with `down --volumes --remove-orphans`.
 `scripts/release-smoke.py`; the workflow does not duplicate either command.
 
 **What has actually passed this gate, and for which commit.** Release run
-[`36222925158`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36222925158)
-validated the second-daemon step for commit `bfbb48a`, whose `sha` input is
+[`36228182265`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36228182265)
+validated the second-daemon step for commit `6ba3e78`, whose `sha` input is
 anchored by its own `aow-promotion-<sha>` artifact: the runner logged
 different engine IDs, an empty image and volume store before loading, complete
 archive verification for every image alias in the bundle, and a passing data
 smoke. Earlier hosted release runs installed on the packaging daemon, so their
 passes do not supply this evidence.
 
-That evidence covers `bfbb48a` and nothing else. **A commit later than the one
+That evidence covers `6ba3e78` and nothing else. **A commit later than the one
 named above carries no clean-engine proof until `release.yml` is dispatched for
 it**, because this gate runs only on that manual dispatch -- not on push, and
 not on merge. Read the promotion record of the release you are installing rather
 than assuming the head of `main` has been promoted.
 
-That smoke test asserts more than liveness, but not a deep functional check:
-it confirms `/health` is ok, `/coverage` reports the `weather` entity has
+The `6ba3e78` smoke asserted more than liveness, but was not a deep functional
+check: it confirmed `/health` was ok, `/coverage` reported the `weather` entity had
 `rows > 0` across all 5 cities, `/weather/rome` and `/scores?city=rome` both
 return a body -- real data reached Postgres through the queue and the rule
-engine produced scores from it -- and it separately checks liveness only
-(`/health`, no data assertion) for the agent, the LLM server, the UI and the
-edge proxy. It does not exercise agent tool-calling, does not check an LLM
-recommendation was written, and does not render the UI. Read
-`scripts/release-smoke.py` directly for the exact checks.
+engine produced scores from it. The current installer also requires the agent
+and model health endpoints to report ok, the UI health endpoint to respond,
+and the edge proxy to serve both an API weather response and the Streamlit HTML
+shell. It then runs `scripts/release-ui-smoke.py` inside the UI image: AppTest
+navigates all nine pages against the installed API and fails on an uncaught
+page exception. These added checks need a new exact-commit release run before
+they count as hosted evidence. They do not drive a browser, exercise model
+phrasing, or check that an LLM recommendation was written. Read both release
+smoke scripts for the exact checks.
 
 **Three claims live near each other here, and merging them would be the
 single most misleading thing this document could do.** They are:

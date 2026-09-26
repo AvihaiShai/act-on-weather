@@ -129,6 +129,12 @@ die()  { printf '\033[31mrestore failed: %s\033[0m\n' "$*" >&2; exit "${2:-3}"; 
 [ -d "$BACKUP_DIR" ] || die "no such backup directory: $BACKUP_DIR" 1
 [ -f "$BACKUP_DIR/manifest.json" ] || die "$BACKUP_DIR has no manifest.json" 1
 
+if [ -f release-version.txt ]; then
+  export AOW_IMAGE_VERSION="$(tr -d '\r\n' < release-version.txt)"
+  OVERLAY="${OVERLAY:-compose.bundle.yml}"
+  export AOW_SERVICES_IMAGE="${AOW_SERVICES_IMAGE:-aow-bundle/services:$AOW_IMAGE_VERSION}"
+fi
+
 COMPOSE_FILES=(-f compose.yml)
 if [ -n "$OVERLAY" ]; then
   [ -f "$OVERLAY" ] || die "no such Compose overlay: $OVERLAY" 1
@@ -156,11 +162,15 @@ if docker compose --progress quiet version >/dev/null 2>&1; then
 fi
 
 dc() {
+  local args=("$@")
+  if [ -f release-version.txt ] && { [ "$1" = up ] || [ "$1" = create ]; }; then
+    args=("$1" --pull never "${@:2}")
+  fi
   if [ -f "$ENV_FILE" ]; then
     docker compose "${PROGRESS[@]}" --env-file "$ENV_FILE_ARG" -p "$PROJECT" \
-      "${COMPOSE_FILES[@]}" "$@"
+      "${COMPOSE_FILES[@]}" "${args[@]}"
   else
-    docker compose "${PROGRESS[@]}" -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"
+    docker compose "${PROGRESS[@]}" -p "$PROJECT" "${COMPOSE_FILES[@]}" "${args[@]}"
   fi
 }
 

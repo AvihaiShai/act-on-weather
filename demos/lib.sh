@@ -7,6 +7,16 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# The proof runner and refresh helper invoke Compose again through the mounted
+# Docker socket. On an installed release, those inner calls need the same image
+# aliases as the outer `make` invocation. Otherwise a drill that recreates a
+# service could try to build or pull a development image on an offline host.
+if [ -f release-version.txt ]; then
+  export AOW_IMAGE_VERSION="$(tr -d '\r\n' < release-version.txt)"
+  export COMPOSE_PATH_SEPARATOR=':'
+  export COMPOSE_FILE='compose.yml:compose.bundle.yml'
+fi
+
 # Every script talks to the stack through these two, so a reviewer can point
 # them at a different env file or a different host without editing anything.
 : "${AOW_ENV_FILE:=.env}"

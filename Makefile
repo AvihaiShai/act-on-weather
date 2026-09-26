@@ -7,8 +7,8 @@
 # drills, refresh and backup/restore all reach the host through `docker` alone.
 # One target does not, and it is the pre-PR gate rather than anything the
 # project runs: `make verify` calls scripts/local-gates.sh with the host's bash,
-# and that script runs the snapshot-manifest check with the host's python3. CI
-# runs the same check in a container. Nothing here needs curl.
+# and that script mounts the checkout into the pinned Python image for the
+# snapshot-manifest check. Nothing here needs curl or host Python.
 
 COMPOSE        ?= docker compose
 CONNECTED      := -f compose.yml -f compose.connected.yml
@@ -48,6 +48,8 @@ endif
 export AOW_IMAGE_VERSION
 BUNDLE         = $(if $(AOW_IMAGE_VERSION),-f compose.bundle.yml,)
 OFFLINE_ARGS   = $(if $(AOW_IMAGE_VERSION),--no-build --pull never,)
+OFFLINE_RUN_ARGS = $(if $(AOW_IMAGE_VERSION),--pull never,)
+TOOLS_BUNDLE   = $(if $(AOW_IMAGE_VERSION),-f compose.tools.bundle.yml,)
 DEMO           = -f compose.yml $(BUNDLE) -f compose.demo.yml
 
 .PHONY: help bootstrap stage stage-fetch stage-build preflight up up-demo down logs ps \
@@ -141,9 +143,9 @@ stage-build:
 # re-hashes a model that is already there rather than fetching it, so this
 # needs no network.
 preflight:
-	$(COMPOSE) config --quiet
+	$(COMPOSE) -f compose.yml $(BUNDLE) config --quiet
 	@echo ".env is present and complete."
-	$(COMPOSE) $(TOOLS) run --rm stage
+	$(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm --pull never -e MODEL_BASE_URL= stage
 	@echo ""
 	@echo "Ready. Start it with: make up"
 
@@ -181,7 +183,7 @@ clean:
 # ------------------------------------------------------------------ tests --
 test:
 	docker build -q -f tests/Dockerfile -t aow/tests:dev .
-	docker run --rm aow/tests:dev
+	docker run --rm --network none aow/tests:dev
 
 # The four cheap gates a pull request has to pass, run the way CI runs them:
 # each one separately, judged by its exit code. Read scripts/local-gates.sh for
@@ -208,20 +210,20 @@ grounding:
 # from the checkout and not from an image layer -- and on a host that does have
 # bash, curl and python3, `bash demos/01_offline.sh` is the same run without
 # the wrapper.
-offline:       ; $(COMPOSE) $(TOOLS) run --rm demos offline
-no-data-loss:  ; $(COMPOSE) $(TOOLS) run --rm demos no-data-loss
-update:        ; $(COMPOSE) $(TOOLS) run --rm demos update
-reenrich:      ; $(COMPOSE) $(TOOLS) run --rm demos reenrich
-questions:     ; $(COMPOSE) $(TOOLS) run --rm demos questions
+offline:       ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos offline
+no-data-loss:  ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos no-data-loss
+update:        ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos update
+reenrich:      ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos reenrich
+questions:     ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos questions
 # Deliberately not part of `make demo`. Every proof above runs against the
 # stack that is already up; this one builds an isolated project of its own
 # and destroys its volumes, which takes about two minutes and would be a
 # surprising thing for `make demo` to do to a reviewer.
-backup-restore: ; $(COMPOSE) $(TOOLS) run --rm demos backup-restore
+backup-restore: ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos backup-restore
 
 # One container. demos/run.sh keeps the order -- prove the system works and
 # answers before breaking it, so a failure in a drill is unambiguous.
-demo: ; $(COMPOSE) $(TOOLS) run --rm demos all
+demo: ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos all
 
 # ------------------------------------------------------ connected updates --
 # The operator refresh. One command, because the dangerous part of a refresh is
@@ -238,12 +240,12 @@ demo: ; $(COMPOSE) $(TOOLS) run --rm demos all
 # stack; that is how the drills run the shipped command against an isolated
 # project instead of editing compose.tools.yml.
 refresh:
-	$(COMPOSE) $(TOOLS) run --rm refresh
+	$(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) refresh
 
 # Opens and closes the egress window without fetching anything: the drill for
 # "does this always put the ingestor back?". Needs no internet.
 refresh-check:
-	$(COMPOSE) $(TOOLS) run --rm refresh --check
+	$(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) refresh --check
 
 snapshot:
 	$(COMPOSE) $(CONNECTED) run --rm --no-deps ingestor \

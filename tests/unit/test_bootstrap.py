@@ -845,7 +845,7 @@ def test_wait_only_and_no_start_are_rejected_together(tmp_path: Path) -> None:
 #   test_the_egress_window_failure_is_louder_than_a_failed_fetch
 #       -> test_an_unclosed_egress_window_is_reported_louder_than_a_stale_forecast
 #   test_a_failed_refresh_exits_non_zero
-#       -> both failure tests assert `returncode == 2` alongside the report
+#       -> both failure tests assert `returncode == 3` alongside the report
 #          text, which also pins the exit as coming after the report
 
 

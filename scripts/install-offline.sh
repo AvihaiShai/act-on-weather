@@ -249,6 +249,7 @@ for attempt in 1 2 3; do
   sleep 10
 done
 dc exec -T api python - < scripts/release-smoke.py
+dc exec -T ui python - < scripts/release-ui-smoke.py
 
 # The bind address, resolved from the same two places Compose reads it and in
 # the same order: the shell environment first, then --env-file. compose.yml

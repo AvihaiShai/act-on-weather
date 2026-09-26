@@ -449,6 +449,7 @@ INSTALL_SCRIPTS = (
     "verify-bundle-images.sh",
     "bundle-image-manifests.sh",
     "release-smoke.py",
+    "release-ui-smoke.py",
 )
 INSTALL_ALIASES = ("services", "ui", "postgres", "demos")
 

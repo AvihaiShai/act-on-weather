@@ -60,12 +60,14 @@ record "ruff format --check" $?
 docker run --rm --network none "$IMAGE"
 record "unit tests" $?
 
-# Run on the host, not in the gate image, because CI runs it on the runner
-# against the full checkout. The image carries the services and the tests, not
-# README.md, so running it inside would fail on a missing file rather than on
-# a stale count -- a gate that fails for the wrong reason teaches people to
-# ignore it.
-python3 scripts/snapshot_manifest.py --check
+# The gate image omits README.md and docs/, which this check reads. Mount the
+# full checkout into the pinned Python image, still with no network, so this
+# gate has the same inputs on every host and needs no host Python installation.
+PYIMAGE="$(awk '$1 == "PYIMAGE" { print $3 }' Makefile)"
+WORKDIR="$(pwd -W 2>/dev/null || pwd)"
+MSYS_NO_PATHCONV=1 docker run --rm --pull never --network none \
+  --mount "type=bind,src=$WORKDIR,dst=/work,readonly" -w /work "$PYIMAGE" \
+  python scripts/snapshot_manifest.py --check
 record "snapshot manifest" $?
 
 echo
