@@ -20,6 +20,17 @@ test "$(git rev-parse HEAD)" = "$commit" || { echo "check out commit $commit fir
 git diff --quiet HEAD -- || { echo "tracked changes are not in the release commit" >&2; exit 1; }
 sha256sum -c models.lock
 
+# `compose run` has no --no-build flag. Require the release overlay to remove
+# demos.build before packaging; otherwise a missing image could start an APK
+# build on the offline host. This also checks the operator's Compose version
+# understands the !reset tag used by the overlay.
+if ! AOW_IMAGE_VERSION="$commit" docker compose -f compose.tools.yml \
+    -f compose.tools.bundle.yml --env-file .env.example config --format json \
+    | python3 -c 'import json,sys; demo=json.load(sys.stdin)["services"]["demos"]; assert "build" not in demo; assert demo["image"] == "aow-bundle/demos:" + sys.argv[1]' "$commit"; then
+  echo "the offline demos Compose model still has a build recipe or wrong image" >&2
+  exit 1
+fi
+
 # images.lock is a file someone downloaded, so treat it as a claim rather than
 # as proof. Two things make the claim hard to write by hand. First, the
 # references have to live in this repository's own GHCR namespace, taken from

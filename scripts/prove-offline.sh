@@ -12,11 +12,8 @@ export AOW_PROJECT="${COMPOSE_PROJECT_NAME:-aow}"
 # once; AOW_PROJECT is the one that survived the merge, because it also names
 # the tools project itself and the API address.
 unset COMPOSE_PROJECT_NAME
-# --no-build matters as much as --pull never here. compose.tools.yml still
-# carries `build: {context: demos}`, so without it a missing
-# aow-bundle/demos:<commit> tag -- a bad load, the wrong AOW_IMAGE_VERSION, the
-# wrong project -- makes Compose build the image instead of failing, and
-# demos/Dockerfile's `apk add` then needs the egress this proof exists to show
-# is absent. The offline host would report a network error for a tag problem.
+# `run` does not support --no-build (Compose v5 rejects that flag). The bundle
+# overlay removes the development build recipe with !reset, and --pull never
+# makes a missing aow-bundle/demos:<commit> image fail without network access.
 docker compose -f compose.tools.yml -f compose.tools.bundle.yml --env-file .env \
-  run --rm --no-build --pull never demos "${@:-offline}"
+  run --rm --pull never demos "${@:-offline}"

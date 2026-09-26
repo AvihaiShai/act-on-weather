@@ -448,15 +448,13 @@ def test_the_transcript_says_when_no_external_anchor_was_supplied(bundle: Path) 
 
 
 def test_the_offline_proof_cannot_fall_back_to_building(bundle: Path) -> None:
-    # compose.tools.yml still carries a `build:` section for the demos image, so
-    # `docker compose run` without --no-build treats a missing bundle tag as a
-    # reason to build -- and demos/Dockerfile's `apk add` needs the egress the
-    # proof exists to show is absent. On a disconnected host that turns a tag
-    # problem into a network error, which is the most misleading failure this
-    # script could produce.
+    # `compose run` has no --no-build flag. The release overlay must remove the
+    # development build recipe so a missing image fails without a network call.
     prove = (REPO / "scripts" / "prove-offline.sh").read_text()
     run_line = next(line for line in prove.splitlines() if "run --rm" in line)
-    assert "--no-build" in run_line
+    overlay = (REPO / "compose.tools.bundle.yml").read_text()
+    assert "build: !reset null" in overlay
+    assert "--no-build" not in run_line
     assert "--pull never" in run_line
 
 
@@ -507,9 +505,8 @@ def test_every_compose_invocation_carries_its_bundle_overlay() -> None:
 
 
 def test_nothing_that_starts_a_container_may_pull_or_build() -> None:
-    """The overlay names local images; these two flags are what make a missing
-    one a hard failure instead of a pull or a build."""
-    for script in BUNDLE_OVERLAY:
+    """A missing release image must fail without a build or registry lookup."""
+    for script, overlay in BUNDLE_OVERLAY.items():
         found = [
             command
             for command in commands(script)
@@ -518,7 +515,11 @@ def test_nothing_that_starts_a_container_may_pull_or_build() -> None:
         ]
         assert found, f"{script}: nothing in it starts a container"
         for command in found:
-            assert "--no-build" in command, f"{script}: `{command}` has no --no-build"
+            if re.search(r"\bup\b", command):
+                assert "--no-build" in command, f"{script}: `{command}` has no --no-build"
+            else:
+                assert "--no-build" not in command, f"{script}: run does not accept --no-build"
+                assert "build: !reset null" in (REPO / overlay).read_text()
             assert "--pull never" in command, f"{script}: `{command}` has no --pull never"
 
 

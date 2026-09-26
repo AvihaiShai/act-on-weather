@@ -4,6 +4,9 @@ services:
   stage:
     image: aow-bundle/stage:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
   demos:
+    # `docker compose run` has no --no-build option. Remove the development
+    # build recipe here so a missing bundle image cannot trigger a build.
+    build: !reset null
     image: aow-bundle/demos:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}
     environment:
       # The helper containers demos/06_backup_restore.sh starts for itself.
