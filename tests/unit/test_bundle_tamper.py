@@ -28,6 +28,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -457,6 +458,76 @@ def test_the_offline_proof_cannot_fall_back_to_building(bundle: Path) -> None:
     run_line = next(line for line in prove.splitlines() if "run --rm" in line)
     assert "--no-build" in run_line
     assert "--pull never" in run_line
+
+
+# Which overlay each offline script cannot be run without. install-offline.sh
+# and restore-offline.sh drive the application stack; prove-offline.sh drives
+# the tools stack, which has a bundle overlay of its own.
+BUNDLE_OVERLAY = {
+    "install-offline.sh": "compose.bundle.yml",
+    "restore-offline.sh": "compose.bundle.yml",
+    "prove-offline.sh": "compose.tools.bundle.yml",
+}
+
+
+def commands(script: str) -> list[str]:
+    """A script's commands, continuations joined and comments dropped.
+
+    prove-offline.sh splits one `docker compose` call over two lines, so a
+    line-by-line reading would see the overlay and the `run` separately and
+    conclude the wrong thing about both.
+    """
+    text = (REPO / "scripts" / script).read_text().replace("\\\n", " ")
+    return [line.strip() for line in text.splitlines() if not line.lstrip().startswith("#")]
+
+
+def test_every_compose_invocation_carries_its_bundle_overlay() -> None:
+    """The one edit that turns a working offline install into a network error.
+
+    The bundle loads its images as aow-bundle/<alias>:<commit>. compose.yml names
+    aow/services:dev and aow/ui:dev, which no offline host has, and still carries
+    the `build:` sections they came from -- so a `docker compose` command without
+    the overlay resolves an image that is not there, and Compose answers by
+    pulling or building. Nothing else in this suite would notice: the stub Docker
+    in test_bundle_archive.py used to answer every `compose` call with exit 0.
+    """
+    for script, overlay in BUNDLE_OVERLAY.items():
+        found = [
+            command
+            for command in commands(script)
+            if "docker compose" in command
+            # `docker compose version` asks whether the plugin exists. It reads
+            # no Compose file and resolves no image, so it is the one call that
+            # neither needs the overlay nor could use it.
+            and "docker compose version" not in command
+        ]
+        assert found, f"{script}: no docker compose invocation found at all"
+        for command in found:
+            assert f"-f {overlay}" in command, f"{script}: `{command}` does not pass -f {overlay}"
+
+
+def test_nothing_that_starts_a_container_may_pull_or_build() -> None:
+    """The overlay names local images; these two flags are what make a missing
+    one a hard failure instead of a pull or a build."""
+    for script in BUNDLE_OVERLAY:
+        found = [
+            command
+            for command in commands(script)
+            # `dc` is the one-line helper each script wraps `docker compose` in.
+            if re.match(r"(dc|docker compose)\b", command) and re.search(r"\b(up|run)\b", command)
+        ]
+        assert found, f"{script}: nothing in it starts a container"
+        for command in found:
+            assert "--no-build" in command, f"{script}: `{command}` has no --no-build"
+            assert "--pull never" in command, f"{script}: `{command}` has no --pull never"
+
+
+def test_the_overlay_is_a_file_the_bundle_actually_ships() -> None:
+    """An overlay every command passes and no bundle contains would fail the
+    same way. scripts/package-offline.sh ships what `git archive` holds, so
+    being committed here is what puts these in the release folder."""
+    for overlay in set(BUNDLE_OVERLAY.values()):
+        assert (REPO / overlay).is_file(), f"{overlay} is not committed"
 
 
 def test_verification_never_calls_docker() -> None:

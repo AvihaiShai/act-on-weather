@@ -1,15 +1,45 @@
 # Convenience only. Every target is a docker command you can type by hand, and
 # the README shows the raw commands too -- nothing here is required to run the
-# project, and no target needs host-side Python, bash or curl. `make` itself is
-# the only thing this file adds to the prerequisites.
+# project. `make` itself is the only thing this file adds to the prerequisites.
+#
+# Every target that runs the project is pure Docker: bootstrap, stage,
+# preflight, up, up-demo, down, ps, logs, clean, test, monitor, the proof
+# drills, refresh and backup/restore all reach the host through `docker` alone.
+# One target does not, and it is the pre-PR gate rather than anything the
+# project runs: `make verify` calls scripts/local-gates.sh with the host's bash,
+# and that script runs the snapshot-manifest check with the host's python3. CI
+# runs the same check in a container. Nothing here needs curl.
 
 COMPOSE        ?= docker compose
 CONNECTED      := -f compose.yml -f compose.connected.yml
-DEMO           := -f compose.yml -f compose.demo.yml
 TOOLS          := -f compose.tools.yml
 PROBE          := -p aow-f3 -f compose.yml -f compose.model-probe.yml
 # Pinned in IMAGES.lock like every other image, and checked against it in CI.
 PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+
+# ---------------------------------------------- developer checkout or release --
+# An installed offline release carries release-version.txt, and its images are
+# the bundle aliases (aow-bundle/<alias>:<commit>) rather than the aow/*:dev tags
+# compose.yml names. So on such a host every command that has to resolve an
+# image needs compose.bundle.yml, and must be told not to pull or build when it
+# cannot find one -- compose.yml still carries `build:` sections, so a missing
+# image otherwise becomes a build, and demos/Dockerfile's apk add then reports a
+# network error for what was really a tag problem.
+#
+# A developer checkout has no version file, so both variables are empty there
+# and every command below is exactly what it was.
+#
+# scripts/install-offline.sh exports AOW_IMAGE_VERSION only for its own process,
+# so a later `make up` on the release host reads the version file itself.
+ifeq ($(strip $(AOW_IMAGE_VERSION)),)
+ifneq ($(wildcard release-version.txt),)
+AOW_IMAGE_VERSION := $(shell cat release-version.txt)
+endif
+endif
+export AOW_IMAGE_VERSION
+BUNDLE         = $(if $(AOW_IMAGE_VERSION),-f compose.bundle.yml,)
+OFFLINE_ARGS   = $(if $(AOW_IMAGE_VERSION),--no-build --pull never,)
+DEMO           = -f compose.yml $(BUNDLE) -f compose.demo.yml
 
 .PHONY: help bootstrap stage stage-fetch stage-build preflight up up-demo down logs ps \
         test verify demo \
@@ -110,7 +140,7 @@ preflight:
 
 # ---------------------------------------------------------------- running --
 up:
-	$(COMPOSE) up -d
+	$(COMPOSE) -f compose.yml $(BUNDLE) up -d $(OFFLINE_ARGS)
 	@echo ""
 	@echo "UI  http://localhost:8080"
 	@echo "API http://localhost:8000/docs"
@@ -121,7 +151,7 @@ up:
 # can be shown on days the 55 verified events do not cover.
 # Going back to "make up" restarts the consumer, which deletes them.
 up-demo:
-	$(COMPOSE) $(DEMO) up -d
+	$(COMPOSE) $(DEMO) up -d $(OFFLINE_ARGS)
 	@echo ""
 	@echo "UI  http://localhost:8080  -- the header carries a demo-mode banner."
 	@echo "Back to verified-only data: make up"
@@ -247,21 +277,13 @@ redrive:
 # Grafana is the only thing published, on loopback like everything else.
 # Prometheus stays on the internal network and is reached through Grafana.
 #
-# The installer exports AOW_IMAGE_VERSION only for its own process. A later
-# `make monitor` reads the release's version file itself, so it still selects
-# the bundle aliases from a fresh shell. A developer checkout has no version
-# file and uses the registry-pinned observability overlay directly.
-ifeq ($(strip $(AOW_IMAGE_VERSION)),)
-ifneq ($(wildcard release-version.txt),)
-AOW_IMAGE_VERSION := $(shell cat release-version.txt)
-endif
-endif
-export AOW_IMAGE_VERSION
-OBS_BUNDLE = $(if $(AOW_IMAGE_VERSION),-f compose.bundle.yml -f compose.observability.bundle.yml,)
-OBS_OFFLINE_ARGS = $(if $(AOW_IMAGE_VERSION),--no-build --pull never,)
+# On a release host the overlay pair comes from BUNDLE at the top of this file,
+# which reads release-version.txt; a developer checkout has no version file and
+# uses the registry-pinned observability overlay directly.
+OBS_BUNDLE = $(if $(AOW_IMAGE_VERSION),$(BUNDLE) -f compose.observability.bundle.yml,)
 
 monitor:
-	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) up -d $(OBS_OFFLINE_ARGS)
+	$(COMPOSE) -f compose.yml -f compose.observability.yml $(OBS_BUNDLE) up -d $(OFFLINE_ARGS)
 	@echo ""
 	@echo "Grafana http://127.0.0.1:3000 -- admin / GRAFANA_ADMIN_PASSWORD from .env"
 

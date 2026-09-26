@@ -352,12 +352,73 @@ def test_the_target_platform_is_configurable(tmp_path: Path) -> None:
 # ----------------------------------------------------- the installer's census --
 
 STUB_DOCKER = """#!/bin/sh
-# Stand-in for the Docker CLI, so the installer's post-load logic can be tested
-# without a daemon. It answers only the five things install-offline.sh asks.
+# Stand-in for the Docker CLI, so the installer's post-load logic and its
+# upgrade branch can be tested without a daemon. It answers only what
+# install-offline.sh asks, and it is strict where being permissive would hide
+# the mistakes these tests exist to catch.
+
+# What `pg_dump --clean --if-exists` ends with. The installer looks for that
+# closing marker rather than for a non-empty file, because pg_dump streams and a
+# truncated dump is not empty.
+DEFAULT_DUMP='-- PostgreSQL database dump
+DROP TABLE IF EXISTS itineraries;
+CREATE TABLE itineraries (id text);
+--
+-- PostgreSQL database dump complete
+--
+'
+
 case "$1" in
   info) echo amd64 ;;
-  ps) : ;;
-  compose) : ;;
+  ps)
+    # The installer's one query: the running postgres of this project. Empty
+    # unless a test is exercising an upgrade.
+    if [ -n "${AOW_STUB_RUNNING_PG:-}" ]; then echo "$AOW_STUB_RUNNING_PG"; fi
+    ;;
+  volume)
+    # `docker volume ls -q --filter name=^<project>_pgdata$`: a database this
+    # host already holds. Empty unless a test says otherwise.
+    if [ -n "${AOW_STUB_PGDATA_VOLUME:-}" ]; then echo "$AOW_STUB_PGDATA_VOLUME"; fi
+    ;;
+  exec)
+    # Two forms, both against the previous release's postgres container:
+    # `printenv <KEY>` for the credential guard, and `sh -c '<pg_dump ...>'`
+    # for the pre-upgrade dump itself.
+    shift            # exec
+    shift            # the container id
+    case "$1" in
+      printenv)
+        # The defaults agree with the release fixture's .env, so an upgrade
+        # passes the guard unless a test changes one of them.
+        case "$2" in
+          POSTGRES_USER)     printf '%s\\n' "${AOW_STUB_PG_USER-aow}" ;;
+          POSTGRES_DB)       printf '%s\\n' "${AOW_STUB_PG_DB-aow}" ;;
+          POSTGRES_PASSWORD) printf '%s\\n' "${AOW_STUB_PG_PASSWORD-placeholder}" ;;
+        esac
+        ;;
+      *)
+        printf '%s' "${AOW_STUB_DUMP-$DEFAULT_DUMP}"
+        ;;
+    esac
+    ;;
+  compose)
+    # The prerequisite check for the plugin itself. It reads no Compose file and
+    # resolves no image, so it is the one call with no overlay to carry.
+    if [ "$2" = version ]; then echo "Docker Compose version v2.0.0-stub"; exit 0; fi
+    # Not a no-op. Answering 0 to anything is how a missing overlay -- the one
+    # edit that turns an offline install into a pull or a build -- would go
+    # unnoticed by every test in this file.
+    case " $* " in
+      *" -f compose.bundle.yml "*) ;;
+      *) echo "stub docker: compose called without -f compose.bundle.yml: $*" >&2; exit 64 ;;
+    esac
+    test -f compose.bundle.yml \
+      || { echo "stub docker: compose.bundle.yml is not in this release folder" >&2; exit 64; }
+    if [ -n "${AOW_STUB_COMPOSE_LOG:-}" ]; then
+      shift
+      echo "$*" >> "$AOW_STUB_COMPOSE_LOG"
+    fi
+    ;;
   image)
     # docker image inspect <ref>: present only if the test said so.
     shift 2
@@ -429,6 +490,12 @@ def release(tmp_path: Path) -> Path:
     )
     (root / "release-version.txt").write_bytes(f"{COMMIT}\n".encode())
     (root / "compose.yml").write_bytes(b"name: aow\nservices: {}\n")
+    # Shaped like the real overlay, because the installer refuses a release
+    # folder without one and the stub Docker refuses a compose call that does
+    # not pass it.
+    (root / "compose.bundle.yml").write_bytes(
+        b"services:\n  api:\n    image: aow-bundle/services:${AOW_IMAGE_VERSION:?set AOW_IMAGE_VERSION}\n"
+    )
     (root / "models").mkdir()
     model = root / "models" / "model.gguf"
     model.write_bytes(b"pretend this is 1.1 GB of model weights")
@@ -496,7 +563,13 @@ def test_an_install_on_an_empty_store_says_the_archive_supplied_everything(
     assert result.returncode == 0, output(result)
     assert "held none of the 4 release tags" in result.stdout
     assert "archive verification found their config and layers" in result.stdout
-    assert f"Release {COMMIT} is serving" in result.stdout
+    assert f"Release {COMMIT} is up" in result.stdout
+    # The closing line may not claim more than the run established. The smoke
+    # test runs inside the api container and never reaches a published host
+    # port, so the ports are reported as configuration, not as a result.
+    assert "serving stored forecasts and scores from inside the stack" in result.stdout
+    assert "Published on 127.0.0.1:8080 (UI) and 127.0.0.1:8000 (API)" in result.stdout
+    assert "is serving on ports" not in result.stdout
 
 
 def test_an_install_over_images_the_engine_already_had_says_so(
@@ -551,3 +624,148 @@ def test_a_clean_store_can_be_demanded(release: Path, tmp_path: Path) -> None:
     assert "AOW_REQUIRE_CLEAN_IMAGE_STORE" in result.stderr
     assert "ui" in output(result)
     assert not marker.exists(), "strict mode must refuse before docker load"
+
+
+# ------------------------------------------------------- the upgrade branch --
+#
+# Everything below covers the half of the installer that CI cannot reach. The
+# release workflow's install runs under a unique COMPOSE_PROJECT_NAME on an
+# empty engine, so there is never a prior database and this branch has never
+# executed there. It is also the branch that holds the only thing standing
+# between a failed upgrade and an irreversible migration: the pre-upgrade dump.
+
+UPGRADE = {"AOW_STUB_RUNNING_PG": "pg-of-the-previous-release"}
+
+
+def dumps(release: Path) -> list[Path]:
+    return sorted((release / "backup").glob("*.sql"))
+
+
+def test_an_upgrade_dumps_the_running_database_first(release: Path, tmp_path: Path) -> None:
+    result = install(release, tmp_path, **UPGRADE)
+    assert result.returncode == 0, output(result)
+    assert "upgrading a running installation" in result.stdout
+    written = dumps(release)
+    assert len(written) == 1, f"expected exactly one dump, got {written}"
+    assert "PostgreSQL database dump complete" in written[0].read_text()
+
+
+def test_an_unfinished_dump_stops_the_install_before_any_image_is_loaded(
+    release: Path, tmp_path: Path
+) -> None:
+    """pg_dump streams, so a truncated dump is not an empty one.
+
+    The old check was `test -s`, which a half-written dump passes -- and that
+    file is the whole rollback path for a migration an image rollback cannot
+    undo. Both the truncated and the empty case are refused here.
+    """
+    for label, body in (("truncated", "-- PostgreSQL database dump\nDROP TABLE x;\n"), ("empty", "")):
+        marker = tmp_path / f"load-called-{label}"
+        result = install(
+            release, tmp_path, AOW_STUB_DUMP=body, AOW_STUB_LOAD_MARKER=str(marker), **UPGRADE
+        )
+        assert result.returncode == 1, f"{label}: {output(result)}"
+        assert "did not finish" in result.stderr, f"{label}: {output(result)}"
+        assert not marker.exists(), f"{label}: nothing may be loaded after a bad dump"
+
+
+def test_an_upgrade_with_regenerated_passwords_is_refused(release: Path, tmp_path: Path) -> None:
+    """Confirmed on a live engine: `migrate exited 2`, "password authentication
+    failed for user aow".
+
+    Postgres fixes the superuser password inside pgdata when the volume is
+    initialised and nothing updates it afterwards, so a new release folder with
+    freshly generated passwords cannot authenticate against an existing
+    database. Without this guard the installer took the dump, loaded the whole
+    archive, and only then died in migrate.
+    """
+    marker = tmp_path / "load-called"
+    result = install(
+        release,
+        tmp_path,
+        AOW_STUB_PG_PASSWORD="what-the-volume-was-initialised-with",
+        AOW_STUB_LOAD_MARKER=str(marker),
+        **UPGRADE,
+    )
+    assert result.returncode == 1
+    assert "POSTGRES_PASSWORD in .env does not match" in result.stderr
+    assert "Reuse the previous release's .env verbatim" in result.stderr
+    assert not marker.exists(), "the guard must refuse before docker load"
+    assert not dumps(release), "nothing should be dumped once the credentials are known to be wrong"
+
+
+def test_a_differing_user_or_database_is_refused_by_name(release: Path, tmp_path: Path) -> None:
+    """The same trap, for the other two values that live in the volume. The
+    writer and reader passwords are re-applied by 001_init.sql on every boot;
+    these three are not, which is why only they are checked."""
+    for key, stub in (("POSTGRES_USER", "AOW_STUB_PG_USER"), ("POSTGRES_DB", "AOW_STUB_PG_DB")):
+        result = install(release, tmp_path, **{stub: "not-aow"}, **UPGRADE)
+        assert result.returncode == 1, output(result)
+        assert f"{key} in .env does not match" in result.stderr
+
+
+def test_an_upgrade_stops_the_previous_readers_before_migrating(
+    release: Path, tmp_path: Path
+) -> None:
+    """Every boot re-applies the migrations, and three of them ALTER TABLE --
+    which takes ACCESS EXCLUSIVE before discovering the change is already made.
+    One in-flight SELECT from the previous release's api, agent or enricher makes
+    migrate queue behind it, and a queued exclusive request blocks every reader
+    after it. `up -d` waits on migrate, so the install stalls."""
+    log = tmp_path / "compose-calls"
+    result = install(release, tmp_path, AOW_STUB_COMPOSE_LOG=str(log), **UPGRADE)
+    assert result.returncode == 0, output(result)
+
+    calls = log.read_text().splitlines()
+    stopped = next((c for c in calls if " stop " in f" {c} "), None)
+    assert stopped, f"no `stop` before the upgrade started the new release: {calls}"
+    for service in ("ingestor", "enricher", "api", "agent", "ui"):
+        assert service in stopped, f"{service} is left running through the migrations"
+    assert calls.index(stopped) < next(i for i, c in enumerate(calls) if " up " in f" {c} ")
+
+
+def test_a_first_install_neither_dumps_nor_stops_anything(release: Path, tmp_path: Path) -> None:
+    """The other side of the branch: no prior database, so no dump to take and
+    nothing to stop. Guards against the upgrade path firing on a clean host."""
+    log = tmp_path / "compose-calls"
+    result = install(release, tmp_path, AOW_STUB_COMPOSE_LOG=str(log))
+    assert result.returncode == 0, output(result)
+    assert "upgrading a running installation" not in result.stdout
+    assert not (release / "backup").exists()
+    assert not any(" stop " in f" {c} " for c in log.read_text().splitlines())
+
+
+def test_a_stopped_previous_release_is_refused_rather_than_silently_migrated(
+    release: Path, tmp_path: Path
+) -> None:
+    """The gap that made the dump optional in practice.
+
+    An operator who runs `make down` before upgrading -- the natural thing to do
+    -- leaves the pgdata volume in place with no container running. Asking
+    `docker ps` alone found nothing, took no dump, and applied the migrations
+    anyway, so the upgrade became irreversible with nothing saying so.
+    """
+    marker = tmp_path / "load-called"
+    result = install(
+        release, tmp_path, AOW_STUB_PGDATA_VOLUME="aow_pgdata", AOW_STUB_LOAD_MARKER=str(marker)
+    )
+    assert result.returncode == 1
+    assert "aow_pgdata" in result.stderr
+    assert "AOW_SKIP_PREUPGRADE_DUMP=1" in result.stderr
+    assert not marker.exists(), "nothing may be loaded over a database that was not dumped"
+
+
+def test_installing_over_a_stopped_database_without_a_dump_has_to_be_asked_for(
+    release: Path, tmp_path: Path
+) -> None:
+    """And when it is asked for, the transcript records it. A skipped check and
+    a passed check must not read identically once only the log is left."""
+    result = install(
+        release,
+        tmp_path,
+        AOW_STUB_PGDATA_VOLUME="aow_pgdata",
+        AOW_SKIP_PREUPGRADE_DUMP="1",
+    )
+    assert result.returncode == 0, output(result)
+    assert "NO pre-upgrade dump" in result.stdout
+    assert "deliberately" in result.stdout
