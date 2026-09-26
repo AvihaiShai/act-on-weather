@@ -145,7 +145,7 @@ stage-build:
 preflight:
 	$(COMPOSE) -f compose.yml $(BUNDLE) config --quiet
 	@echo ".env is present and complete."
-	$(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) stage
+	$(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm --pull never -e MODEL_BASE_URL= stage
 	@echo ""
 	@echo "Ready. Start it with: make up"
 
