@@ -460,8 +460,13 @@ class Router:
         weather_needed = (
             bool({"weather", "activities"} & set(resolution.intents)) and not resolution.where_only
         )
-        covered_days = [d for d in window.days() if queries.in_coverage(coverage, d)]
-        in_cov = bool(covered_days)
+        # Named for what it is: the asked days that fall inside the *global*
+        # coverage window. `queries.coverage` is a MIN/MAX over every city, so
+        # this says nothing about whether this city has a row -- that is
+        # `result.covered_days` below, derived from the rows that came back.
+        # The two were both called `covered_days` and are not the same thing.
+        in_window_days = [d for d in window.days() if queries.in_coverage(coverage, d)]
+        in_cov = bool(in_window_days)
         if weather_needed and not in_cov:
             first, last = coverage["weather_first_date"], coverage["weather_last_date"]
             return Retrieval(
@@ -475,8 +480,8 @@ class Router:
                 ),
             )
 
-        start = covered_days[0] if covered_days else window.start
-        end = covered_days[-1] if covered_days else window.end
+        start = in_window_days[0] if in_window_days else window.start
+        end = in_window_days[-1] if in_window_days else window.end
         result = Retrieval(resolution, coverage, in_cov)
         result.weather_scoped = bool(weather_needed)
         city_id = resolution.city["id"]
