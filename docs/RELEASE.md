@@ -312,11 +312,18 @@ previous release running while you do it.** Both halves are requirements:
   roles the old passwords created. Regenerated passwords therefore produce a
   stack that cannot authenticate against its own data, after the installer has
   already dumped the old database and loaded gigabytes of images. The installer
-  refuses that combination up front instead.
-- The pre-upgrade `pg_dump` is what makes the migration reversible. It is taken
-  whether the previous release is running or stopped, so stopping it first no
-  longer costs you the rollback -- but leaving it running is still the
-  documented order. See `scripts/restore-offline.sh` for the rollback itself.
+  refuses that combination up front instead, comparing `POSTGRES_USER`,
+  `POSTGRES_DB` and `POSTGRES_PASSWORD` against the running container's and
+  naming the key that differs.
+- The pre-upgrade `pg_dump` is the rollback point, and the previous release has
+  to be **running** for it to be taken. It is verified rather than assumed: a
+  truncated or empty dump is refused before anything is loaded. If the previous
+  `pgdata` volume exists and no Postgres is running, the installer refuses to
+  continue and asks you to start the previous release and re-run -- it used to
+  skip the dump silently, which is precisely what made a migration
+  irreversible. `AOW_SKIP_PREUPGRADE_DUMP=1` proceeds without a rollback point
+  and records that in the transcript. See `scripts/restore-offline.sh` for the
+  rollback itself.
 
 The [README](../README.md#installing-a-packaged-release) summarizes these
 guards; the command sequence above is the offline-host procedure.
