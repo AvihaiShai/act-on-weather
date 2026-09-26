@@ -182,9 +182,11 @@ does not promise byte-identical archives across runs, and the `release.yml`
 bundle differs further because it seals a `promotion-record.json` the locally
 rebuilt bundle does not contain. So an operator who repackages `1890eba` will
 get a different `SHA256SUMS` digest, and that is not a discrepancy to chase —
-the digest to carry out of band is the one their own packaging run printed. What
-is anchored to the commit is the image set: `images.bundle.lock` must match the
-CI manifest and the committed `IMAGES.lock`, and it does.
+the digest to carry out of band is the one their own packaging run printed.
+The `services` and `ui` images are anchored to the CI manifest, the upstream
+references to committed `IMAGES.lock`, and the separately built `demos` image
+to this bundle's own verified lock. A later rebuild of the same commit may have
+a different `demos` digest; see [RELEASE.md](RELEASE.md).
 
 ### 3.4 Independent verification of that artifact
 

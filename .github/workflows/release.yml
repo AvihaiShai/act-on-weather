@@ -433,13 +433,12 @@ jobs:
       # the bundle's own manifest lock, and the resealed checksums -- small
       # enough to review inline.
       #
-      # What an operator can reproduce from these is the bundle's *content*,
-      # not its bytes. images.bundle.lock and models.lock are content-addressed
-      # and must match exactly. SHA256SUMS must not: `docker save` output is
-      # not bit-reproducible across engines, which this repository measured
-      # rather than assumed -- see docs/RELEASE-PROOF.md, where packaging the
-      # same release on a classic-store engine re-serialised all eight image
-      # digests. Compare the locks, not the tar.
+      # The operator can compare the record's services/UI registry digests,
+      # seven pinned upstream references, and models.lock with a local bundle.
+      # The demos tool image is built separately on each host and can have a
+      # different digest, so the full images.bundle.lock may differ too.
+      # SHA256SUMS describes this runner's bundle, not the operator's rebuild.
+      # See docs/RELEASE.md for the exact comparison procedure.
       - name: Upload the promotion record and bundle manifests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
