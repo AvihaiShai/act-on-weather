@@ -57,7 +57,11 @@ dc exec -T api python - < tests/integration/itinerary_without_as_of.py
 # in the wrong order under different message_ids, which `ingest_log` does not
 # deduplicate. Only `upsert_weather`'s as_of guard stops the older one being
 # written, and no other check in this repository exercises it -- every drill
-# below replays the *same* message rather than an older one.
+# below replays the *same* message rather than an older one. Three messages, so
+# both failures are covered: an older one catches the guard being deleted, and
+# an equally-dated one catches it being weakened from `>` to `>=`, which would
+# re-score a day on every redelivery. It writes a synthetic far-future date, so
+# no collected row is touched.
 dc exec -T api python - < tests/integration/stale_forecast.py
 ingestor_audit="$(dc exec -T ingestor python -m services.common.reconcile)"
 python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert r["mode"] == "audit" and r["scanned"] > 0, r' "$ingestor_audit"
