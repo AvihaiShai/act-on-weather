@@ -4,11 +4,13 @@
 #
 #   bash demos/06_backup_restore.sh
 #
-# It needs no arguments, no running stack and no .env: it creates its own
-# isolated Compose project with its own volumes and its own credentials, and
-# tears the whole thing down again on the way out. A reviewer's `aow` stack is
-# never touched, and neither are its ports -- this project never starts `edge`,
-# so nothing is published and there is nothing to collide with.
+# It needs no arguments and no running stack. The Compose project and its volumes
+# are always its own, and are torn down again on the way out. The credentials are
+# its own only when it has to invent them: AOW_ENV_FILE first, then a .env beside
+# the working tree, and a generated throwaway set only when neither exists -- see
+# the credentials block below. A reviewer's `aow` stack is never touched, and
+# neither are its ports -- this project never starts `edge`, so nothing is
+# published and there is nothing to collide with.
 #
 # ------------------------------------------------------------ what it proves
 #

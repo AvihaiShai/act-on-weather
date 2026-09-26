@@ -565,7 +565,7 @@ README put the place count at 289 while the snapshot already held 620.
 | `… run --rm demos reenrich` | re-enrichment, including a full model outage |
 | `… run --rm demos backup-restore` (`make backup-restore`) | the backup and restore drill, with its measured RPO and RTO |
 | `make dlq` / `make redrive` | list and redrive quarantined messages |
-| `make backup` / `make restore DIR=…` | `pg_dump` plus the three outboxes and the broker definitions; restore defaults to an isolated Compose project |
+| `make backup` / `make restore DIR=…` | `pg_dump` plus the three outboxes and the broker definitions; restore defaults to an isolated Compose project, and refuses to destroy a target that is the live project or still has containers running unless told to |
 | `make monitor` / `make monitor-down` | start and stop the opt-in Prometheus and Grafana overlay, Grafana at <http://127.0.0.1:3000> |
 
 In an installed release, these Makefile commands and the backup/restore scripts

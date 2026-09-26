@@ -427,6 +427,77 @@ def test_the_restore_refuses_the_live_project_without_an_explicit_flag() -> None
     assert 'PROJECT="aow-restore"' in text
 
 
+DRILL_SH = ROOT / "demos" / "06_backup_restore.sh"
+
+
+def test_the_restore_refuses_a_running_target_without_an_explicit_flag() -> None:
+    """The live-project guard above protects one project by name. This one
+    protects every other target, and it exists because the runbook promised
+    "never over a running stack" while `down -v` was unconditional: a second
+    rehearsal into aow-restore destroyed the first one mid-inspection.
+
+    Asserted over the text, like the two guards beside it: the behaviour needs a
+    Docker daemon and this suite has none. What is pinned here is that the
+    refusal exists, that it is keyed on running containers rather than on
+    volumes that merely exist, and above all that it comes BEFORE the `down -v`.
+    That last one is the only part a structural assertion can really prove, and
+    it is also the part that matters -- a guard after the destruction is not a
+    guard. Whether the refusal fires against a real running project is proven by
+    nothing in this file."""
+    text = RESTORE_SH.read_text(encoding="utf-8")
+    assert "--overwrite-running-target" in text
+    assert "OVERWRITE_RUNNING_TARGET=0" in text, "the flag must default to off"
+    assert "--overwrite-running-target) OVERWRITE_RUNNING_TARGET=1" in text
+    assert "REFUSING: project '$PROJECT' still has containers running." in text
+    # Running containers, not volumes: a repeat restore into a project that is
+    # stopped or absent has to keep working, which is what the drill relies on.
+    assert '[ -n "$(dc ps -q 2>/dev/null)" ]' in text
+    assert "docker volume ls" not in text, "the guard must not key on volumes"
+    # The refusal precedes the first irreversible act.
+    assert text.index("still has containers running") < text.index("down -v")
+    # And it is documented where an operator looks first.
+    assert "--overwrite-running-target allow a target project" in text
+
+
+def test_the_running_target_guard_does_not_catch_the_drill() -> None:
+    """The drill and the CI restore-drill job restore into their own project
+    *after* destroying it, so there is nothing of the target running by the time
+    restore-state.sh is called and the new guard must stay silent. Read off the
+    drill's own order rather than assumed: its `down -v` disruption has to come
+    before it invokes the restore, and it must not be passing the new flag --
+    if it needed the flag, the guard would be catching the ordinary case."""
+    drill = DRILL_SH.read_text(encoding="utf-8")
+    disruption = drill.index("dcp down -v --remove-orphans >/dev/null 2>&1\n")
+    restore = drill.index("bash scripts/restore-state.sh")
+    assert disruption < restore, "the drill must destroy the target before restoring"
+    assert "--overwrite-running-target" not in drill
+
+
+def test_the_backup_picks_the_bundle_helper_image_on_a_release_install() -> None:
+    """On an offline install the `aow/services:dev` tag compose.yml names does
+    not exist -- the bundle loaded its images as aow-bundle/<alias>:<commit> --
+    and backup-state.sh only requires postgres and rabbitmq to be up. With every
+    producer down there is no running container to read the image off, so the
+    final fallback decided whether a backup was possible at all, and the old
+    unconditional `aow/services:dev` made it exit 1.
+
+    Text-level, because the branch it pins is chosen from the presence of a file
+    in a release folder that this suite does not have."""
+    text = BACKUP_SH.read_text(encoding="utf-8")
+    assert 'HELPER_IMAGE="aow-bundle/services:$AOW_IMAGE_VERSION"' in text
+    # The dev tag survives, but only as the non-release branch.
+    fallback = text[text.index('if [ -z "$HELPER_IMAGE" ]; then', text.index("for candidate in")) :]
+    fallback = fallback[: fallback.index("docker image inspect")]
+    assert "release-version.txt" in fallback, "the fallback must know about a release"
+    assert 'HELPER_IMAGE="aow/services:dev"' in fallback
+    assert fallback.index("release-version.txt") < fallback.index(
+        '"aow/services:dev"'
+    ), "the bundle name must be chosen first when release-version.txt is present"
+    # And AOW_IMAGE_VERSION, which that name interpolates, is exported before it
+    # is used -- `set -u` would otherwise abort the backup on the release path.
+    assert text.index("export AOW_IMAGE_VERSION=") < text.index('"aow-bundle/services:')
+
+
 def test_the_scripts_need_no_host_tooling() -> None:
     """Docker only. A host psql, sqlite3 or python3 would make the runbook
     untrue on the two platforms this project promises to work on."""

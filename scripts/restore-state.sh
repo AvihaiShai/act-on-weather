@@ -46,7 +46,9 @@
 # Exit codes:
 #   0  restored and verified
 #   1  bad arguments, or a missing prerequisite
-#   2  the backup does not verify against its manifest -- nothing was touched
+#   2  refused before anything was touched: either the backup does not verify
+#      against its manifest, or the target project is protected (it is the live
+#      one, or it still has containers running)
 #   3  a restore step failed
 #   4  restored, but the verification did not pass
 set -euo pipefail
@@ -74,6 +76,7 @@ ENV_FILE="${AOW_ENV_FILE:-.env}"
 RESTORE_SERVICES="${AOW_RESTORE_SERVICES:-}"
 DISRUPTION_AT=""
 OVERWRITE_LIVE=0
+OVERWRITE_RUNNING_TARGET=0
 BACKUP_DIR=""
 # An optional extra Compose file, layered on compose.yml. CI builds the service
 # image under its own tag and selects it with compose.ci.yml, so a command that
@@ -102,6 +105,9 @@ Restore a stack's live state from a backup directory.
                              as a duration rather than only a timestamp
   --overwrite-live-project   allow the target project to be the live one.
                              THIS DESTROYS THE LIVE STACK'S VOLUMES.
+  --overwrite-running-target allow a target project that still has containers
+                             running. THIS DESTROYS THAT PROJECT'S VOLUMES --
+                             an earlier rehearsal in aow-restore, most likely.
   -h, --help                 this text
 EOF
 }
@@ -115,6 +121,7 @@ while [ $# -gt 0 ]; do
     --services) RESTORE_SERVICES="$2"; shift 2 ;;
     --disruption-at) DISRUPTION_AT="$2"; shift 2 ;;
     --overwrite-live-project) OVERWRITE_LIVE=1; shift ;;
+    --overwrite-running-target) OVERWRITE_RUNNING_TARGET=1; shift ;;
     -h | --help) usage; exit 0 ;;
     -*) echo "unknown option: $1" >&2; usage >&2; exit 1 ;;
     *) BACKUP_DIR="$1"; shift ;;
@@ -276,6 +283,41 @@ EOF
   fi
   printf '\033[31m   --overwrite-live-project given: the volumes of the LIVE project\n'
   printf '   "%s" are about to be destroyed and replaced.\033[0m\n' "$PROJECT"
+fi
+
+# The live project is not the only stack this can destroy. The `down -v` below
+# removes the TARGET project's volumes whatever that project is called, so a
+# second rehearsal into `aow-restore` would wipe the first one while an operator
+# was still reading it. The live project has its own, louder flag above; this is
+# the same protection for every other target.
+#
+# Keyed on RUNNING CONTAINERS and deliberately not on volumes that merely exist:
+# restoring again into a project that is stopped, or gone entirely, is the
+# ordinary case. It is what demos/06_backup_restore.sh does -- its disruption IS
+# a `down -v`, so by the time it calls this script there is nothing of the
+# target left running -- and a guard that refused that would refuse the thing
+# this script is for. `ps -q` lists running containers only, which is the same
+# test backup-state.sh uses to decide whether a service is up.
+if [ "$PROJECT" != "$LIVE_PROJECT" ] \
+   && [ "$OVERWRITE_RUNNING_TARGET" -ne 1 ] \
+   && [ -n "$(dc ps -q 2>/dev/null)" ]; then
+  printf '\033[31m'
+  cat >&2 <<EOF
+REFUSING: project '$PROJECT' still has containers running.
+
+This restore destroys the target project's volumes. Something is using them
+right now -- an earlier rehearsal you have not finished reading is the usual
+reason. Stop it first, then restore into it:
+
+  docker compose -p $PROJECT down
+  bash scripts/restore-state.sh $BACKUP_DIR --project $PROJECT
+
+If you do mean to replace what that project is holding while it runs, say so:
+
+  bash scripts/restore-state.sh $BACKUP_DIR --project $PROJECT --overwrite-running-target
+EOF
+  printf '\033[0m'
+  exit 2
 fi
 
 # Schema drift. A restore runs the migrations in THIS tree, not the ones the

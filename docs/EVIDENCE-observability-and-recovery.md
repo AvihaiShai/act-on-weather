@@ -273,11 +273,27 @@ runbook claims), each must have been accepted and committed exactly once
 that silently stopped accepting writes would make the boundary check pass
 vacuously.
 
-### Measured run — 2026-09-24, exit 0
+### Measured run `2026-09-24T16:09:39Z` — exit 0
 
-This is the run on the tree as merged, after F9 landed on main. An earlier run
-on the same code before that merge gave RPO 24 s / RTO 31 s / 116 s, so the
-figures below are representative rather than a lucky sample.
+Runs are named by their backup's `manifest.json` `started_at`, because that is
+the identifier the drill prints and the artefact carries. This one is on the tree
+as merged: its backup started 88 seconds after merge commit `3b40949`
+(2026-09-24T16:08:11Z, PR #11), which added
+`db/migrations/006_event_validity.sql` and `007_city_coast.sql` and about 65
+seeded event rows.
+
+One earlier run of the same drill is on record, `2026-09-24T15:56:01Z`, taken
+before that merge: **RPO 24 s, RTO 31 s, 110 s wall clock** (its at-risk window
+was not recorded). Its console block is no longer quoted here; it is readable in
+this file's history at `fffcaf9`, and its set-A id was
+`553139ff-32aa-484f-9cbb-bb07bd99ff3d`.
+
+The two are separate runs on two different trees and are not interchangeable.
+`scripts/restore-state.sh` runs the current tree's migrations inside the window
+it reports as the RTO, so more migrations and a larger dump are a **plausible**
+mechanism for 31 s → 35 s — but one sample on each side of a merge, on a shared
+development daemon, cannot attribute it, and it is not claimed as a measured
+cause.
 
 ```
 A  7b179b67-6a10-4737-bcc1-a3d790030b17  drill alpha one
@@ -307,9 +323,12 @@ The disruption is total: `docker compose down -v`, destroying the database,
 broker and all three outbox volumes. The drill asserts the database volume is
 actually gone before restoring.
 
-**Measured RPO 26 s, RTO 35 s, drill 120 s wall clock.** The 26 s RPO is a
-property of *this drill*, not of the system: in production the RPO is the
-backup interval.
+**Run `2026-09-24T16:09:39Z`: RPO 26 s, RTO 35 s, drill 120 s wall clock.** The
+26 s RPO is a property of *this drill*, not of the system: in production the RPO
+is the backup interval. Do not combine these figures with the earlier run's, or
+with the CI `restore-drill`'s in
+[CICD_EVIDENCE.md](CICD_EVIDENCE.md) — a GitHub-hosted runner is a different
+machine.
 
 ---
 
