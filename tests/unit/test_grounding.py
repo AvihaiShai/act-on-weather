@@ -1213,3 +1213,85 @@ def test_a_category_with_no_rows_is_still_reported_once_not_twice():
     found = grounding.violations(f"A concert is scheduled on {DAY2.isoformat()}.", brief)
     assert any("no stored event row" in v for v in found), found
     assert not any("no stored event row covers" in v for v in found), found
+
+
+def test_a_forecast_date_beside_an_event_claim_is_not_an_invented_listing():
+    """The false positive the narrow form of check 3b exists to avoid.
+
+    `_clauses` splits on a semicolon and on the contrastive conjunctions, and
+    not on a comma -- so a sentence that gives the weather for one day and a
+    listing for another is a single clause carrying two dates that belong to
+    two different facts. Reading both as the concert's is how the check would
+    reject the ordinary answer to the assignment's own second example question.
+    """
+    result = retrieval(
+        "What activities can I do with my wife this week in London? "
+        "We like concerts, shopping and fine dining.",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+
+    for answer in (
+        f"{DAY3.isoformat()} will be sunny, and a concert is scheduled on {DAY2.isoformat()}.",
+        f"A concert is scheduled on {DAY2.isoformat()}, and {DAY3.isoformat()} stays dry.",
+    ):
+        assert grounding.violations(answer, brief) == [], answer
+
+
+def test_the_window_named_before_the_claim_word_is_not_a_listing_date():
+    """A sentence that opens with the window and then gives the row's date.
+
+    "Between the 24th and the 26th one concert is scheduled, on the 25th"
+    states the dates that were asked about and then the date of the row. Only
+    the second of those is a claim about when anything is on.
+    """
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    answer = (
+        f"Between {DAY1.isoformat()} and {DAY3.isoformat()} one concert is "
+        f"scheduled, on {DAY2.isoformat()}."
+    )
+    assert grounding.violations(answer, brief) == [], answer
+
+
+def test_a_clause_scoped_to_the_record_is_not_placing_an_event():
+    """A clause that names the span the feed was searched over.
+
+    "The only concert on record between the 25th and the 26th" describes where
+    we looked, not a night anything is playing. It is also the wording the gap
+    sentences use, which is the wording the model copies.
+    """
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    answer = (
+        f"The only concert on record between {DAY2.isoformat()} and "
+        f"{DAY3.isoformat()} is the Free Friday Lunchtime Concert."
+    )
+    assert grounding.violations(answer, brief) == [], answer
+
+
+def test_the_weather_in_one_clause_does_not_excuse_a_listing_in_another():
+    """The guard is scoped to the clause that carries the weather word, the
+    same way the negation is. Without that, one mention of the forecast
+    anywhere in the sentence would switch the check off for the whole of it."""
+    result = retrieval(
+        "Which concerts are on in London this week?",
+        events=[event("theo2:lso", "Free Friday Lunchtime Concert", "concert", DAY2)],
+        forecast=[forecast_row(DAY1), forecast_row(DAY2), forecast_row(DAY3)],
+    )
+    brief = grounding.build(result)
+    answer = (
+        f"{DAY3.isoformat()} will be sunny; concerts are scheduled on "
+        f"{DAY2.isoformat()} and {DAY3.isoformat()}."
+    )
+    found = grounding.violations(answer, brief)
+    assert any(DAY3.isoformat() in v and "no stored event row covers" in v for v in found), found
