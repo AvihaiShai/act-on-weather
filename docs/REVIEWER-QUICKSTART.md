@@ -12,45 +12,61 @@ prove a property of the release process, not to install the software.
 
 ## 1. Connected machine, starting from nothing
 
-You need **git**, **Docker** with the **Compose v2** plugin, roughly **8 GiB**
-of memory available to Docker and **9 GiB** of free disk. On Windows, run this
-in Git Bash. The repository is private, so the clone needs an account that has
-been granted access — use SSH (`git@github.com:AvihaiShai/act-on-weather.git`)
-if HTTPS prompts you.
+You need **git**, **Docker** with the **Compose v2** plugin (v2.21 or newer for
+this script) and roughly **8 GiB** of memory available to Docker. Disk lands on
+two filesystems: about **4.3 GB on Docker's** for the images, and **~1.2 GB on
+the drive holding the clone**, because the model is staged into `./models/`.
+Bootstrap reports Docker's free space and warns below 6 GiB; it cannot see the
+other one. On Windows, run this in Git Bash. The repository is private, so the
+clone needs an account that has been granted access — use SSH
+(`git@github.com:AvihaiShai/act-on-weather.git`) if HTTPS prompts you.
 
 ```bash
 git clone https://github.com/AvihaiShai/act-on-weather.git && cd act-on-weather && bash scripts/bootstrap.sh --refresh
 ```
 
-That one command:
+That one command runs six numbered steps, which is what the output counts
+(`1/6` to `6/6`):
 
-1. checks Docker is present, reachable, and is Compose v2;
+1. checks Docker is present, reachable, and is a Compose v2 plugin new enough
+   for the templates this script renders;
 2. reports the memory and disk Docker has (warnings, never gates);
 3. creates `.env` with generated passwords — inside a pinned container with no
    network, so the values never pass through a shell variable, an argument or
-   your history;
+   your history. If `.env` already exists it is kept untouched, and the run
+   stops only if it still holds a `change-me` placeholder;
 4. pulls the digest-pinned images, stages the 1.2 GB model and verifies it
    against `models.lock`, and builds the service, UI and proof images;
 5. starts the stack;
-6. waits until every service is healthy, then prints the URLs;
-7. fetches a fresh weather forecast, then closes the egress window again and
-   asserts it is closed.
+6. waits until every service is healthy, then prints the URLs.
+
+With `--refresh` there is one more stage after those six — the output labels it
+`Refresh`, not `7/7`: it fetches a fresh weather forecast, then closes the
+egress window again and asserts it is closed.
 
 Budget **15–25 minutes** for a first run. That is an estimate, not a
 measurement from your hardware: it is dominated by the image pull and the
 1.2 GB model download, so it is really a function of your link. A second run on
-the same machine skips both. The `llm` container reports unhealthy for about three minutes while it
-loads the model; that is normal and the wait is built in.
+the same machine skips both and finishes in well under a minute. The `llm`
+container reports unhealthy for about three minutes while it loads the model;
+that is normal and the wait is built in.
 
-When it finishes:
+When it finishes it prints the UI and API addresses:
 
 ```
 UI   http://localhost:8080
-API  http://localhost:8000/docs
+API  http://localhost:8000
 ```
 
 If your browser resolves `localhost` to `::1` and does not fall back, use
 `http://127.0.0.1:8080`.
+
+**One caveat about the API, and it matters most on the offline machine below.**
+The interactive Swagger page at `/docs` is FastAPI's default and fetches its
+JavaScript from `cdn.jsdelivr.net` and a favicon from `fastapi.tiangolo.com`, so
+it is the one page in this system that needs a network. Use
+`http://localhost:8000/openapi.json` instead — it answers 200 and is
+self-contained.
 
 ### If you would rather not fetch anything
 
@@ -67,24 +83,29 @@ bash scripts/bootstrap.sh --offline
 
 It verifies that every image is already local and that the staged model still
 matches `models.lock`, starts the stack with `--no-build --pull never`, waits
-for health and prints the same URLs. It touches no network. `--refresh` is
-rejected in this mode rather than attempted and failed.
+for health and prints the same addresses. It touches no network, and `--refresh`
+is rejected in this mode rather than attempted and failed. Use
+`/openapi.json`, not `/docs`, on this machine.
+
+If the model is missing or its checksum does not match `models.lock`, this stops
+in a second or two and says which: a missing file names the staging command, and
+a corrupt one prints the expected and actual sha256. Neither starts anything.
 
 ---
 
 ## 3. What is fresh, and what is not
 
 This is the part worth reading before you judge an answer. Everything the UI
-and the agent show carries an as-of stamp, and a question outside the covered
-window is refused rather than guessed — but you should still know which rows
-came off the internet today and which shipped with the clone.
+and the agent show carries an as-of stamp, and a day with no stored row behind
+it is named as a gap rather than guessed at — but you should still know which
+rows came off the internet today and which shipped with the clone.
 
 | Data | How it is updated | With `--refresh`? |
 |---|---|---|
 | **Weather forecast** | Fetched per city from Open-Meteo through a bounded egress window, into the producer outbox, then the queue, then the database | **Yes — this is the only thing `--refresh` fetches** |
 | **Places** | Wikidata extract, committed to `data/snapshot/places.jsonl` | No |
 | **City facts** | Committed to `data/snapshot/facts.jsonl` | No |
-| **Events** | A **manually verified sample** of 55 rows. Each carries a source and a `checked_at`, and expires via `valid_until`; past that it is still stored and still counted, but is no longer returned as currently scheduled | No |
+| **Events** | A **manually verified sample**, not a feed — the row count, the check date and the expiry are in `data/snapshot/MANIFEST.json`. Each row carries a source and a `checked_at`, and the consumer computes `valid_until` from that; past it the row is still stored and still counted, but is no longer returned as currently scheduled | No |
 | **Sample events** (demo mode only) | Generated, every row flagged `is_sample` and titled `Sample: …` | No |
 | **Marine / sea state** | **Does not exist.** There is no marine data source, so sea activities are capped below the "good" band | No |
 
@@ -98,18 +119,42 @@ also a maintainer step, and also manual by design: an air-gapped run cannot
 discover that a venue cancelled a show, so the only honest thing the system can
 do is state how old its reading is.
 
+### What "outside coverage" actually does
+
+Three things, and a plain run will show you all of them.
+
+1. **A partly-covered question is not refused.** Ask about a week that runs off
+   the end of the stored forecast and the answer covers the days that have rows,
+   names the days that do not, and says why. The trip planner does the same: it
+   plans the days it has and states the gap. Only a question with *no* covered
+   day at all is refused outright, and that refusal is written in code before
+   the model is reached.
+2. **Coverage is per city, not one window.** The dates in the coverage banner
+   are the span across all five cities, so a date inside them is not by itself
+   evidence that the city you asked about has a row for it — one city can be
+   ingested further ahead than another, and a single day can be missing from the
+   middle. Both the agent and the planner work from the rows they actually
+   retrieved for that city, not from the banner.
+3. **A clone whose window has passed refuses everything.** The forecast in
+   `data/snapshot/` is fixed data with a stated last date. Once today is past
+   it, every weather question is out of coverage — including the two in-range
+   questions inside the offline proof, which become refusals. That is the system
+   working, not failing. `--refresh` on a connected machine is what moves the
+   window forward and restores the demonstration; the coverage banner and
+   `GET /coverage` always say where it currently ends.
+
 ### If the fetch fails
 
-It will say so, and it will not pretend otherwise. You will see a `WARN`, the
-reason, and this:
-
-> Check the per-city result above and GET /refresh/last. Some forecasts may
-> have advanced; each stored as-of stamp shows the current state.
+It will say so, and it will not pretend otherwise. The run names the cities the
+provider did not answer for, says their stored forecast is unchanged and still
+carries its older as-of, files the outcome at `GET /refresh/last`, and closes
+with a report that states the refresh did not complete rather than letting the
+success banner stand. **`bootstrap.sh` exits 2**, so a scripted run notices too.
 
 The stack is still up and still usable. The refresh can succeed for some cities
-and fail for others, so check the per-city result; every answer carries its own
-as-of stamp. `bootstrap.sh` exits non-zero so a scripted run notices too. Retry
-on its own with:
+and fail for others, which is why the per-city result is worth reading — and why
+every answer and chart carries its own as-of stamp rather than one figure for
+the whole database. Retry on its own with:
 
 ```bash
 docker compose -f compose.tools.yml run --rm refresh
@@ -126,7 +171,7 @@ as something to act on before using the stack as an offline demonstration.
 
 | | |
 |---|---|
-| Compose project | `aow` — fixed in `compose.yml`, so everything lands under one name |
+| Compose project | `aow` — **pinned** in `compose.yml` rather than derived from the directory, so everything lands under one name. Two checkouts on one engine therefore share one project and one set of volumes: bootstrap from a second clone takes over the first stack instead of starting a second. Deliberate (it is what makes an upgrade install over the same data), but it means a scratch clone needs the variables below |
 | Volumes | `aow_pgdata`, `aow_rabbitdata`, `aow_ingestor_outbox`, `aow_api_outbox`, `aow_enricher_outbox`, `aow_refresh_state` |
 | Published ports | **`127.0.0.1:8080`** (UI) and **`127.0.0.1:8000`** (API), loopback only. Grafana's `127.0.0.1:3000` appears only if you opt into the monitoring overlay |
 | Egress | The application network is `internal: true`. Only the `edge` proxy is on a routable network, and the ingestor joins an egress network *only* during a refresh, which closes itself and is bounded by a detached guard |
@@ -178,10 +223,13 @@ docker compose down -v
 
 ## 5. Where to look next
 
-- The two example questions and what the agent refuses:
-  `docker compose -f compose.tools.yml run --rm demos questions`
-- The air-gap proof:
-  `docker compose -f compose.tools.yml run --rm demos offline`
+- The agent's breadth, ending with the three questions it refuses:
+  `docker compose -f compose.tools.yml run --rm demos questions`. The brief's
+  own two example questions are answered inside the offline proof below.
+- The offline proof — four structural checks plus three questions:
+  `docker compose -f compose.tools.yml run --rm demos offline`. It is not a
+  physical air-gap proof and does not claim to be; the behavioural version is
+  the same command with your machine's network adapter disabled.
 - Monitoring, if you want it: `make monitor`, then Grafana on
   `http://127.0.0.1:3000`.
 - The architecture, the delivery guarantees and the known limitations are in
