@@ -572,6 +572,10 @@ read `release-version.txt` and select the local bundle images. The proof and
 refresh runners use `--pull never`; restore uses it for service creation and
 startup too.
 
+The offline install and release restore also render all nine Streamlit pages
+inside the packaged UI image against the installed API. That catches page
+exceptions which a health URL or the HTML shell alone cannot reveal.
+
 **The `demos` and `refresh` containers mount the Docker socket**, which is
 root-equivalent access to the host's daemon. That is deliberate: the drills stop
 the consumer, stop the broker and restart the model server, so driving Docker is

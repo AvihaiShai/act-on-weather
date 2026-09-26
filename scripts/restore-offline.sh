@@ -57,4 +57,5 @@ dc exec -T postgres sh -c \
 echo "restarting"
 dc up -d --no-build --pull never
 dc exec -T api python - < scripts/release-smoke.py
+dc exec -T ui python - < scripts/release-ui-smoke.py
 echo "Restored $dump into release $AOW_IMAGE_VERSION"

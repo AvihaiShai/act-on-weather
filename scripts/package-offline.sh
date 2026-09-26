@@ -70,7 +70,7 @@ git archive --format=tar HEAD | tar -xf - -C "$out"
 # that is still only in the working tree would leave a bundle that cannot
 # verify or install itself, and `git diff HEAD` above cannot see that because
 # an untracked file is not a difference.
-for needed in install-offline.sh verify-bundle.sh verify-bundle-images.sh bundle-image-manifests.sh release-smoke.py; do
+for needed in install-offline.sh verify-bundle.sh verify-bundle-images.sh bundle-image-manifests.sh release-smoke.py release-ui-smoke.py; do
   test -f "$out/scripts/$needed" || { echo "scripts/$needed is not in the bundle: commit it first" >&2; exit 1; }
 done
 # Not in scripts/, and the installer cannot run a single Compose command

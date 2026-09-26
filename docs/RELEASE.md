@@ -188,13 +188,15 @@ The `6ba3e78` smoke asserted more than liveness, but was not a deep functional
 check: it confirmed `/health` was ok, `/coverage` reported the `weather` entity had
 `rows > 0` across all 5 cities, `/weather/rome` and `/scores?city=rome` both
 return a body -- real data reached Postgres through the queue and the rule
-engine produced scores from it. The current script also requires the agent and
-model health endpoints to report ok, the UI health endpoint to respond, and
-the edge proxy to serve both an API weather response and the Streamlit HTML
-shell. Those added checks need a new exact-commit release run before they count
-as hosted evidence. They still do not execute a Streamlit page, exercise model
-phrasing, or check that an LLM recommendation was written. Read
-`scripts/release-smoke.py` directly for the exact checks.
+engine produced scores from it. The current installer also requires the agent
+and model health endpoints to report ok, the UI health endpoint to respond,
+and the edge proxy to serve both an API weather response and the Streamlit HTML
+shell. It then runs `scripts/release-ui-smoke.py` inside the UI image: AppTest
+navigates all nine pages against the installed API and fails on an uncaught
+page exception. These added checks need a new exact-commit release run before
+they count as hosted evidence. They do not drive a browser, exercise model
+phrasing, or check that an LLM recommendation was written. Read both release
+smoke scripts for the exact checks.
 
 **Three claims live near each other here, and merging them would be the
 single most misleading thing this document could do.** They are:

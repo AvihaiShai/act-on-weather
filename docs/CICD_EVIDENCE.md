@@ -500,10 +500,11 @@ PR #10 was closed as superseded.
   and varied store history alone: a *freshly published* image of the same media type on
   the same engine.
 - Timings are from single runs, not averages.
-- `release-smoke.py` asserts **data** for weather and scores, health for agent,
-  llm and ui, and both proxy routes through edge. The UI check reaches the
-  Streamlit HTML shell; it does not execute a page. It is a partial gate and
-  `docs/RELEASE.md` says so.
+- The current release smoke asserts **data** for weather and scores, health for
+  agent, llm and ui, both proxy routes through edge, and uses AppTest inside the
+  UI image to render all nine pages against the installed API. It does not
+  drive a browser or test model phrasing. These additions postdate the last
+  exact-commit release run; `docs/RELEASE.md` distinguishes code from evidence.
 - The first full hosted release run completed on `b6b38f9` but its promotion
   record's model field was malformed. PR #37 repaired the writer; the corrected
   artifact was inspected from the successful retry of run `36052133435` (§4).
