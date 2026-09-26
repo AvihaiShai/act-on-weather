@@ -327,3 +327,35 @@ def test_an_explicit_aow_project_still_wins(tmp_path: Path) -> None:
         },
     )
     assert "refreshing the 'chosen-explicitly' project" in result.stdout
+
+
+def test_the_printed_urls_follow_the_bind_address(tmp_path: Path) -> None:
+    # Found by a real isolated run: the report hardcoded localhost and claimed
+    # "published on 127.0.0.1 only" while the stack was actually on 127.0.0.3.
+    # The isolated second copy is exactly the case where the reader is least
+    # able to guess the right address.
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        env_file=env_file,
+        images_present=True,
+        extra_env={"AOW_STUB_HEALTHY": "1", "AOW_BIND_ADDR": "127.0.0.3"},
+    )
+    assert "http://127.0.0.3:8080" in result.stdout
+    assert "http://127.0.0.3:8000/docs" in result.stdout
+    assert "localhost:8080" not in result.stdout
+    assert "published on 127.0.0.3 only" in result.stdout
+
+
+def test_the_default_run_still_says_localhost(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        env_file=env_file,
+        images_present=True,
+        extra_env={"AOW_STUB_HEALTHY": "1"},
+    )
+    assert "http://localhost:8080" in result.stdout
+    assert "resolves localhost to ::1" in result.stdout

@@ -601,8 +601,19 @@ fi
 # Report
 # ------------------------------------------------------------------------
 step "Ready"
-note "UI   http://localhost:8080"
-note "API  http://localhost:8000/docs"
+# compose.yml publishes on ${AOW_BIND_ADDR:-127.0.0.1}, so the report has to
+# read the same variable. It used to print localhost unconditionally, which is
+# right on a default run and wrong on every isolated second copy -- and the
+# isolated copy is exactly the case where someone is least able to guess the
+# address they should be using.
+bind="${AOW_BIND_ADDR:-127.0.0.1}"
+if [ "$bind" = 127.0.0.1 ]; then
+  host=localhost
+else
+  host="$bind"
+fi
+note "UI   http://$host:8080"
+note "API  http://$host:8000/docs"
 printf '\n'
 
 # Said on every run, not only the interesting ones. A reviewer who cannot tell
@@ -625,8 +636,11 @@ case "$REFRESH_RESULT" in
     ;;
 esac
 printf '\n'
-note "Both are published on 127.0.0.1 only. If your browser resolves localhost"
-note "to ::1 and does not fall back, use http://127.0.0.1:8080."
+note "Both are published on $bind only, never on a routable interface."
+if [ "$bind" = 127.0.0.1 ]; then
+  note "If your browser resolves localhost to ::1 and does not fall back, use"
+  note "http://127.0.0.1:8080."
+fi
 note "Stop it with 'docker compose down'; that keeps the database and the queue."
 
 # The stack is up either way, and the URLs above work either way -- but a run

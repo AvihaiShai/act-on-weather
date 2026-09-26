@@ -131,7 +131,32 @@ as something to act on before using the stack as an offline demonstration.
 | Egress | The application network is `internal: true`. Only the `edge` proxy is on a routable network, and the ingestor joins an egress network *only* during a refresh, which closes itself and is bounded by a detached guard |
 
 It does **not** prune images, remove volumes it did not create, or touch any
-Docker resource outside the `aow` project. Rerunning it is safe: it never
+Docker resource outside the `aow` project.
+
+**One exception, if you are running a second copy beside an existing one.** The
+service images are tagged `aow/services:dev`, `aow/ui:dev` and `aow/demos:dev`
+in `compose.yml`, and those tags are *not* namespaced by the Compose project.
+A build in a second checkout therefore moves them, and on the containerd image
+store the previous image record is dropped rather than left dangling — so it
+cannot simply be re-tagged back. Containers already running are unaffected,
+because they hold their own snapshot, but the next `docker compose up` in the
+first checkout will use the newly built images. If that matters, run
+`docker compose build` in the checkout you care about to put the tags back
+where you want them. On a clean reviewer machine this cannot arise.
+
+Isolating a second copy needs **two** variables, not one:
+
+```bash
+COMPOSE_PROJECT_NAME=aow-second AOW_PROJECT=aow-second AOW_BIND_ADDR=127.0.0.3 \
+  bash scripts/bootstrap.sh --refresh
+```
+
+`COMPOSE_PROJECT_NAME` moves the containers, volumes and networks;
+`AOW_BIND_ADDR` moves the published ports off `127.0.0.1`; and `AOW_PROJECT` is
+what the refresh container uses to decide **which stack to fetch for**.
+`bootstrap.sh` now defaults `AOW_PROJECT` from `COMPOSE_PROJECT_NAME`, so the
+two cannot silently disagree — but anything invoking `scripts/refresh.sh`
+directly still has to set it. Rerunning it is safe: it never
 rewrites an existing `.env`, never re-downloads the model, and never removes a
 volume.
 
