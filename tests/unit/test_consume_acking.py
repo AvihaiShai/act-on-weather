@@ -227,10 +227,15 @@ def test_the_queue_dead_letters_rather_than_redelivering_forever():
     `basic_nack(requeue=False)` only reaches a DLQ because the queue names a
     dead-letter exchange, and `x-delivery-limit` is what stops a message that
     keeps failing the retry branch from being redelivered without end.
+
+    The numbers are pinned rather than bounded. A range would accept the
+    regression: `x-delivery-limit` is a documented property of this stack, and
+    raising it turns a poison message into a long stall while lowering it
+    dead-letters records a transient outage would have redelivered
+    successfully. Either is a decision, and a decision belongs in a diff.
     """
     assert rabbit.QUEUE_ARGS["x-dead-letter-exchange"] == config.DLX
-    limit = rabbit.QUEUE_ARGS["x-delivery-limit"]
-    assert isinstance(limit, int) and 0 < limit < 100
+    assert rabbit.QUEUE_ARGS["x-delivery-limit"] == 5
     assert rabbit.QUEUE_ARGS["x-queue-type"] == "quorum"
 
 
@@ -239,8 +244,13 @@ def test_deliveries_are_prefetched_in_a_bounded_batch(monkeypatch):
 
     Every message in flight is one that is not available to another consumer
     and must be redelivered if this one dies mid-batch.
+
+    Pinned to the value the consumer actually sets, for the same reason as the
+    delivery limit above: a bound would let it drift to 1, which serialises the
+    stack, or to the whole backlog, which is the unbounded case this exists to
+    forbid. Neither should be able to happen without somebody writing it down.
     """
     channel = _drive(monkeypatch, [], lambda *_a: None)
 
     assert channel.declared, "the queue and its dead-letter binding are declared on connect"
-    assert isinstance(channel.qos, int) and 0 < channel.qos <= 100
+    assert channel.qos == 10

@@ -488,7 +488,12 @@ def _saved_row(**changes):
 
 
 def test_a_built_plan_renders_with_its_as_of_and_its_limits(monkeypatch):
-    """Deleting the caption, the warning or the score pill was invisible."""
+    """Deleting the caption, the warning or the score pill was invisible.
+
+    Coverage backfill, not a regression guard: this branch behaved the same way
+    before the `as_of` change and this test passes with that change reverted.
+    It is here because nothing rendered a freshly built plan at all.
+    """
     built = _build(monkeypatch)
 
     captions = " ".join(c.value for c in built.caption)
@@ -546,6 +551,10 @@ def test_a_saved_plan_whose_forecast_moved_on_says_so(monkeypatch):
     branches of `render_plan_staleness` were unreachable: inverting its
     comparison, or deleting the function body, left the suite green while
     stale scores redrew under the header's current stamp.
+
+    Coverage backfill, not a regression guard: `render_plan_staleness` predates
+    the `as_of` change and this passes with that change reverted. The test that
+    does guard it is the NULL case below.
     """
     reopened = _reopen(monkeypatch, _saved_row(as_of="2026-09-20T06:00:00Z"))
 
