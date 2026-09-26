@@ -838,7 +838,7 @@ def render(brief: Brief) -> str:
 def violations(answer: str, brief: Brief) -> list[str]:
     """Sentences in `answer` that assert something no fact in `brief` carries.
 
-    Nine checks, each written for a failure that was actually observed. All of
+    Ten checks, each written for a failure that was actually observed. All of
     them work on the model's prose only -- the gap block and the as-of footer
     are appended afterwards and are code's own words.
 
@@ -899,6 +899,42 @@ def violations(answer: str, brief: Brief) -> list[str]:
                         f"describes {event.title!r} ({event.category}) as a "
                         f"{event_label(category)}"
                     )
+
+            # 3b. A scheduled event placed on a day no event row covers.
+            #
+            #     Check 7 below cannot catch this, and that is the whole reason
+            #     this one exists. Check 7 tests every date in the sentence
+            #     against `allowed_dates()`, which unions the forecast days --
+            #     so on any question with a forecast, every day in the window
+            #     is already "allowed", and a weather row for the 26th makes
+            #     "a concert on the 26th" look supported.
+            #
+            #     Observed on the assignment's own London question: from a
+            #     single concert row on the 25th, the model answered "Concerts
+            #     are scheduled on 2026-09-25, 2026-09-26, 2026-09-27,
+            #     2026-09-29, and 2026-09-30" -- four invented listings, most
+            #     likely read off the per-day suitability scores, which do
+            #     exist for every day. Nothing in checks 1-3 fires: the
+            #     category has rows, no place is named, no stored event is
+            #     relabelled.
+            #
+            #     Only an event row can put an event on a day. `asserted &
+            #     present` rather than `asserted`, because a category with no
+            #     rows at all is check 1's job and should not be reported
+            #     twice.
+            if not negated:
+                for category in sorted(asserted & present):
+                    covered = {
+                        day
+                        for event in brief.events
+                        if event.category == category
+                        for day in event.days()
+                    }
+                    for day in sorted(_dates_in(clause) - covered):
+                        found.append(
+                            f"places a {event_label(category)} on {day}, "
+                            "which no stored event row covers"
+                        )
 
             # 4. A verdict where the rule engine gave none.
             verdict = any(_says(sentence, word) for word in VERDICT_WORDS)
