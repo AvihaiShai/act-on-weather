@@ -90,10 +90,11 @@ came from and not from the earlier preparation commit.
 | Packaged from | a detached worktree at that commit, `git status --porcelain` empty |
 
 **The earlier `a21dff9` bundle is historical preparation evidence only.** It was
-built and verified before this work merged, its `prove-offline.sh` lacks
-`--no-build`, and it does not contain `airgap-evidence.sh` or the
-fault-injection tooling. It is not proof for the merged code and is not used as
-such anywhere in this document.
+built and verified before this work merged, its `prove-offline.sh` predates both
+the `--no-build` change of this round and the PR #60 fix that reverted it
+(§3.4), and it does not contain `airgap-evidence.sh` or the fault-injection
+tooling. It is not proof for the merged code and is not used as such anywhere in
+this document.
 
 ### 3.2 The CI run that authorises a release at this commit
 
@@ -218,8 +219,21 @@ gates the bundle ships inside the bundle:
 | `install-offline.sh`, `prove-offline.sh`, `airgap-evidence.sh` | byte-identical |
 | `make-fault-injection-bundle.sh`, `IMAGES.lock`, `models.lock` | byte-identical |
 
-This bundle carries the fixes: its `prove-offline.sh` contains `--no-build`,
-which the `a21dff9` artifact does not.
+The comparison above is a statement about packaging: every gating script in the
+folder is the commit's own. It is **not** a statement that the proof wrapper
+works. Its `prove-offline.sh` does differ from `a21dff9`'s, but the difference
+is the addition of `--no-build` — and Compose **v5.5.1 rejects**
+`docker compose run --no-build` with `unknown flag: --no-build`. So the flag is
+the defect, not the fix. On a v5 target neither staged folder has a runnable
+proof wrapper: `1890eba`'s aborts at the flag before the proof starts, and
+`a21dff9`'s, which carries neither the flag nor `demos.build: !reset null` in
+`compose.tools.bundle.yml`, falls back to *building* the demos image and so
+needs the egress the proof exists to show is absent. The wrapper was actually
+fixed in PR #60, merged as `fb2a1e4`: `--no-build` removed,
+`demos.build: !reset null` added to the tools bundle overlay, `run --pull never`
+retained, and `package-offline.sh` taught to refuse to seal a bundle whose
+`demos` service still has a build recipe. Nothing before `fb2a1e4` carries that
+fix.
 
 ### 3.5 The fault-injection artifact, built and its failure mode measured
 
@@ -317,8 +331,14 @@ the medium**, with its own out-of-band anchor enforced and exit 0:
 | `aow-a21dff9…/` — release A | `sha256:1bb8b7e9…d205` | **ENFORCED**, exit 0, 0 pulls |
 | `airgap-evidence.sh` | — | Standalone copy, outside every bundle. Release A predates the tooling and its installer cannot report its own install (§6.5), so the target needs this independently of whichever bundle it is installing |
 
-Stick occupancy afterwards: 7.1 GiB of 32 GiB, leaving room for the Docker
-`.deb` set and the `.env`.
+Stick occupancy **measured 2026-09-26, immediately after this copy**, with only
+the three `1890eba`-era folders and the standalone capture script on it: 7.1 GiB
+of 32 GiB, leaving room for the Docker `.deb` set and the `.env`. The separately
+verified `8975403` bundle folder (2.34 GiB) was staged afterwards, and
+**occupancy has not been re-measured since** — the stick is currently attached
+to a VMware guest and cannot be read from here. 7.1 GiB is therefore the
+historical figure for the A/B/fault-injection set, not current occupancy;
+re-measure before relying on the remaining space.
 
 Two details worth recording because they are easy to get wrong. Each artifact
 verified against **its own** digest — passing release B's anchor to the
@@ -369,7 +389,7 @@ could be done without the hardware.
 | `scripts/airgap-evidence.sh` (new) | `host`, `bundle` and `run` subcommands that emit engine ID, full store census, link state, bundle digests, exit codes, elapsed time and a **measured pull count**. "0 pull attempts" was previously a sentence in a document with no command behind it |
 | `scripts/verify-bundle.sh` | Prints `out-of-band anchor: ENFORCED` or `NOT SUPPLIED`. Before, a skipped anchor check and a passed one produced identical output, so the strongest sentence in the release proof could not be verified from its own transcript |
 | `scripts/install-offline.sh` | Prints the engine ID, Docker version, OS and a full image/volume/container census before the load. Both were previously available only from the CI clean-engine job |
-| `scripts/prove-offline.sh` | Added `--no-build`. `compose.tools.yml` still carries a `build:` section, so a missing `aow-bundle/demos:<sha>` tag made Compose *build* the image, and `demos/Dockerfile`'s `apk add` then needs the egress the proof exists to show is absent — turning a tag problem into a network error on the one host where that reads as a failed proof |
+| `scripts/prove-offline.sh` | Added `--no-build`. **The diagnosis, 2026-09-25, and it still holds:** `compose.tools.yml` still carries a `build:` section, so a missing `aow-bundle/demos:<sha>` tag made Compose *build* the image, and `demos/Dockerfile`'s `apk add` then needs the egress the proof exists to show is absent — turning a tag problem into a network error on the one host where that reads as a failed proof. **The remedy was wrong, and this row is kept as the historical record of it:** Compose v5.5.1 rejects `docker compose run --no-build` outright (`unknown flag: --no-build`), so on a v5 target the wrapper aborts before the proof starts. PR #60 / `fb2a1e4` replaced the flag with `run --pull never` plus `demos.build: !reset null` in `compose.tools.bundle.yml`, which *removes* the build recipe rather than asking Compose to suppress it — the same tag-becomes-a-build problem, solved without an unsupported flag |
 | `scripts/airgap-evidence.sh --out FILE` | `cmd \| tee file` returns *tee's* exit status, so a failed install reads as a pass. `--out` writes the file itself and keeps the measured exit code. It also **refuses a path inside a release bundle**, because the old procedure's `tee evidence/…` created a file `SHA256SUMS` does not list — the evidence run would have destroyed the artifact it was measuring |
 | `scripts/make-fault-injection-bundle.sh` (new) | Derives the deliberately-broken artifact the rollback drill needs, from a verified bundle, with sealed provenance. §6.5 |
 | `verify-bundle.sh` / `install-offline.sh` fault-injection guard | A fault-injection artifact verifies — the drill installs it — so the success line must not read like a release. Both print a banner; the installer refuses outright without `AOW_ALLOW_FAULT_INJECTION=1` |
@@ -542,6 +562,28 @@ not be quoted.
 
 ### 6.4 Install and prove
 
+**STOP — no bundle currently on the stick can complete this step.** Every folder
+staged on the CORSAIR stick — `aow-a21dff9…`, `aow-1890eba…`,
+`faultinj-1890eba` and `aow-8975403…` — was packaged **before** PR #60
+(`fb2a1e4`), so every one of them carries a `prove-offline.sh` that cannot run
+the proof on the target's own Compose version. The `1890eba`-era wrapper passes
+`docker compose run --no-build`, which Compose v5.5.1 rejects outright with
+`unknown flag: --no-build`; `a21dff9`'s omits the flag but also predates
+`demos.build: !reset null`, so a missing `aow-bundle/demos:<sha>` tag makes
+Compose try to *build* the image and the build's `apk add` reaches for the
+absent egress (§3.4, §4). Either way the last command in the block below aborts
+at the wrapper, on an unplugged machine, with no way to debug it there.
+
+**A bundle re-staged from `fb2a1e4` or later is a prerequisite for this
+procedure.** A verified bundle for `f70c28d` exists **on the development machine
+only**; its out-of-band anchor `sha256(SHA256SUMS)` is
+`923ebaac3ef445aa25c40cbf93961c1a1cb68bc5ca57a203e232ec90281887b3`. It has
+**not** been copied to the stick or to any other removable medium, so the
+transfer hop (§3.5.2) has not been exercised for it. Steps 6.1–6.3 and the
+verify and install commands below are unaffected; only `prove-offline.sh` is
+blocked, and until a post-`fb2a1e4` bundle is on the medium the drill cannot
+produce rows 15 and 16 of §7.
+
 **Evidence goes outside the bundle, and never through a pipe.** Both rules are
 corrections of an earlier draft of this procedure:
 
@@ -572,6 +614,8 @@ AOW_REQUIRE_CLEAN_IMAGE_STORE=1 \
   bash scripts/airgap-evidence.sh --out "$EV/install.txt" \
   run -- bash scripts/install-offline.sh
 
+# Requires a bundle packaged from fb2a1e4 or later -- see the warning above.
+# Every folder on the stick today fails here at the wrapper, not in the proof.
 bash scripts/airgap-evidence.sh --out "$EV/prove.txt" \
   run -- bash scripts/prove-offline.sh
 ```
@@ -784,9 +828,12 @@ that has never held these images, with no network present.
 **Will not**:
 
 - **Cover any commit but `1890eba`.** This is not a formality, and it has
-  already bitten once: the `a21dff9` artifact prepared earlier in this work does
-  not contain the `--no-build` fix or any of the evidence tooling, so it was
-  re-packaged rather than carried forward. `1890eba` has its own `ci.yml` run
+  already bitten once: the `a21dff9` artifact prepared earlier in this work
+  contains none of the evidence tooling and none of this round's proof-wrapper
+  changes, so it was re-packaged rather than carried forward. (The wrapper
+  change of that round, `--no-build`, was itself wrong and was replaced in
+  PR #60 / `fb2a1e4` — a second instance of the same lesson: no bundle inherits
+  a later commit's fix. See §3.4 and §6.4.) `1890eba` has its own `ci.yml` run
   `36135517229` and its own `release.yml` clean-engine run `36137483144`
   (§3.2.1) — neither of which is inherited from any earlier commit, and neither
   of which is an air-gap proof.
