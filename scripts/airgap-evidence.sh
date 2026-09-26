@@ -59,6 +59,14 @@ if [ "${1:-}" = "--out" ]; then
     [ "$probe" = "/" ] && break
     probe="$(dirname "$probe")"
   done
+
+  # Pin it absolute, now that the directory has been resolved and cleared. The
+  # `bundle` subcommand cds into the folder it is inspecting, and emit() appends
+  # to $OUT by the path it was given -- so a relative --out would be checked
+  # here, outside the bundle, and then written there, inside it. That is the one
+  # way the guard above could be satisfied and still produce the unlisted file
+  # it exists to prevent.
+  OUT="$out_dir/$(basename "$OUT")"
   : > "$OUT"
 fi
 

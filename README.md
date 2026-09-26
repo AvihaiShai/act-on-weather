@@ -92,6 +92,18 @@ disk are there, `.env` has real passwords rather than `change-me`, and the stack
 has actually turned healthy. It ends by printing the URLs. `make bootstrap` is
 the same thing.
 
+A plain run fetches nothing, so the coverage window is whatever the clone
+shipped with (see [The data on board](#the-data-on-board-and-when-it-goes-stale)).
+To start from current weather instead, add `--refresh`:
+
+```sh
+bash scripts/bootstrap.sh --refresh
+```
+
+Either way the closing report states which of the two you got, so a stale
+forecast is never mistaken for a fresh one. If the fetch fails, it says so and
+exits non-zero while leaving the stack up and usable.
+
 It creates `.env` only if there is none, generating a distinct random password
 for each `change-me` inside the pinned `python:3.12-slim` image with no network.
 **An existing `.env` is never rewritten or replaced**, and bootstrap never reads
@@ -102,6 +114,7 @@ never removes a volume.
 
 | flag | |
 |---|---|
+| `--refresh` | once the stack is healthy, fetch a fresh forecast, then close the egress window and assert it is closed. Needs a network, so it is refused together with `--offline`. It fetches the forecast and nothing else — see [Known limitations](#known-limitations) |
 | `--offline` (`--skip-stage`) | skip the connected commands and check instead that this machine is already staged: `.env` renders the Compose files, every image the stack needs is local, and the staged model still matches `models.lock`. A missing proof-runner image (`aow/demos:dev`) is a warning, not a failure — nothing in `docker compose up` needs it. |
 | `--no-start` | stop after staging |
 | `--wait-only` | poll a stack that is already up |
@@ -594,6 +607,17 @@ tunnel has every route.
   envelope to reconcile.
 * **The ingestor drills accept through a test fixture, not a real fetch.** The
   connected fetch path is not exercised in CI, which has no egress.
+* **A refresh moves the weather forward and nothing else.** `--refresh`,
+  `make refresh` and the refresh container re-fetch the forecast. Places,
+  background articles and events are not re-fetched by any of them: places and
+  background come from the committed snapshot, and the 55 verified events are a
+  hand-checked sample that is extended one row at a time. Rebuilding the
+  snapshot is `make snapshot`, a maintainer step that rewrites files in the
+  repository and expects the diff to be reviewed; re-checking the event
+  listings is `scripts/event-recheck.sh`, also manual. So a long-running
+  install keeps an accurate forecast while its events quietly expire, which is
+  [the bargain described above](#the-data-on-board-and-when-it-goes-stale) and
+  is visible in every as-of stamp.
 * **No physical air-gap proof.** Offline operation is proven on a separate Docker
   engine with an empty image store, no pulls and no reachable egress, and by a
   per-release clean-engine CI gate. Neither is separate physical hardware, and
@@ -694,6 +718,7 @@ stored in demo mode only.
 | document | what is in it |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | the full architecture guide: diagrams, message lifecycle, user and infrastructure flows |
+| [docs/REVIEWER-QUICKSTART.md](docs/REVIEWER-QUICKSTART.md) | the shortest path from a clean machine to a running stack, and exactly which data is fetched and which is a committed snapshot |
 | [docs/RELEASE.md](docs/RELEASE.md) | building, verifying and installing the offline bundle |
 | [docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) | what was actually run for staging, transport, install, upgrade and rollback, and what remains unproven |
 | [docs/EVIDENCE-physical-airgap.md](docs/EVIDENCE-physical-airgap.md) | the physical air-gap proof: what was prepared and measured, and what is still missing to run it (status: open) |
