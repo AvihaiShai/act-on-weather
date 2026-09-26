@@ -439,18 +439,18 @@ adding if this is ever run often.
   migration set, the schema or the images is not covered by this drill until it
   is re-run; the fault-injection exercise in §3 lists the migrations it actually
   ran, for exactly this reason. In particular, the current tree contains
-  `004_itinerary_delete.sql` and `005_user_data_wipe.sql`; neither was in the
-  drilled A/B bundles. The newer release run `36071276502` validates a clean
-  single install on `b21885a`, but it does not repeat the A/B upgrade and
-  recovery drill for that commit.
+  migrations through `008_itinerary_as_of_optional.sql`; those later migrations
+  were not in the drilled A/B bundles. Release run `36228182265` validates a
+  clean single install on `6ba3e78`, but it does not repeat the A/B upgrade and
+  recovery drill for that commit or for a later candidate.
 - **A real transfer medium — now partly closed.** The file-size, mode-bit and
   path properties were measured in §2; as of 2026-09-26 the copy itself has
   been made onto FAT32 removable media and verified *on the medium*, with the
   out-of-band anchor enforced and `sha256(images.tar)` identical to source. See
   [EVIDENCE-physical-airgap.md §3.5.2](EVIDENCE-physical-airgap.md). What is
   still unexercised is the failure case: a torn, short or interrupted copy.
-- **The per-release clean-engine gate passed for `b21885a`.** Release run
-  [`36071276502`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36071276502)
+- **The per-release clean-engine gate passed for `6ba3e78`.** Release run
+  [`36228182265`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36228182265)
   started a second Docker daemon, verified a distinct engine ID and zero images
   and volumes, set `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, installed with
   `--pull never`, and passed the data smoke. Earlier hosted runs used the
@@ -474,9 +474,10 @@ received HTTP 403 and recorded `verified: false`.
 **The physical air-gap run described here has not happened.** (Preparation
 for it has: the measured results referenced below were executed, and are
 recorded in the evidence document. What remains unrun is the drill itself.) It is the one item no amount of
-work on this machine can close: as of 2026-09-25 this project has one physical
-machine and no removable media attached, so there is no second host to carry a
-bundle to. A VM on this machine would not satisfy the standard either.
+work on this machine can close: the release is now staged and verified on
+removable media, but the project still has no disposable second physical host
+or offline Docker installation files. A VM on this machine would not satisfy
+the standard either.
 
 The procedure, the evidence capture sheet, the pass/fail criteria and the exact
 list of what is still missing now live in

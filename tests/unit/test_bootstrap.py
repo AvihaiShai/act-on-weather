@@ -912,7 +912,7 @@ def test_a_failed_fetch_is_visible_and_not_dressed_up(tmp_path: Path) -> None:
     # refresh.sh exit 2: the fetch failed for at least one city.
     result, _, _ = _refreshed(tmp_path, "2")
     combined = result.stdout + result.stderr
-    assert result.returncode == 2, combined
+    assert result.returncode == 3, combined
     assert "THE REFRESH DID NOT COMPLETE" in combined
     assert "Some cities may have" in combined
     assert "advanced while others retain older forecasts" in combined
@@ -927,7 +927,7 @@ def test_an_unclosed_egress_window_is_reported_louder_than_a_stale_forecast(
     # built to deny.
     result, _, _ = _refreshed(tmp_path, "3")
     combined = result.stdout + result.stderr
-    assert result.returncode == 2, combined
+    assert result.returncode == 3, combined
     assert "EGRESS WINDOW STILL OPEN" in combined
     assert "docker network rm" in combined
 

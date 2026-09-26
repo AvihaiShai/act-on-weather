@@ -121,13 +121,15 @@ bash scripts/bootstrap.sh --refresh
 The closing report states whether the refresh completed. If it did not, some
 cities may have advanced while others retain older forecasts; check the per-city
 result and each as-of stamp. The command exits non-zero while leaving the stack
-up and usable.
+up and usable. Exit code 2 means invalid options; exit code 3 means the
+requested refresh failed. Other operational failures exit 1.
 
 It creates `.env` only if there is none, generating a distinct random password
 for each `change-me` inside the pinned `python:3.12-slim` image with no network.
-**An existing `.env` is never rewritten or replaced**, and bootstrap never reads
-it for its values — it only checks it for leftover `change-me` placeholders.
-(Compose itself reads it, as it must, to render the Compose files.) Re-running
+**An existing `.env` is never rewritten or replaced**. Bootstrap checks it for
+leftover `change-me` placeholders and reads `AOW_BIND_ADDR` for the final URL
+and exposure warning; it does not print the passwords. Compose reads the file
+to render the stack. Re-running
 is safe: it never regenerates a password, never re-downloads the model, and
 never removes a volume.
 
@@ -703,29 +705,25 @@ tunnel has every route.
   said". A weather claim must now rest on a stored row whether or not it
   names a day: with no forecast row retrieved for the city, "Rome is warm and
   dry this week" is rejected, while "no forecast is on record for Rome" is not.
-  What the guard still gives up is narrower, and all of it is deliberate:
+  What the guard still gives up is narrower:
   * an event claim that names **no calendar date** — "there are concerts all
-    week" — is outside the dated-claim check, which needs a date in the clause
-    to test, and so is one that names a **relative or year-less** day ("on
-    Friday"), which the date parser will not guess at;
-  * the weather check is **all-or-nothing on the retrieved rows**. It fires
-    when the city has no row at all, not when it has some: over a week that is
-    half covered, "warm and dry all week" still passes, because deciding which
-    day an undated clause is about is a judgement the validator does not make;
-  * only the **verbatim** coverage-gap sentence is exempt from the date and
-    figure checks. The model is handed that sentence and asked not to repeat
-    it; when it paraphrases instead, the paraphrase is rejected. The traveller
-    still gets the correct answer from the deterministic rendering, but the
-    operator note reads as a grounding failure when it is a rewording.
+    week" — is outside the dated-claim check. A weekday or year-less date is
+    checked when the asked window identifies exactly one day; ambiguous dates
+    are not guessed;
+  * an undated weather claim over a partly covered period is rejected when it
+    claims **the whole week or every day**. Other vague wording can still evade
+    a day-by-day check;
+  * a record-scoped paraphrase such as "I have no stored weather for October 1"
+    can name an uncovered day. Other paraphrases may still be rejected and
+    replaced by the deterministic answer.
 
   The dated event-claim check deliberately gives up two more shapes, because
   the first version of it rejected correct answers on the assignment's own
   London question: a date that sits **before** the claim word is read as the
   window the sentence opens with rather than the event's date, and a clause
-  that is **also describing the weather** is left alone. Both are cases where
-  one clause carries a forecast date and a listing date at once, which is a
-  sentence the model writes constantly. The trade is a rare miss against a
-  common false positive, and checks 1 and 7 still apply to those clauses.
+  explicitly scoped to the record can describe a searched date range. A
+  weather phrase after the event date no longer disables the event check;
+  dates in a separate weather phrase are not treated as event dates.
 
   The dated event-claim check is measured in
   [docs/EVIDENCE-fresh-demo.md](docs/EVIDENCE-fresh-demo.md) §12.1; §12.5 and
@@ -830,7 +828,7 @@ command you can run.
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh, re-enrichment | `… demos update`; `make refresh-check` |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml` and `release.yml`; release tooling in `scripts/`, including `airgap-evidence.sh` (captures engine identity, image/volume census, link state, bundle digests and exit codes) and `make-fault-injection-bundle.sh` (derives the deliberately-broken artifact for the rollback drill) | `gh run list`; [docs/RELEASE.md](docs/RELEASE.md) |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates. Targeted work has since covered the consumer's ack decision, partial and undated forecast coverage, the grounding guard's weather check, per-city planner coverage, and the wiring of the migration list — that last one found a migration that had been written and never run. Still uncovered: the connected fetch path, because CI has no egress, and end-to-end user flows | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
+| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates. Targeted work covers the consumer's ack decision, partial and undated forecast coverage, the grounding guard, per-city planner coverage, migration wiring, and the Open-Meteo request/response adapter with a stubbed HTTP reply. A live connected fetch and complete end-to-end user flows are still untested in CI | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
 | B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at <http://127.0.0.1:3000> |
 | B3 | Automatic recovery from failures | **partial** — reconnect with backoff, `restart: unless-stopped`, healthchecks, automatic re-enrichment, and an operator backup/restore with a measured RPO and RTO | `make backup-restore`; then `… demos no-data-loss` |
 

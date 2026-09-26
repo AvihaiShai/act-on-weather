@@ -43,6 +43,7 @@ log = logging.getLogger("api")
 app = FastAPI(title="act-on-weather", version="1.0", docs_url="/docs")
 
 pool = Pool(config.reader_dsn(), autocommit=True)
+_purge_pool = Pool(config.reader_dsn(), autocommit=True)
 outbox = Outbox(config.OUTBOX_PATH)
 _outbox_lock = threading.Lock()
 
@@ -81,7 +82,6 @@ def _publisher_loop() -> None:
                 metrics.MESSAGES_PUBLISHED.labels(
                     service="api", routing_key=metrics.safe_routing_key(row["routing_key"])
                 ).inc()
-            _purge_completed_wipes()
         except Exception as exc:  # noqa: BLE001 - the loop must never die
             log.exception("publisher loop error: %s", exc)
         time.sleep(2)
@@ -95,7 +95,7 @@ def _purge_completed_wipes() -> None:
             (config.RK_USER_DATA_WIPE,),
         ).fetchall()
     for wipe in wipes:
-        stored = pool.conn.execute(
+        stored = _purge_pool.conn.execute(
             "SELECT 1 FROM ingest_log WHERE message_id = %s AND routing_key = %s",
             (wipe["message_id"], config.RK_USER_DATA_WIPE),
         ).fetchone()
@@ -104,9 +104,21 @@ def _purge_completed_wipes() -> None:
                 outbox.purge_published_through(wipe["seq"])
 
 
+def _wipe_cleanup_loop() -> None:
+    """Reconcile published wipes without ever parking the RabbitMQ publisher."""
+    while True:
+        try:
+            _purge_completed_wipes()
+        except Exception as exc:  # noqa: BLE001 - retry after a database outage
+            _purge_pool.drop()
+            log.exception("wipe cleanup error: %s", exc)
+        time.sleep(2)
+
+
 @app.on_event("startup")
 def _start_publisher() -> None:
     threading.Thread(target=_publisher_loop, name="outbox-publisher", daemon=True).start()
+    threading.Thread(target=_wipe_cleanup_loop, name="wipe-cleanup", daemon=True).start()
 
 
 @lru_cache(maxsize=1)
