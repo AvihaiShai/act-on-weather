@@ -485,102 +485,49 @@ not a list of what is safe.
 
 ---
 
-## 7. Proposed README wording — NOT YET APPLIED
+## 7. README: applied
 
 `CLAUDE.md` requires that a behaviour change update `README.md` in the same
-change. This branch does not, deliberately: `README.md` was held out of its
-scope, and while this work was in progress it was being rewritten by another
-session. Editing it here would have produced a near-certain conflict with that
-rewrite, and `DEVOPS_REVIEW.md` records that two tools contending for that one
-file have already destroyed work once.
+change. This branch initially did not, deliberately: `README.md` was held out of
+its scope while another session rewrote it, and editing it in parallel would have
+produced a conflict in the one file `DEVOPS_REVIEW.md` records as having already
+cost work once.
 
-**That rewrite has since landed** — PR #51, `origin/main` at `6664454` — and it
-replaced the ~1900-line README with a 680-line one. The section names this
-section originally targeted **no longer exist**, so the targets below were
-re-derived against the rewritten file. The wording itself is unchanged; only
-where it goes was corrected. Applying it is still an open task and is
-deliberately not done on this branch.
+That rewrite has landed — PR #51, merged as `6664454`, replacing the ~1900-line
+README with 680 lines — and **the wording is now applied**, against the rewritten
+sections rather than the ones it was originally drafted for. Those originals
+(`## Delivery guarantees, and their boundary`, `### What gets worded, and what
+does not`, `## Updating stored information (M12)`) no longer exist, so each
+addition was placed by meaning and rewritten to fit the section that now carries
+the subject, instead of being pasted in as a block.
 
-Nothing in `README.md` is made **false** by this branch, re-checked against the
-rewritten file rather than carried over: no test count, no migration count and
-no schema listing is cited anywhere in it; `POST /itineraries` appears only under
-`### The write API has no authentication`; and the claim at line 47 — "a question
-past the window is refused rather than guessed" — remains true, because it is
-about a window a question is *entirely* beyond. What is missing is documentation
-of three new behaviours.
+| what | where it went | why there |
+|---|---|---|
+| Partly-expired coverage | `### The data on board, and when it goes stale` | it continues the paragraph that already ends "a question past the window is refused rather than guessed", and the table above it is the per-all-cities coverage the addition warns against reading per city |
+| Out-of-order redelivery | `### The delivery guarantee, and its boundary` | it qualifies that section's own claim, that delivery is keyed on `message_id` — two refreshes of one city-day are two ids |
+| The itinerary `as_of` contract | `### The delivery guarantee, and its boundary` | the load-bearing half is that the write path reads nothing, which is how a record reaches the outbox that section starts from |
 
-Headings and line numbers below are `README.md` at `6664454`. Re-check them
-before applying: PR #52 (`feat/reviewer-quickstart`) was still open when this was
-written and may move them again.
+Four further edits went with them, none of which were in the original draft:
 
-### 7.1 Into `### The delivery guarantee, and its boundary` (line 285)
+- **A stale count, corrected.** The Tests section said "the unit suite is 38
+  modules under `tests/unit/`". This branch adds three, so it says 41, and the
+  list of what the suite covers now names the consumer's ack decision, the
+  partial-coverage answer and a save accepted while the database is unreachable.
+  This is the only claim in `README.md` that this branch made **false**; it was
+  found by counting the modules rather than by trusting the earlier check, which
+  had looked for cited *test* counts and not module counts.
+- **The new drill,** in the paragraph describing what `ci-integration.sh` drives.
+- **The two open defects** (§6), as entries in `## Known limitations`, phrased as
+  limits rather than as bugs, since that is what the section is.
+- **The B1 traceability row** now links this file alongside `CICD_EVIDENCE.md`.
 
-The rewrite dropped the old failure table, so this is now prose rather than a
-table row. Add after the "Not covered" paragraph:
+`POST /itineraries` also appears under `### The write API has no authentication`.
+That mention is about credentials, not provenance, and is unaffected.
 
-> An older forecast redelivered behind a newer one never overwrites it. Two
-> refreshes of the same city-day are two different messages with two different
-> `message_id`s, so `ingest_log` does not deduplicate them — both are stored, and
-> both are supposed to be. What protects the row is that the upsert compares
-> `as_of` and discards the stale one, which also stops a stale re-score of every
-> recommendation for that day. Requeues reorder the queue, so this is a state the
-> stack genuinely reaches. Asserted on every PR by
-> `tests/integration/stale_forecast.py`.
-
-### 7.2 Into `### The data on board, and when it goes stale` (line 27)
-
-The rewrite removed `### What gets worded, and what does not`. This now belongs
-beside the freshness paragraph that already ends with the refusal sentence, or
-under `## Offline operation` (line 300) — the choice is the applier's.
-
-> **A snapshot that has partly expired.** A question whose whole window is
-> outside the stored forecast is refused. A question that straddles the edge —
-> the ordinary case a few days after staging — is answered for the days that
-> have rows, and states the others. The days it may speak about come from the
-> forecast rows actually retrieved for that city, not from the advertised
-> coverage window: `weather_first_date` and `weather_last_date` are a global
-> MIN/MAX over every city, so a day inside them is not evidence that this city
-> has a row for it. Missing days are named exactly — consecutive dates as a
-> range, separate ones listed — and the explanation says whether the forecast
-> ends before them, begins after them, or covers them and holds no row. The
-> model is told which dates it may not describe, and any wording that describes
-> one anyway is discarded by the grounding check.
-
-The line at README:47 is worth extending in the same pass, from "a question past
-the window is refused rather than guessed" to something that also covers the
-partial case, for example: "a question past the window is refused rather than
-guessed, and one that only partly reaches past it is answered for the days that
-have data and states the days that do not."
-
-### 7.3 Into `### Connected refresh` (line 326) or `### The write API has no authentication` (line 488)
-
-The rewrite removed `## Updating stored information (M12)`. The update paths are
-now split between those two sections; the second already lists
-`POST /itineraries`, which makes it the closer fit.
-
-> **Saving a trip carries its own provenance.** `POST /itineraries` takes the
-> `as_of` of the forecast snapshot the plan's scores were computed from. It comes
-> from the caller because only the caller knows it, and the UI sends the value it
-> already shows under the plan it built. The handler reads nothing from the
-> database, which is what makes a save survive a database outage: it is fsynced
-> into the outbox and answered `202` like any other write. A caller that omits
-> `as_of` is still accepted and the record stores NULL — the field is nullable as
-> of migration `008`. It is deliberately not filled in: refusing would break
-> callers written before the field existed, and substituting the clock would put
-> a provenance on a stored record that nothing scored the plan against. The UI
-> renders the absent case as "scoring timestamp not recorded" and skips the
-> staleness comparison rather than showing a verdict it cannot support.
-
-### 7.4 Also worth a look when applying the above
-
-- The **`## Requirements traceability`** matrix (line 617) marks **B1** partial.
-  That is still correct and should stay. It may be worth pointing the B1 row at
-  this file, since it is the evidence for what was added and for what is still
-  open.
-- **`## Known limitations`** (line 530) is where the two defects left open in §6
-  belong if they are still open at submission: the undated-weather-prose hole in
-  `grounding.violations`, and `build_itinerary` still filtering days through the
-  global `queries.in_coverage`.
-- **`## Tests and operational tools`** (line 361) is the natural home for a
-  mention of the new out-of-order forecast drill, if that section enumerates the
-  integration drills.
+**Still to reconcile, at merge time rather than now.** PR #52
+(`feat/reviewer-quickstart`) was open when this was written. It does **not** touch
+`README.md` — its files are `docs/REVIEWER-QUICKSTART.md`, `scripts/bootstrap.sh`
+and `tests/unit/test_bootstrap.py` — so there is no overlap with these edits. An
+earlier revision of this section warned that it might move these lines; that
+warning was wrong and is withdrawn. If anything else lands in `README.md` before
+this merges, re-check the three sections above.

@@ -45,7 +45,17 @@ verified listing has expired and a default run reports no current events. The
 expiry is derived, not written into the rows: `AOW_EVENT_RECHECK_DAYS` (default
 21) from each listing's `checked_at`. Every answer and every chart carries its
 as-of stamp, and a question past the window is refused rather than guessed.
-[Connected refresh](#connected-refresh) moves the weather window forward.
+
+A question that only *partly* reaches past the window — the ordinary case a few
+days after the snapshot was taken — is answered for the days that have rows and
+names the days that do not, rather than being refused whole or quietly
+shortened. Which days those are comes from the forecast rows stored for that
+city, not from the window above: the coverage in this table is the span across
+all five cities, so a date inside it is not by itself evidence that a given city
+has a row for it. The missing dates are listed in the answer, the model is told
+it may not describe them, and any wording that describes one anyway is
+discarded. [Connected refresh](#connected-refresh) moves the weather window
+forward.
 
 The verified event set is 55 rows across all five cities, and it is a
 hand-checked sample of venue and organiser listings rather than a feed: 47
@@ -291,6 +301,22 @@ record; none of them lose it. The mechanism is at-least-once delivery plus
 idempotent writes, keyed on the `message_id` that is inserted into `ingest_log`
 in the same transaction as the business write.
 
+**An older record redelivered late does not overwrite a newer one.** Two
+refreshes of the same city and day are two messages with two `message_id`s, so
+the idempotency key does not collapse them — both are stored, and both should
+be. What protects the row is that the weather upsert compares `as_of` and
+discards the older one, which also stops a stale re-score of that day's
+recommendations. Requeues reorder a queue, so this is a state the stack reaches
+in ordinary operation rather than a theoretical one.
+
+**A write never reads the database.** `POST /itineraries` carries the `as_of` of
+the forecast snapshot its scores were computed from, supplied by the caller,
+because a handler that went to Postgres for that value would block for the length
+of an outage and lose a save the outbox was ready to accept. A caller that omits
+it is accepted anyway and the record stores no scoring timestamp; the UI then
+says so rather than comparing the plan against the current window, because an
+invented provenance is worse than a missing one.
+
 **Not covered**, stated plainly: a destroyed volume, a full disk, and data that
 was never accepted in the first place. Weather that was never fetched can be
 re-fetched while connected. There is no absolute guarantee here.
@@ -367,13 +393,16 @@ docker run --rm aow/tests:dev
 
 Dependencies are baked into that image at build time, so the run itself makes no
 network call; CI runs the same container with `--network none`. `make test` is
-the shorthand. The unit suite is 38 modules under `tests/unit/`, covering the
+the shorthand. The unit suite is 41 modules under `tests/unit/`, covering the
 rule engine's truth table, envelope round-tripping and the rejection of malformed
 messages, payload validation, the outbox's two load-bearing properties (accepting
 the same message twice is a no-op, and an accepted-but-unpublished record
-survives the process dying), the agent's date parsing and intent matching, the
-planner, API responses, UI rendering, the compose port bindings, and the snapshot
-counts quoted in this file. The release artefacts have their own suites:
+survives the process dying), the consumer's ack decision (acked on success,
+dead-lettered on a poison message, requeued on anything else), the agent's date
+parsing and intent matching, what an answer may say when the snapshot covers only
+part of the question, the planner, API responses including a save accepted while
+the database is unreachable, UI rendering, the compose port bindings, and the
+snapshot counts quoted in this file. The release artefacts have their own suites:
 `test_bundle_tamper.py`, `test_bundle_archive.py` and `test_airgap_evidence.py`
 cover bundle integrity, archive completeness and the evidence-capture tool.
 
@@ -409,7 +438,10 @@ stopped, the broker stopped and the database stopped, and through the ingestor
 with the broker stopped and the database stopped. It then reconciles and replays
 a confirmed envelope, restarts everything, and asks a separate reader connection
 for all of the traced IDs at once. Any missing ID fails the job, and so does any
-duplicate.
+duplicate. The same script also redelivers an older forecast for a city-day that
+already has a newer one, and asserts the stored row keeps its `as_of` and its
+revision — the ordering case the idempotency key cannot catch, because the two
+refreshes are two different messages.
 
 The `guard` job is what keeps this README honest. It fails the build if a pulled
 image or a Dockerfile base is not pinned by digest, if a digest disagrees with
@@ -569,6 +601,18 @@ tunnel has every route.
   envelope to reconcile.
 * **The ingestor drills accept through a test fixture, not a real fetch.** The
   connected fetch path is not exercised in CI, which has no egress.
+* **The grounding check catches a wrong date, not wrong prose.** An answer that
+  names a day the stored forecast has no row for is rejected. An answer that
+  describes the weather without naming a day — "warm and dry this week" — is not,
+  because every date check needs a date and no check requires a weather claim to
+  rest on a stored row. The deterministic parts of an answer are built from rows
+  by code, so this is a limit on how far the validator polices the model's
+  wording, not on what the numbers rest upon.
+* **The trip planner's day filter is broader than the agent's.** The agent
+  decides which days it may answer for from the forecast rows stored for that
+  city. `POST /agent/itinerary` still filters against the coverage window across
+  all cities, so for a city whose forecast is shorter than another's it can offer
+  a day with no scored activity instead of stating that it holds nothing for it.
 * **No physical air-gap proof.** Offline operation is proven on a separate Docker
   engine with an empty image store, no pulls and no reachable egress, and by a
   per-release clean-engine CI gate. Neither is separate physical hardware, and
@@ -636,7 +680,7 @@ command you can run.
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh, re-enrichment | `… demos update`; `make refresh-check` |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml` and `release.yml`; release tooling in `scripts/`, including `airgap-evidence.sh` (captures engine identity, image/volume census, link state, bundle digests and exit codes) and `make-fault-injection-bundle.sh` (derives the deliberately-broken artifact for the rollback drill) | `gh run list`; [docs/RELEASE.md](docs/RELEASE.md) |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates; component and end-to-end depth remains incomplete | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md) |
+| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates; component and end-to-end depth remains incomplete | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
 | B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at <http://127.0.0.1:3000> |
 | B3 | Automatic recovery from failures | **partial** — reconnect with backoff, `restart: unless-stopped`, healthchecks, automatic re-enrichment, and an operator backup/restore with a measured RPO and RTO | `make backup-restore`; then `… demos no-data-loss` |
 
