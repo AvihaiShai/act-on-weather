@@ -298,12 +298,9 @@ def test_the_city_is_not_covered_merely_because_another_city_is(ask):
 
     invented = "On 2026-09-26 Rome is warm and dry, so plan outdoor time."
     assert grounding.violations(invented, brief), "a week with no rows was described anyway"
-    # Deliberately not asserted here: the same claim with no date in it --
-    # "Rome is warm and dry this week" -- is NOT caught, because every date
-    # check needs a date to test and no check requires a weather claim to rest
-    # on a DayFact. That is a real hole, it is separate from this one, and it
-    # is recorded in docs/EVIDENCE-b1-targeted-tests.md rather than papered
-    # over with an assertion of the behaviour as it stands.
+    # The same claim with no date in it -- "Rome is warm and dry this week" --
+    # used to pass here, because every check above needs a date to test. That
+    # is check 4b's job now, and tests/unit/test_undated_weather.py owns it.
 
 
 # --------------------------------------------------------- date grouping --

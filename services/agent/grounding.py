@@ -941,8 +941,8 @@ def render(brief: Brief) -> str:
 def violations(answer: str, brief: Brief) -> list[str]:
     """Sentences in `answer` that assert something no fact in `brief` carries.
 
-    Eleven checks, each written for a failure that was actually observed. They
-    are numbered 1-9; 3b and 6b are variants of the check they sit beside,
+    Twelve checks, each written for a failure that was actually observed. They
+    are numbered 1-9; 3b, 4b and 6b are variants of the check they sit beside,
     lettered rather than renumbered so a log line written last month still
     names the same check. All of them work on the model's prose only -- the gap
     block and the as-of footer are appended afterwards and are code's own
@@ -1084,6 +1084,38 @@ def violations(answer: str, brief: Brief) -> list[str]:
             verdict = any(_says(sentence, word) for word in VERDICT_WORDS)
             if verdict and not brief.verdicts:
                 found.append("gives a suitability verdict with no stored score")
+
+            # 4b. The weather described where no forecast row was retrieved.
+            #
+            #     Every other weather check needs a date to test. Check 7 tests
+            #     the days a sentence names, and a sentence that names none
+            #     walks past all of them: "Rome is warm and dry this week"
+            #     against a brief holding no `DayFact` is the whole forecast
+            #     invented, and it passed clean. The shape that produces it is
+            #     ordinary rather than exotic -- `queries.coverage` is a global
+            #     MIN/MAX, so the coverage gate lets the question through
+            #     because some *other* city is still inside the window, the
+            #     retrieval comes back with no row for this one, and the model
+            #     writes the week from its weights.
+            #
+            #     Shaped like check 4 above: the trigger is the absence of the
+            #     rows, not a bad value in the prose. The escape hatches are
+            #     the ones our own gap sentence uses -- a negated clause and a
+            #     clause scoped to the record are talking about the absence
+            #     rather than asserting through it -- plus a weather word the
+            #     retrieved background prose already carries, which is a
+            #     paraphrase of a stored fact and not a forecast.
+            #
+            #     It is all-or-nothing on the rows, deliberately. A partially
+            #     covered week has `DayFact`s, so an undated claim over it is
+            #     not caught here; catching that needs a notion of which day a
+            #     clause is about, which this file does not have and should not
+            #     guess at.
+            if not brief.days and not negated and not on_record:
+                for word in WEATHER_WORDS:
+                    if _says(sentence, word) and not _says(supporting, word):
+                        found.append("describes the weather with no stored forecast row")
+                        break
 
             # 5. A verdict on an activity this city has no row for. The
             #    observed shape is agreement followed by an invented

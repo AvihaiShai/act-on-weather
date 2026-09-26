@@ -1,11 +1,22 @@
-"""Our own coverage sentence coming back, and the allow-list it is judged by.
+"""The weather claim that carries no date, and our own sentence coming back.
 
-`allowed_dates` narrowing to the days a forecast row came back for is what
-makes a half-expired snapshot honest -- but `window_days` was feeding two
-different things, and narrowing it narrowed both. The second is `vocabulary`,
-which checks 8 and 9 read, and the days it lost are exactly the ones our own
-gap sentence prints. So the prompt showed the model a sentence naming those
-days, twice, and the validator then threw the answer away for repeating it.
+Two holes that every check in `grounding.violations` was shaped to walk past,
+because every one of them needs a date to test:
+
+  * An undated weather claim. "Rome is warm and dry this week" against a brief
+    that holds no `DayFact` at all is the whole forecast invented, in a
+    sentence with nothing in it for a date check to look at. Check 4b closes
+    it, shaped like check 4 -- the trigger is the absence of the rows.
+  * Our own coverage-gap sentence, repeated. The prompt shows the model that
+    sentence and asks it not to repeat it; when it repeats it anyway, the
+    dates and figures in it are precisely the days no row carries, so checks 7
+    and 9 threw the answer away and told the operator the rows did not support
+    a sentence we wrote ourselves.
+
+The second one only became reachable when `allowed_dates` narrowed to the days
+a forecast row came back for, which is also what this file pins: the narrowing
+belongs to that allow-list and must not reach `vocabulary`, or the figures in
+our own prose stop being quotable.
 
 The clock is never read here. Every date is written out, so these tests keep
 meaning something after the staged snapshot has expired.
@@ -104,6 +115,60 @@ def _brief(question, *, forecast=(), events=(), facts=(), covered=None, uncovere
     return grounding.build(result)
 
 
+# ------------------------------------------ 4b: a weather claim with no row --
+
+
+def test_an_undated_weather_claim_with_no_forecast_row_is_rejected():
+    """The hole. No date, so checks 7 and 9 have nothing to test, and before
+    this check the sentence was the model's forecast presented as ours."""
+    brief = _brief("What can I do this week in Rome?", uncovered=WEEK)
+    assert brief.days == []
+
+    found = grounding.violations("Rome is warm and dry this week.", brief)
+    assert any("no stored forecast row" in v for v in found), found
+
+
+def test_an_undated_weather_claim_is_rejected_whatever_the_question_was():
+    """A question about history does not license a forecast either. The check
+    is about which rows came back, not about which intent was resolved."""
+    brief = _brief("Tell me about the history of Rome.")
+    found = grounding.violations("Rome is mild at this time of year.", brief)
+    assert any("no stored forecast row" in v for v in found), found
+
+
+def test_a_weather_claim_with_stored_rows_behind_it_is_allowed():
+    """The control. With rows this is exactly the sentence we want written --
+    without it every assertion above would pass by rejecting all weather."""
+    brief = _brief(
+        "What is the weather this week in Rome?",
+        forecast=[_forecast_row(DAY1), _forecast_row(DAY2)],
+    )
+    assert grounding.violations("Rome is warm and dry this week.", brief) == []
+
+
+def test_saying_no_forecast_is_on_record_is_allowed():
+    """The honest sentence for the same absence has to survive, or the check
+    leaves the answer with nothing at all it is allowed to say."""
+    brief = _brief("What can I do this week in Rome?", uncovered=WEEK)
+    for wording in (
+        "No forecast is on record for Rome.",
+        "There is no stored weather for those dates.",
+        "I do not have a forecast for this week.",
+        "I have no weather on record for Rome.",
+    ):
+        assert grounding.violations(wording, brief) == [], wording
+
+
+def test_background_prose_about_the_climate_may_still_be_paraphrased():
+    """A weather word the retrieved summary carries is a paraphrase of a
+    stored fact, not a forecast."""
+    brief = _brief(
+        "Tell me about Rome.",
+        facts=[{"title": "Rome", "summary": "Rome has a Mediterranean climate with mild winters."}],
+    )
+    assert grounding.violations("Rome has mild winters.", brief) == []
+
+
 # ------------------------------------------------- our own words, repeated --
 
 
@@ -157,11 +222,11 @@ def test_the_asked_window_stays_quotable_after_the_allow_list_narrows():
     assert {"30", "10", "1"} <= brief.allowed_numbers()
 
 
-# ------------------------------- the narrowed allow-list beside the events --
+# --------------------------------------------- the three checks, together --
 
 
 def test_a_partial_week_with_events_answers_without_a_spurious_violation():
-    """Partial weather, a listing outside it, one answer.
+    """The integration case: partial weather, a listing outside it, one answer.
 
     A concert row sits on a day the forecast does not reach. Naming it is
     supported by the event row, so check 3b must not place it wrongly and
@@ -182,3 +247,15 @@ def test_a_partial_week_with_events_answers_without_a_spurious_violation():
     invented = "Concerts are scheduled on 2026-09-30 and 2026-10-01."
     found = grounding.violations(invented, brief)
     assert any("2026-10-01" in v and "no stored event row covers" in v for v in found), found
+
+
+def test_a_partial_week_does_not_make_4b_fire_on_the_days_it_does_hold():
+    """Check 4b is all-or-nothing on the rows. A partially covered week has
+    `DayFact`s, so describing them is what the answer is for."""
+    brief = _brief(
+        "What is the weather this week in Rome?",
+        forecast=[_forecast_row(DAY1), _forecast_row(DAY2)],
+        uncovered=WEEK[2:],
+    )
+    answer = "On 2026-09-25 Rome is warm and dry, and 2026-09-26 stays clear."
+    assert grounding.violations(answer, brief) == [], answer
