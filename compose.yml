@@ -153,9 +153,8 @@ services:
       --metrics
     environment:
       # Qwen3 is a hybrid-thinking model: left on, every reply spends its
-      # token budget in reasoning_content and returns empty content.
-      # Measured: 4.2s and no answer with thinking on, 1.2s and a clean
-      # answer with it off. Set as an env var because the equivalent CLI
+      # token budget in reasoning_content and returns empty content -- a
+      # failure, not a slowdown. Set as an env var because the equivalent CLI
       # flag loses its quoting through YAML + Docker arg splitting.
       LLAMA_ARG_CHAT_TEMPLATE_KWARGS: '{"enable_thinking":false}'
     networks: [backend]
