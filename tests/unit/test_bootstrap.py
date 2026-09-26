@@ -152,6 +152,30 @@ api|exited||0'
       fi
       exit 0
     fi
+    # `run ... stage` is scripts/stage_model.py. Its two failures read very
+    # differently and bootstrap treats them differently, so both are modelled
+    # here closely enough to match on -- the text below is what a real run
+    # printed on an air-gapped host and on a truncated model file.
+    if [ "$STUB_TOOLS" = 1 ] && [ "$1" = run ]; then
+      case " $* " in
+        *' stage '*)
+          if [ "${AOW_STUB_MODEL_MISSING:-0}" = 1 ]; then
+            echo "models/Qwen3-1.7B-Q4_K_M.gguf is missing, fetching it from file:///dev/null/Qwen3-1.7B-Q4_K_M.gguf"
+            echo "Traceback (most recent call last):" >&2
+            echo "NotADirectoryError: [Errno 20] Not a directory" >&2
+            exit 1
+          fi
+          if [ "${AOW_STUB_MODEL_CORRUPT:-0}" = 1 ]; then
+            echo "models/Qwen3-1.7B-Q4_K_M.gguf does not match models.lock." >&2
+            echo "  expected d2387ca2dbfee2ff" >&2
+            echo "  actual   deadbeefdeadbeef" >&2
+            exit 1
+          fi
+          echo "models/Qwen3-1.7B-Q4_K_M.gguf is already here, verifying it"
+          echo "  OK  d2387ca2dbfee2ff"
+          exit 0 ;;
+      esac
+    fi
     if [ "$STUB_TOOLS" = 1 ] && [ "$1" = run ] && [ "$3" = refresh ]; then
       exit ${AOW_STUB_REFRESH_RC:-0}
     fi
@@ -246,6 +270,76 @@ def test_offline_verifies_the_model_without_a_network(tmp_path: Path) -> None:
     # requirement instead of the spelling.
     assert "--pull never" in stage[0]
     assert "MODEL_BASE_URL=file:///dev/null" in stage[0]
+
+
+def test_offline_with_the_model_absent_says_so_in_one_line(tmp_path: Path) -> None:
+    """No traceback, and no "fetching it from file:///dev/null".
+
+    With the model absent the stager has nothing to verify and falls through to
+    the fetch it was pinned away from: it announces a download from
+    file:///dev/null and ends in a NotADirectoryError. Observed on a real
+    air-gapped run as some twenty lines of noise between the reader and the one
+    fact that mattered, which was that the model is not there.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        "--offline",
+        "--no-start",
+        env_file=env_file,
+        images_present=True,
+        model_missing="1",
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "the model is not staged on this machine" in result.stderr
+    assert "Traceback" not in combined
+    assert "file:///dev/null" not in combined, "it repeated the pinned-away fetch URL"
+    next_line = [ln for ln in result.stderr.splitlines() if ln.startswith("next: ")]
+    assert next_line[0] == "next: rerun without --offline, on a machine with a network", next_line
+
+
+def test_offline_with_a_corrupt_model_still_shows_both_hashes(tmp_path: Path) -> None:
+    """The other failure, and the one whose own message is the better one.
+
+    A present-but-wrong file makes stage_model.py print the path, the expected
+    hash and the actual one. Nothing this script could write improves on that,
+    so it is passed through rather than replaced.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        "--offline",
+        "--no-start",
+        env_file=env_file,
+        images_present=True,
+        model_corrupt="1",
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "does not match models.lock" in combined
+    assert "expected d2387ca2dbfee2ff" in combined
+    assert "actual   deadbeefdeadbeef" in combined
+    assert "delete the file named above" in result.stderr
+
+
+def test_offline_prints_the_model_verification_it_performed(tmp_path: Path) -> None:
+    """The success output is evidence and is not swallowed by the capture.
+
+    bootstrap holds the stager's output so it can tell the absent case from the
+    corrupt one. On success it has to print it anyway: "already here, verifying
+    it" plus the hash is what an offline check exists to produce.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path, "--offline", "--no-start", env_file=env_file, images_present=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "is already here, verifying it" in result.stdout
+    assert "d2387ca2dbfee2ff" in result.stdout
 
 
 def test_offline_start_refuses_to_pull_or_build(tmp_path: Path) -> None:
@@ -510,7 +604,12 @@ def test_unsupported_compose_ps_format_fails_fast_and_says_so(tmp_path: Path) ->
     )
     assert result.returncode == 1
     assert "cannot render" in result.stderr
-    assert "upgrade the Compose v2 plugin" in result.stderr
+    # "install a plugin that supports it", not "upgrade": the message quotes the
+    # installed version in the same breath, and the dev machine's Compose is
+    # v5.5.1, where "upgrade to v2.21 or newer" reads as an instruction to
+    # downgrade.
+    assert "install a Compose plugin that supports it (v2.21 or newer)" in result.stderr
+    assert "upgrade" not in result.stderr
     assert "no container" not in result.stderr, "it blamed the containers instead of the plugin"
 
 
@@ -718,6 +817,15 @@ def test_refresh_and_no_start_are_rejected_together(tmp_path: Path) -> None:
     assert "running stack" in result.stderr
 
 
+def test_wait_only_and_no_start_are_rejected_together(tmp_path: Path) -> None:
+    # --no-start's early exit sits inside the same block --wait-only skips, so
+    # given both flags the script used to ignore --no-start silently and poll
+    # for the full timeout -- the opposite of what one of the two asked for.
+    result, _, _ = bootstrap(tmp_path, "--wait-only", "--no-start")
+    assert result.returncode == 2
+    assert "pick one" in result.stderr
+
+
 # Four tests stood here that read `scripts/bootstrap.sh` as text and asserted
 # that certain strings appeared in it, or that one `str.index()` was smaller
 # than another. They have been removed rather than kept as a second opinion:
@@ -900,9 +1008,77 @@ def test_the_printed_urls_follow_the_bind_address(tmp_path: Path) -> None:
         extra_env={"AOW_STUB_HEALTHY": "1", "AOW_BIND_ADDR": "127.0.0.3"},
     )
     assert "http://127.0.0.3:8080" in result.stdout
-    assert "http://127.0.0.3:8000/docs" in result.stdout
+    assert "http://127.0.0.3:8000/openapi.json" in result.stdout
     assert "localhost:8080" not in result.stdout
     assert "published on 127.0.0.3 only" in result.stdout
+
+
+def test_the_bind_address_is_read_from_the_env_file_too(tmp_path: Path) -> None:
+    """The documented knob is a line in .env, and it was the one not read.
+
+    compose.yml publishes on ${AOW_BIND_ADDR:-127.0.0.1} and .env.example ships
+    AOW_BIND_ADDR as a line to edit, so `.env` -- not the shell -- is how a host
+    moves that boundary. Reading only the shell printed "published on 127.0.0.1
+    only" over a stack Compose had just bound to 0.0.0.0. Of every line in this
+    report that is the one that must not be able to be wrong: it describes the
+    exposure of an API with write routes and no authentication.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\nAOW_BIND_ADDR=0.0.0.0\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        env_file=env_file,
+        images_present=True,
+        extra_env={"AOW_STUB_HEALTHY": "1"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "published on 0.0.0.0" in result.stdout
+    assert "can expose the unauthenticated API to other machines" in result.stdout
+    assert "published on 127.0.0.1 only" not in result.stdout
+
+
+def test_the_shell_wins_over_the_env_file_for_the_bind_address(tmp_path: Path) -> None:
+    """Compose's own precedence, so the report cannot disagree with the stack.
+
+    For interpolation the shell environment outranks --env-file, and the report
+    has to resolve the value the same way round or it would be wrong in the
+    other direction.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\nAOW_BIND_ADDR=0.0.0.0\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        env_file=env_file,
+        images_present=True,
+        extra_env={"AOW_STUB_HEALTHY": "1", "AOW_BIND_ADDR": "127.0.0.4"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "http://127.0.0.4:8080" in result.stdout
+    assert "published on 127.0.0.4 only" in result.stdout
+    assert "0.0.0.0" not in result.stdout, "the env file overrode the shell"
+
+
+def test_the_api_url_printed_is_the_one_that_works_without_a_network(
+    tmp_path: Path,
+) -> None:
+    """/docs is the only page in this stack that is not self-contained.
+
+    Swagger UI's bundle comes from a CDN and its icon from another host, so on
+    the air-gapped machine this project exists for, /docs renders empty.
+    /openapi.json is served by the api container and needs nothing, so that is
+    the URL the report offers -- while still saying what /docs is for.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        env_file=env_file,
+        images_present=True,
+        extra_env={"AOW_STUB_HEALTHY": "1"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "http://localhost:8000/openapi.json" in result.stdout
+    assert "needs a network" in result.stdout
 
 
 def test_the_default_run_still_says_localhost(tmp_path: Path) -> None:
@@ -930,3 +1106,8 @@ def test_nonloopback_bind_report_does_not_claim_the_api_is_local_only(tmp_path: 
     assert result.returncode == 0
     assert "can expose the unauthenticated API to other machines" in result.stdout
     assert "never on a routable interface" not in result.stdout
+    # A wildcard is what a socket binds, not somewhere a browser can go, so the
+    # URL says localhost. The warning above still carries the real value.
+    assert "http://localhost:8080" in result.stdout
+    assert "http://0.0.0.0:8080" not in result.stdout
+    assert "published on 0.0.0.0" in result.stdout

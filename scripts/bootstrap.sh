@@ -33,7 +33,7 @@
 # Exit codes:
 #   0  the stack is up and healthy (or --no-start finished its work)
 #   1  a step failed; the message says which one and what to run next
-#   2  bad usage
+#   2  bad usage, or --refresh did not complete (the stack is up either way)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -170,6 +170,13 @@ if [ "$REFRESH" -eq 1 ] && [ "$START" -eq 0 ]; then
   echo "--refresh acts on a running stack, so it cannot be used with --no-start" >&2
   exit 2
 fi
+# --no-start's early exit lives inside the same block --wait-only skips, so
+# given both flags the script silently ignored --no-start and polled for the
+# full timeout. The pair is contradictory; say so rather than picking one.
+if [ "$WAIT_ONLY" -eq 1 ] && [ "$START" -eq 0 ]; then
+  echo "--wait-only polls a stack that is already up and --no-start stops before starting one; pick one" >&2
+  exit 2
+fi
 
 # `docker compose` the way demos/lib.sh does it: with --env-file while the file
 # exists, plain before it does, so step 1 and step 2 work on a fresh clone.
@@ -272,7 +279,11 @@ pyimage_ready() {
     return 1
   fi
   note "fetching the pinned helper image (python:3.12-slim, ~130 MB)..."
-  docker pull --quiet "$PYIMAGE" >/dev/null 2>&1
+  # stdout is layer noise and is dropped; stderr is the diagnosis and is not.
+  # It used to be discarded along with it, so a blocked registry, an expired
+  # login and a rate limit all arrived as the same "not available" further down,
+  # with nothing in the scrollback to act on.
+  docker pull --quiet "$PYIMAGE" >/dev/null
 }
 
 # Integer arithmetic only: no bc, no python on the host.
@@ -350,7 +361,11 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
   fi
 
   # Free space on Docker's own filesystem, measured from inside a container
-  # for the same reason: the host's df is not the number that matters.
+  # for the same reason: the host's df is not the number that matters for the
+  # images and the builds. It is not the whole requirement either -- the model
+  # is a bind mount, so its 1.2 GB lands on the drive holding this checkout and
+  # is measured by nothing here. The warning below says so rather than billing
+  # it against a number that does not cover it.
   if pyimage_ready; then
     # `|| echo 0` for the same reason as the MemTotal line above: this step is
     # advisory, so a daemon that refuses `--network none`, or an image that
@@ -363,14 +378,19 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
       warn "could not read Docker's free disk; the README asks for about 6 GB."
     elif [ "$disk_bytes" -lt "$MIN_DISK_BYTES" ]; then
       warn "Docker has $(gib "$disk_bytes") free; staging needs about 6 GB."
-      note "~2.2 GB of pulled images, the 1.2 GB model, ~1.7 GB built here and"
-      note "~0.4 GB of tooling bases. Staging fails part-way through a pull or"
-      note "a build when it runs out. 'docker system prune' reclaims space."
+      note "~2.2 GB of pulled images, ~1.7 GB built here and ~0.4 GB of tooling"
+      note "bases, all on Docker's own filesystem, which is what the number above"
+      note "measures. The 1.2 GB model is not: it is written to ./models on the"
+      note "drive holding this checkout, and nothing here measures that one."
+      note "Staging fails part-way through a pull or a build when it runs out."
+      note "'docker system prune' reclaims space."
     else
-      pass "Docker free disk: $(gib "$disk_bytes")"
+      pass "Docker free disk: $(gib "$disk_bytes") on Docker's own filesystem"
     fi
   else
-    warn "free disk not measured: the pinned helper image is not on this host and could not be pulled."
+    # Not "and could not be pulled": in --offline mode no pull was attempted,
+    # and the same sentence has to be true in both modes.
+    warn "free disk not measured: the pinned helper image is not on this host."
     note "The README asks for about 6 GB free."
   fi
 fi
@@ -400,7 +420,16 @@ sys.stderr.write("%d\n" % generated)
 if [ "$WAIT_ONLY" -eq 0 ]; then
   step "3/6  Configuration ($ENV_FILE)"
 
-  if [ -e "$ENV_FILE" ]; then
+  # `-f` below and not `-e`: a *directory* called .env passed the existence
+  # test, made `grep` answer "Is a directory" on stderr, and the `|| true` that
+  # tolerates grep's empty-match status turned that into a count of zero and a
+  # PASS. The real failure then arrived much later as a raw Compose error.
+  if [ -e "$ENV_FILE" ] && [ ! -f "$ENV_FILE" ]; then
+    die "$ENV_FILE exists but is not a regular file, so it cannot be read as an env file." \
+        "remove or rename it, then rerun this script"
+  fi
+
+  if [ -f "$ENV_FILE" ]; then
     # Somebody's working configuration. Not read for its values, not rewritten,
     # not backed up -- only checked for the one thing that stops `up`.
     note "$ENV_FILE exists; keeping it exactly as it is. Nothing was generated."
@@ -414,8 +443,18 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
   else
     test -f "$TEMPLATE" || die "$TEMPLATE is missing, so there is nothing to copy." \
                                "restore $TEMPLATE from git: 'git checkout -- $TEMPLATE'"
-    pyimage_ready || die "no $ENV_FILE, and the pinned helper image that generates the passwords is not available in this mode." \
-                         "rerun without --offline on a network, or copy $TEMPLATE to $ENV_FILE by hand and replace every change-me with a different password"
+    # Two causes, two messages. Only one of them is --offline's doing, and
+    # telling somebody who never passed --offline to "rerun without --offline"
+    # sends them looking for a flag they did not use while the real cause --
+    # a registry they cannot reach -- goes unnamed.
+    if ! pyimage_ready; then
+      if [ "$SKIP_STAGE" -eq 1 ]; then
+        die "no $ENV_FILE, and --offline may not pull the pinned helper image that generates the passwords." \
+            "rerun without --offline on a network, or copy $TEMPLATE to $ENV_FILE by hand and replace every change-me with a different password"
+      fi
+      die "no $ENV_FILE, and the pinned helper image that generates the passwords could not be pulled (the error above says why)." \
+          "fix the registry access and rerun, or copy $TEMPLATE to $ENV_FILE by hand and replace every change-me with a different password"
+    fi
 
     # Write beside the target and move it into place, so an interrupted run
     # cannot leave a half-written .env that `up` would read.
@@ -424,9 +463,14 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     # below would otherwise create it under the ambient umask -- 0644 on most
     # hosts -- and it would stay that way for the whole `docker run`, which is
     # a second or more on a cold image. Tightening it afterwards closes the
-    # window between the chmod and the move; it does not close that one. This
-    # does, and it is the only way to make the file unreadable by anyone else
-    # for its entire life rather than for most of it.
+    # window between the chmod and the move; it does not close that one, and
+    # this does.
+    #
+    # On a filesystem that honours the mode. Where the bits are emulated they
+    # are not honoured at all -- measured in Git Bash on NTFS, both the umask
+    # here and the chmod below are no-ops and the file inherits the directory's
+    # ACL. Nothing in a shell script changes that, so the mode is checked after
+    # the move and reported rather than promised.
     tmp="$ENV_FILE.bootstrap.$$"
     trap 'rm -f "$tmp"' EXIT
     (umask 077; : >"$tmp") || die "could not create a temporary file beside $ENV_FILE." \
@@ -465,6 +509,18 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     pass "created $ENV_FILE from $TEMPLATE with $generated generated password(s)"
     note "Each one is distinct and random, and none of them was printed. .env"
     note "is gitignored, so this file is the only copy of them."
+    # `ls -l` and not `stat`, whose flags differ between GNU and BSD; the first
+    # ten characters are the mode, and cutting there also drops the `+` or `.`
+    # that an ACL or SELinux label adds after it.
+    case "$(ls -l "$ENV_FILE" 2>/dev/null | cut -c1-10)" in
+      -rw-------) note "Mode 0600: no other account on this host can read it." ;;
+      *)
+        warn "$ENV_FILE is not mode 0600 on this filesystem."
+        note "Normal on Windows/NTFS, where the mode bits are emulated and"
+        note "chmod does not apply -- the file inherits the folder's ACL. The"
+        note "passwords are in it, so protect the folder if the host is shared."
+        ;;
+    esac
   fi
 fi
 
@@ -492,8 +548,14 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     # Each list is captured separately so that a failure of either is caught:
     # in a `{ a; b; }` group the exit status is b's alone, so a's failure was
     # swallowed and the check silently ran against half the images.
+    #
+    # Every `config --images` failure below names two causes, because it has
+    # two: the flag is a later addition than the top-level `name:` key the
+    # version gate enforces, so an older-but-still-v2 plugin fails here with
+    # nothing whatever wrong in $ENV_FILE.
     runtime_images="$(dc config --images | tr -d '\r')" \
-      || die "could not list the images the stack needs." "fix $ENV_FILE and rerun"
+      || die "could not list the images the stack needs: either $ENV_FILE does not render the Compose files, or this Compose plugin is too old for 'config --images'." \
+             "fix $ENV_FILE, or check that 'docker compose config --images' runs at all, and rerun"
     test -n "$runtime_images" || die "Compose listed no images to check." "check the Compose files"
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
@@ -506,7 +568,8 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     # immediately below runs inside it, and without it that check would fail
     # with "the model is not staged", which would be the wrong diagnosis.
     stage_image="$(dc -f compose.tools.yml config --images stage | tr -d '\r' | head -n1)" \
-      || die "could not read the stage image out of compose.tools.yml." "fix $ENV_FILE and rerun"
+      || die "could not read the stage image out of compose.tools.yml: either $ENV_FILE does not render it, or this Compose plugin is too old for 'config --images'." \
+             "fix $ENV_FILE, or check that 'docker compose config --images' runs at all, and rerun"
     if [ -n "$stage_image" ] && ! have_image "$stage_image"; then
       die "$stage_image is not staged, so the model cannot be verified offline." \
           "rerun without --offline on a machine with a network"
@@ -522,7 +585,8 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     # of failure this whole step exists to catch, so it must not be the one
     # shape it cannot see.
     tools_images="$(dc -f compose.tools.yml config --images | tr -d '\r' | LC_ALL=C sort -u)" \
-      || die "could not list the tooling images from compose.tools.yml." "fix $ENV_FILE and rerun"
+      || die "could not list the tooling images from compose.tools.yml: either $ENV_FILE does not render it, or this Compose plugin is too old for 'config --images'." \
+             "fix $ENV_FILE, or check that 'docker compose config --images' runs at all, and rerun"
     missing_tools=''
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
@@ -542,18 +606,43 @@ if [ "$WAIT_ONLY" -eq 0 ]; then
     # The runtime override wins over compose.tools.yml's connected default.
     # If a model is absent, stage_model.py can only try a local file URL and
     # fail; it cannot fetch from the public registry or an internal mirror.
-    dc -f compose.tools.yml run --rm --pull never --no-deps \
-      -e MODEL_BASE_URL=file:///dev/null stage \
-      || die "the model is not staged, or does not match models.lock." \
-             "rerun without --offline, on a machine with a network"
-    pass "the staged model matches models.lock"
+    #
+    # Held rather than streamed, because the two ways this fails deserve
+    # different treatment and only one of them is readable as it comes:
+    #
+    #   present but wrong -- stage_model.py prints the path, the expected hash
+    #     and the actual one. That is a better message than anything this script
+    #     could write, so it is passed straight through.
+    #   absent -- the stager has nothing to verify and falls through to the
+    #     fetch it was pinned away from, so it announces "fetching it from
+    #     file:///dev/null/..." and ends in a NotADirectoryError traceback. Both
+    #     are true; neither tells an air-gapped reader anything except that the
+    #     model is not there. That is said here in one line instead.
+    #
+    # On success the output is printed unchanged: "already here, verifying it"
+    # and the hash are the evidence an offline check exists to produce.
+    if model_out="$(dc -f compose.tools.yml run --rm --pull never --no-deps \
+        -e MODEL_BASE_URL=file:///dev/null stage 2>&1)"; then
+      printf '%s\n' "$model_out"
+      pass "the staged model matches models.lock"
+    else
+      case "$model_out" in
+        *'does not match models.lock'*)
+          printf '%s\n' "$model_out" >&2
+          die "the staged model does not match models.lock." \
+              "delete the file named above, then rerun without --offline, on a machine with a network" ;;
+        *)
+          die "the model is not staged on this machine." \
+              "rerun without --offline, on a machine with a network" ;;
+      esac
+    fi
   else
     # The pull is the only step here that needs a network, so it is the only
     # one worth skipping when it has already happened. The model verify and
     # the builds are cheap no-ops on a staged machine.
-    pinned="$(dc config --images postgres rabbitmq llm edge)" \
-      || die "$ENV_FILE does not render the Compose files (the error above names the variable)." \
-             "fix $ENV_FILE and rerun"
+    pinned="$(dc config --images postgres rabbitmq llm edge | tr -d '\r')" \
+      || die "could not list the pinned images: either $ENV_FILE does not render the Compose files, or this Compose plugin is too old for 'config --images'." \
+             "fix $ENV_FILE, or check that 'docker compose config --images' runs at all, and rerun"
     pulled=0
     for ref in $pinned; do
       have_image "$ref" || pulled=1
@@ -639,7 +728,7 @@ services="$(dc config --services | tr -d '\r')" \
 # is the honest check because it tests what this script actually uses.
 if ! dc ps --all --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' >/dev/null 2>&1; then
   die "this Compose plugin (v${compose_version#v}) cannot render 'docker compose ps --format', which this script needs to tell a healthy service from a starting one." \
-      "upgrade the Compose v2 plugin (v2.21 or newer), then check it with 'docker compose ps --format \"{{.Service}}|{{.State}}\"'"
+      "install a Compose plugin that supports it (v2.21 or newer), then check it with 'docker compose ps --format \"{{.Service}}|{{.State}}\"'"
 fi
 
 started_at="$(date +%s)"
@@ -672,13 +761,17 @@ while :; do
           healthy) ;;
           '')
             # No healthcheck: `running` is all Compose can tell us, and it is
-            # not enough. ingestor, consumer and enricher have none (they run
-            # services/Dockerfile, which declares no HEALTHCHECK) and all three
-            # carry `restart: unless-stopped`. A consumer that cannot reach the
-            # broker therefore crash-loops with a backoff that starts at 100ms,
-            # while this loop samples every 5s -- so one sample landing between
-            # two restarts would report the whole stack healthy and exit 0 on a
-            # database that nothing is writing to. Restarts happening *while we
+            # not enough. ingestor, consumer, enricher and ui have none --
+            # services/Dockerfile and services/ui/Dockerfile both declare no
+            # HEALTHCHECK -- and all four carry `restart: unless-stopped`. `ui`
+            # belongs on that list even though `edge` in front of it is probed,
+            # because edge's /healthz is nginx answering for itself and says
+            # nothing about whether Streamlit behind it is serving yet.
+            #
+            # A consumer that cannot reach the broker crash-loops with a backoff
+            # that starts at 100ms, while this loop samples every 5s -- so one
+            # sample landing between two restarts would report the whole stack
+            # healthy and exit 0 on a database that nothing is writing to. Restarts happening *while we
             # wait* are the signal Compose does not surface in `ps`.
             read_stability "$svc"
             if [ -n "$STABILITY" ]; then
@@ -830,14 +923,34 @@ step "Ready"
 # right on a default run and wrong on every isolated second copy -- and the
 # isolated copy is exactly the case where someone is least able to guess the
 # address they should be using.
-bind="${AOW_BIND_ADDR:-127.0.0.1}"
-if [ "$bind" = 127.0.0.1 ]; then
-  host=localhost
-else
-  host="$bind"
+# It also has to read it from the same two places Compose does, in the same
+# order Compose uses them: the shell environment first, then the env file.
+# .env.example ships AOW_BIND_ADDR as a line to edit, so the file is the
+# documented way to move the boundary -- and reading only the shell meant a
+# stack that .env had put on 0.0.0.0 was reported as "published on 127.0.0.1
+# only". That sentence is the one line in this report that describes a security
+# property, over an API with write routes and no authentication, so it is the
+# one line that must not be able to be wrong.
+bind="${AOW_BIND_ADDR:-}"
+if [ -z "$bind" ] && [ -f "$ENV_FILE" ]; then
+  bind="$(sed -n 's/^[[:space:]]*AOW_BIND_ADDR=\([^[:space:]#]*\).*/\1/p' "$ENV_FILE" | tail -n1)"
 fi
+bind="${bind:-127.0.0.1}"
+
+# A wildcard is what a socket binds, not somewhere a browser can go, so the URL
+# says localhost while the warning below keeps the real value.
+case "$bind" in
+  127.0.0.1 | 0.0.0.0 | '::' | '::0' | '[::]') host=localhost ;;
+  *) host="$bind" ;;
+esac
 note "UI   http://$host:8080"
-note "API  http://$host:8000/docs"
+# /openapi.json and not /docs: the schema is served by the stack and needs
+# nothing else, while /docs is the one page here that is not self-contained --
+# Swagger UI's bundle comes from a CDN, so on the air-gapped host this whole
+# project is built for, that page renders empty.
+note "API  http://$host:8000/openapi.json"
+note "     /docs shows the same schema in a browser, but its Swagger UI bundle"
+note "     is fetched from a CDN, so that page alone needs a network."
 printf '\n'
 
 # Said on every run, not only the interesting ones. A reviewer who cannot tell
