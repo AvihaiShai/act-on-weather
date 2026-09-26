@@ -124,6 +124,7 @@ services:
            -f /db/migrations/005_user_data_wipe.sql
            -f /db/migrations/006_event_validity.sql
            -f /db/migrations/007_city_coast.sql
+           -f /db/migrations/008_itinerary_as_of_optional.sql
     networks: [backend]
 
   llm:

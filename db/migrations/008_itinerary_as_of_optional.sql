@@ -12,6 +12,13 @@
 -- not send one stores NULL, and the UI says the scoring timestamp was not
 -- recorded. A missing provenance can be read for what it is; an invented one
 -- cannot.
+--
+-- Idempotent: dropping a NOT NULL that is already dropped is a no-op, and the
+-- comment is rewritten unconditionally, so this is safe to re-run on every
+-- boot like the migrations before it. It is also transactional and does not
+-- rewrite the table -- `DROP NOT NULL` flips a catalog flag.
+
+\set ON_ERROR_STOP on
 
 BEGIN;
 
