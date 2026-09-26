@@ -103,12 +103,13 @@ do is state how old its reading is.
 It will say so, and it will not pretend otherwise. You will see a `WARN`, the
 reason, and this:
 
-> The stored forecast is unchanged: it is the committed snapshot, not a fresh
-> fetch.
+> Check the per-city result above and GET /refresh/last. Some forecasts may
+> have advanced; each stored as-of stamp shows the current state.
 
-The stack is still up and still usable — every answer carries its own as-of
-stamp — but nothing will be presented as newer than it is. `bootstrap.sh` exits
-non-zero so a scripted run notices too. Retry on its own with:
+The stack is still up and still usable. The refresh can succeed for some cities
+and fail for others, so check the per-city result; every answer carries its own
+as-of stamp. `bootstrap.sh` exits non-zero so a scripted run notices too. Retry
+on its own with:
 
 ```bash
 docker compose -f compose.tools.yml run --rm refresh

@@ -100,9 +100,10 @@ To start from current weather instead, add `--refresh`:
 bash scripts/bootstrap.sh --refresh
 ```
 
-Either way the closing report states which of the two you got, so a stale
-forecast is never mistaken for a fresh one. If the fetch fails, it says so and
-exits non-zero while leaving the stack up and usable.
+The closing report states whether the refresh completed. If it did not, some
+cities may have advanced while others retain older forecasts; check the per-city
+result and each as-of stamp. The command exits non-zero while leaving the stack
+up and usable.
 
 It creates `.env` only if there is none, generating a distinct random password
 for each `change-me` inside the pinned `python:3.12-slim` image with no network.
