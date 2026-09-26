@@ -552,6 +552,18 @@ if [ "$REFRESH" -eq 1 ]; then
   note "fetches, and closes the window again. Places, facts and events are not"
   note "touched -- they are the committed snapshot."
 
+  # AOW_PROJECT is what the refresh container uses to decide which stack to
+  # act on, and it defaults to `aow` inside compose.tools.yml -- not to the
+  # project this script is driving. So someone who isolates a second copy with
+  # COMPOSE_PROJECT_NAME alone, which is the documented way to run one, would
+  # have the fetch open an egress window on the *other* stack and refresh that
+  # one instead. Default it here so the two cannot disagree.
+  # Exported rather than prefixed onto the call, because `dc` is a shell
+  # function and an assignment prefix on one of those does not behave the same
+  # way it does on a command.
+  export AOW_PROJECT="${AOW_PROJECT:-${COMPOSE_PROJECT_NAME:-aow}}"
+  note "refreshing the '$AOW_PROJECT' project"
+
   refresh_rc=0
   dc -f compose.tools.yml run --rm refresh || refresh_rc=$?
 

@@ -286,3 +286,44 @@ def test_a_stack_that_never_goes_healthy_does_not_reach_the_refresh(
     )
     assert result.returncode == 1
     assert "run --rm refresh" not in calls.read_text()
+
+
+def test_the_refresh_targets_the_project_bootstrap_is_driving(tmp_path: Path) -> None:
+    # compose.tools.yml defaults the refresh container's COMPOSE_PROJECT_NAME
+    # from AOW_PROJECT, which falls back to `aow` -- not to the project this
+    # script is driving. Isolating a second copy with COMPOSE_PROJECT_NAME
+    # alone, which is the documented way to run one, would otherwise have the
+    # fetch open an egress window on the *other* stack and refresh that one.
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        "--refresh",
+        env_file=env_file,
+        images_present=True,
+        extra_env={
+            "AOW_STUB_HEALTHY": "1",
+            "AOW_STUB_REFRESH_RC": "0",
+            "COMPOSE_PROJECT_NAME": "aow-second-copy",
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "refreshing the 'aow-second-copy' project" in result.stdout
+
+
+def test_an_explicit_aow_project_still_wins(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        "--refresh",
+        env_file=env_file,
+        images_present=True,
+        extra_env={
+            "AOW_STUB_HEALTHY": "1",
+            "AOW_STUB_REFRESH_RC": "0",
+            "COMPOSE_PROJECT_NAME": "aow-second-copy",
+            "AOW_PROJECT": "chosen-explicitly",
+        },
+    )
+    assert "refreshing the 'chosen-explicitly' project" in result.stdout
