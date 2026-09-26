@@ -54,8 +54,10 @@ city, not from the window above: the coverage in this table is the span across
 all five cities, so a date inside it is not by itself evidence that a given city
 has a row for it. The missing dates are listed in the answer, the model is told
 it may not describe them, and any wording that describes one anyway is
-discarded. [Connected refresh](#connected-refresh) moves the weather window
-forward.
+discarded. The trip planner reads the same rows: it plans the days the chosen
+city actually has, names the rest as a stated gap rather than offering them
+unscored, and refuses outright for a city it holds nothing for in the window.
+[Connected refresh](#connected-refresh) moves the weather window forward.
 
 The verified event set is 55 rows across all five cities, and it is a
 hand-checked sample of venue and organiser listings rather than a feed: 47
@@ -423,7 +425,7 @@ docker run --rm aow/tests:dev
 
 Dependencies are baked into that image at build time, so the run itself makes no
 network call; CI runs the same container with `--network none`. `make test` is
-the shorthand. The unit suite is 41 modules under `tests/unit/`, covering the
+the shorthand. The unit suite is 44 modules under `tests/unit/`, covering the
 rule engine's truth table, envelope round-tripping and the rejection of malformed
 messages, payload validation, the outbox's two load-bearing properties (accepting
 the same message twice is a no-op, and an accepted-but-unpublished record
@@ -469,9 +471,12 @@ with the broker stopped and the database stopped. It then reconciles and replays
 a confirmed envelope, restarts everything, and asks a separate reader connection
 for all of the traced IDs at once. Any missing ID fails the job, and so does any
 duplicate. The same script also redelivers an older forecast for a city-day that
-already has a newer one, and asserts the stored row keeps its `as_of` and its
-revision — the ordering case the idempotency key cannot catch, because the two
-refreshes are two different messages.
+already has a newer one, and then redelivers one with an identical `as_of`, and
+asserts the stored row keeps its `as_of` and its revision through both — the
+ordering case the idempotency key cannot catch, because the two refreshes are
+two different messages. And it saves an itinerary with no scoring timestamp at
+all, against a real database, which is the only way to prove the column is
+genuinely nullable rather than merely declared so.
 
 The `guard` job is what keeps this README honest. It fails the build if a pulled
 image or a Dockerfile base is not pinned by digest, if a digest disagrees with
@@ -629,18 +634,23 @@ tunnel has every route.
   facts and throws away wording that fails, falling back to a deterministic
   rendering of the same rows. Each check closes a failure that was actually
   observed; together they do not amount to "nothing unsupported can ever be
-  said". Three gaps are known and open:
+  said". A weather claim must now rest on a stored row whether or not it
+  names a day: with no forecast row retrieved for the city, "Rome is warm and
+  dry this week" is rejected, while "no forecast is on record for Rome" is not.
+  What the guard still gives up is narrower, and all of it is deliberate:
   * an event claim that names **no calendar date** — "there are concerts all
     week" — is outside the dated-claim check, which needs a date in the clause
     to test, and so is one that names a **relative or year-less** day ("on
     Friday"), which the date parser will not guess at;
-  * an **undated weather claim** has no check at all: "Rome is warm and dry
-    this week" passes against an empty brief, where a dated equivalent would
-    not;
-  * **`build_itinerary` filters days through the global coverage query**
-    (`services/agent/main.py`), which carries no city predicate, so the planner
-    can still offer a day the selected city has no row for; it renders as "no
-    scored activity" rather than as a stated gap.
+  * the weather check is **all-or-nothing on the retrieved rows**. It fires
+    when the city has no row at all, not when it has some: over a week that is
+    half covered, "warm and dry all week" still passes, because deciding which
+    day an undated clause is about is a judgement the validator does not make;
+  * only the **verbatim** coverage-gap sentence is exempt from the date and
+    figure checks. The model is handed that sentence and asked not to repeat
+    it; when it paraphrases instead, the paraphrase is rejected. The traveller
+    still gets the correct answer from the deterministic rendering, but the
+    operator note reads as a grounding failure when it is a rewording.
 
   The dated event-claim check deliberately gives up two more shapes, because
   the first version of it rejected correct answers on the assignment's own
@@ -653,7 +663,9 @@ tunnel has every route.
 
   The dated event-claim check is measured in
   [docs/EVIDENCE-fresh-demo.md](docs/EVIDENCE-fresh-demo.md) §12.1; §12.5 and
-  §12.6 record what it does not cover and why it was narrowed.
+  §12.6 record what it does not cover and why it was narrowed. The
+  weather-claim check and the per-city coverage work are measured in
+  [docs/EVIDENCE-b1-targeted-tests.md](docs/EVIDENCE-b1-targeted-tests.md).
 * **The enricher polls** rather than binding to the weather stream. A deliberate
   trade: no second delivery branch means no silent partial fan-out.
 * **Per-message accounting starts at an accepted outbox envelope.** Enrichment
@@ -672,18 +684,6 @@ tunnel has every route.
   install keeps an accurate forecast while its events quietly expire, which is
   [the bargain described above](#the-data-on-board-and-when-it-goes-stale) and
   is visible in every as-of stamp.
-* **The grounding check catches a wrong date, not wrong prose.** An answer that
-  names a day the stored forecast has no row for is rejected. An answer that
-  describes the weather without naming a day — "warm and dry this week" — is not,
-  because every date check needs a date and no check requires a weather claim to
-  rest on a stored row. The deterministic parts of an answer are built from rows
-  by code, so this is a limit on how far the validator polices the model's
-  wording, not on what the numbers rest upon.
-* **The trip planner's day filter is broader than the agent's.** The agent
-  decides which days it may answer for from the forecast rows stored for that
-  city. `POST /agent/itinerary` still filters against the coverage window across
-  all cities, so for a city whose forecast is shorter than another's it can offer
-  a day with no scored activity instead of stating that it holds nothing for it.
 * **No physical air-gap proof.** Offline operation is proven on a separate Docker
   engine with an empty image store, no pulls and no reachable egress, and by a
   per-release clean-engine CI gate. Neither is separate physical hardware, and

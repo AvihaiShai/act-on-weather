@@ -387,9 +387,15 @@ PASS: lisbon 2026-09-23 kept as_of 2026-09-25 14:13:49.954997+00:00 and
 PASS: all 6 traced IDs (...) are stored exactly once after full recovery
 ```
 
-This run also applies migration `008` against real Postgres and exercises the
-nullable `itineraries.as_of` end to end, which is why it was re-run for the
-follow-up rather than cited from the first pass.
+> **This sentence used to read:** "This run also applies migration `008`
+> against real Postgres and exercises the nullable `itineraries.as_of` end to
+> end." **It was false in both halves**, and it is corrected here rather than
+> quietly deleted, because this is an evidence file. Migration `008` was never
+> wired into the `migrate` service — `compose.yml` listed each migration with
+> an explicit `-f` and stopped at `007` — so no run on this branch had ever
+> applied it. And `scripts/ci-integration.sh` posted no itinerary at any point,
+> so nothing exercised the column either. Both are fixed in §8, and the
+> statement is now true of the run recorded there.
 
 **No CI wiring was needed.** The new unit files are collected by the `unit`
 job's `pytest` (`testpaths = tests/unit`), and the new drill is inside
@@ -435,22 +441,23 @@ not a list of what is safe.
 
 - **B1 is not closed.** Four behaviours were pinned. The audits produced other
   ranked gaps that were deliberately left, listed below so they are not lost.
-- **A weather claim with no date in it is still not checked.** The gap fixed in
-  §2 covers *dated* assertions: `allowed_dates()` no longer contains a day with
-  no row, so "on 2026-10-01 it is sunny" is a violation. But no check in
-  `violations` requires a weather claim to rest on a `DayFact`, so undated
-  prose — "Rome is warm and dry this week" — passes with an empty brief. The
-  test file says so at the point where it would otherwise have asserted it,
-  rather than asserting the present behaviour and freezing it. Closing it means
-  a new check in `grounding.violations` shaped like check 4, with the negated
-  and `RECORD_PHRASES` escape hatches so "I have no forecast on record" still
-  passes. Deliberately out of scope for this follow-up.
-- **`build_itinerary` still filters its days through the global
-  `queries.in_coverage`** (`services/agent/main.py:404`), so the planner can
-  still offer a day that this city has no row for — it renders as "no scored
-  activity" rather than as a stated gap. That is the same class of defect as
-  §2.1 in a different code path; it was left alone because the follow-up was
-  scoped to the agent's answer path.
+- ~~**A weather claim with no date in it is still not checked.**~~ **Closed in
+  §8.** Check 4b requires a weather claim to rest on a `DayFact`, with the
+  negated and `RECORD_PHRASES` hatches, so "Rome is warm and dry this week" is
+  a violation against an empty brief while "I have no forecast on record" is
+  not. It is all-or-nothing on the retrieved rows: a *partly* covered week
+  still has `DayFact`s, so "warm and dry all week" over one is not caught. That
+  residual is stated in the README rather than left implied.
+- ~~**`build_itinerary` still filters its days through the global
+  `queries.in_coverage`.**~~ **Closed in §8.** The planner now builds its day
+  list from the rows stored for the selected city, omits the days it holds
+  nothing for, reports them in `requested_days_outside_coverage` so the UI's
+  existing "left out rather than guessed" warning fires, and refuses with a
+  named 422 for a city it has no rows for in the window. The audit found two
+  harms beyond the one recorded here: the day was drawn in the UI as a
+  poor-band score pill — a data gap rendered as a verdict on the weather — and
+  the phantom days were counted into `title` and `end_date`, so a *saved*
+  itinerary recorded a range nothing had been scored across.
 - **Not addressed, and known:**
   - `services/tools/redrive.py` has no test. Moving its `basic_ack` above the
     `basic_publish` would drop an already-quarantined message from both the DLQ
@@ -475,13 +482,13 @@ not a list of what is safe.
   gets `NULL` rather than an invented timestamp. The consequence is that such a
   plan cannot be compared against the current window, so the UI states that
   instead of showing a staleness verdict. The UI itself always sends the value.
-- **The `restore-drill` and the offline bundle have not been re-run** since
-  migration `008`. It is an `ALTER … DROP NOT NULL` inside a transaction,
-  applied by the same `migrate` service the integration gate exercised and
-  passed, and it does not rewrite the table — but the release-candidate
-  restore path and a packaged bundle install are release gates that this
-  session did not run, and saying they passed would be a claim about something
-  nobody checked.
+- **The `restore-drill` and the offline bundle must be re-run** for migration
+  `008`. It is an `ALTER … DROP NOT NULL` inside a transaction, it does not
+  rewrite the table, and as of §8 it is genuinely applied by the `migrate`
+  service the integration gate exercises — but the release-candidate restore
+  path and a packaged bundle install are separate release gates, and they are
+  run against the exact merged commit, not against this branch. Whether they
+  passed is recorded by those runs, not asserted here.
 
 ---
 
@@ -531,3 +538,88 @@ and `tests/unit/test_bootstrap.py` — so there is no overlap with these edits. 
 earlier revision of this section warned that it might move these lines; that
 warning was wrong and is withdrawn. If anything else lands in `README.md` before
 this merges, re-check the three sections above.
+
+---
+
+## 8. Integration round: what review of this branch found
+
+This branch was reviewed against `main` at `44c008f` before merging, by three
+independent passes over the bootstrap/operations surface, the grounding
+validator across both open pull requests, and the itinerary, migration and
+planner surface. Four defects were found in work this branch had already
+recorded as verified. They are listed here because the point of an evidence
+file is that it says what is true, including about itself.
+
+### 8.1 Migration `008` was never applied
+
+`compose.yml`'s `migrate` service lists every migration with an explicit `-f`
+and stopped at `007`. There is no glob. So the migration this branch added had
+never run anywhere — not in the integration gate, not in any drill.
+
+The consequence inverted the compatibility guarantee §1 states. `001_init.sql`
+keeps `as_of TIMESTAMPTZ NOT NULL`, so a caller omitting `as_of` was accepted
+with `202`, and then `upsert_itinerary` raised `NotNullViolation` in the
+consumer. That is neither `Poison` nor `OperationalError`, so it fell past both
+`except` clauses into the generic requeue branch and dead-lettered after five
+deliveries. Accept, then lose it quietly — the exact failure the change was
+written to prevent.
+
+Fixed by wiring the migration. More usefully, `tests/unit/test_migrations_applied.py`
+now fails the build when any file in `db/migrations/` is not named in the
+`migrate` command; run against the pre-fix `compose.yml` it reports
+`008_itinerary_as_of_optional.sql` by name. The one-line fix closes the
+instance; the guard closes the class, which is what made this invisible.
+
+### 8.2 The test that should have caught it could not
+
+`test_itinerary_save.py` asserted that a fake cursor received `as_of=None`.
+That re-tests pydantic. Migration `008` could be deleted entirely and it still
+passed, while its docstring named the live defect. It is now three things at
+three honesty levels: a unit test of what the consumer passes through, a test
+that reads the committed SQL so `001` and `008` cannot drift apart, and
+`tests/integration/itinerary_without_as_of.py`, which saves an itinerary with
+no scoring timestamp against a real Postgres and follows it to `stored: true`.
+
+### 8.3 The planner offered days the city had no rows for
+
+Recorded in §6 as open and closed here. See the §6 entry for the two harms
+beyond the one originally described.
+
+### 8.4 An undated weather claim was not checked
+
+Recorded in §6 as open and closed here by check 4b.
+
+### 8.5 The coverage-gap sentence failed the checks it was written by
+
+Found only by looking at the two open pull requests together, and the reason
+this round mattered. Narrowing `window_days` to the covered days narrowed two
+different things: `allowed_dates()`, which is what the change intended, and
+`vocabulary()`, which feeds the allowed names and numbers of checks 8 and 9.
+At the same time this branch added a prompt section printing the uncovered
+dates to the model.
+
+So the model was handed our own gap sentence, told not to repeat it, repeated
+it anyway — which `gap_block`'s docstring says it does, and which is why the
+`already_said` mechanism exists — and the dates and figures in code's own
+sentence were then rejected as unsupported claims. Measured: clean on base
+`main`, four violations with this branch's change. The answer was discarded and
+the operator log said the model had made a claim the rows do not support, which
+was false.
+
+`window_days` now stays the asked window and only `allowed_dates()` narrows,
+via `covered_days`/`uncovered_days`/`weather_scoped` on `Brief`; and a sentence
+that is verbatim one of our own gap sentences is skipped before any check runs.
+A paraphrase is still checked, which is stated in the README as a residual.
+
+### 8.6 Results on the integrated tree
+
+| gate | result |
+|---|---|
+| unit, `--network none` | **1621 passed, 2 skipped** |
+| `ruff check` / `ruff format --check` | clean, 113 files |
+| `scripts/ci-integration.sh`, isolated Compose project | **exit 0**, with migration `008` genuinely applied and the itinerary-without-`as_of` drill passing |
+| `bash -n` on the edited shell | clean |
+
+Every new test was checked against the defect it claims to catch by reverting
+the source hunk and confirming the failure, on this base rather than on the
+base the audit was written against.
