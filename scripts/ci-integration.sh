@@ -46,6 +46,13 @@ dc exec -T api python - < tests/integration/event_freshness.py
 # The probe needs egress and is not run here; this drives the apply path, which
 # is the half that can silently extend a listing's life if it regresses.
 dc exec -T api python - < tests/integration/event_recheck.py
+# A saved trip whose caller sent no scoring as-of. The column is nullable only
+# because migration 008 says so, and for a while nothing ran that file: the API
+# answered 202 and the consumer hit NotNullViolation, which is neither Poison
+# nor OperationalError, so the record was requeued to the DLQ rather than
+# dead-lettered with a reason. No unit test can see it -- they hand the
+# consumer a fake cursor -- and no other drill here writes an itinerary at all.
+dc exec -T api python - < tests/integration/itinerary_without_as_of.py
 # At-least-once plus a requeue means two refreshes of one city-day can arrive
 # in the wrong order under different message_ids, which `ingest_log` does not
 # deduplicate. Only `upsert_weather`'s as_of guard stops the older one being

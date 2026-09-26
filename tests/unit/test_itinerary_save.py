@@ -20,7 +20,9 @@ handler reads nothing. A caller that omits it stores NULL -- see
 which is the compatibility decision and its reason.
 """
 
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -179,12 +181,22 @@ def test_save_body_requires_the_fields_the_consumer_stores(missing):
     assert response.status_code == 422
 
 
-def test_the_consumer_stores_a_null_as_of_rather_than_refusing_it():
-    """The other end of the compatibility decision.
+def test_the_consumer_passes_a_missing_as_of_through_instead_of_filling_it_in():
+    """The consumer's half of the decision: it does not substitute either.
 
-    The column is nullable as of migration 008. If the consumer could not write
-    NULL, a caller omitting `as_of` would be accepted at the API and then
-    dead-letter -- the failure this decision exists to avoid.
+    Narrow on purpose, and worth saying what it does *not* prove. The cursor is
+    a fake, so this says nothing about whether Postgres accepts the NULL -- an
+    earlier version of this test claimed it did, which is how a migration that
+    was never applied went on looking tested. What it does pin is that
+    `upsert_itinerary` hands the value through untouched: a COALESCE to now(),
+    or a default in the INSERT, would put the invented provenance back in the
+    one place the API can no longer put it.
+
+    That the column actually permits the NULL is
+    `test_the_schema_permits_the_null_the_api_accepts` below; that the
+    migration saying so is really applied is `test_migrations_applied.py`; and
+    that the whole path works against a real database is
+    `tests/integration/itinerary_without_as_of.py`.
     """
     statements = []
 
@@ -209,3 +221,33 @@ def test_the_consumer_stores_a_null_as_of_rather_than_refusing_it():
 
     assert len(statements) == 1
     assert statements[0][1]["as_of"] is None
+    sql = statements[0][0]
+    assert "COALESCE" not in sql.upper(), "the consumer must not fill in a missing as_of either"
+
+
+def test_the_schema_permits_the_null_the_api_accepts():
+    """The API may only accept what the database can store.
+
+    `001_init.sql` declares `as_of TIMESTAMPTZ NOT NULL`, so without migration
+    008 a caller omitting the field is answered 202 and then dead-lettered:
+    NotNullViolation is neither `Poison` nor `OperationalError`, so the
+    consumer requeues it until `x-delivery-limit` gives up. Read off the
+    committed SQL rather than asserted in prose, because the prose version --
+    an evidence document stating the migration had been applied -- was wrong
+    for as long as the migration went unwired.
+
+    Static, and only half the answer: that these files say the right thing is
+    checked here, that the migrate service runs them is
+    `test_migrations_applied.py`, and that Postgres agrees is the integration
+    drill.
+    """
+    migrations = Path(__file__).resolve().parents[2] / "db" / "migrations"
+    init = (migrations / "001_init.sql").read_text(encoding="utf-8")
+    optional = (migrations / "008_itinerary_as_of_optional.sql").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"as_of\s+TIMESTAMPTZ\s+NOT NULL", init
+    ), "001 no longer declares the constraint 008 exists to drop -- one of them is stale"
+    assert re.search(
+        r"ALTER TABLE\s+itineraries\s+ALTER COLUMN\s+as_of\s+DROP NOT NULL", optional
+    ), "migration 008 no longer drops the NOT NULL the API relies on being gone"
