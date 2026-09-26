@@ -173,7 +173,22 @@ if [ -z "$HELPER_IMAGE" ]; then
     fi
   done
 fi
-[ -n "$HELPER_IMAGE" ] || HELPER_IMAGE="aow/services:dev"
+# The last resort, when no producer was up to be asked. Three names are tried in
+# this order, and the order is the point: an explicit AOW_SERVICES_IMAGE wins,
+# then the image a running producer is actually using, and only then this guess.
+# On an offline release install the `aow/services:dev` tag compose.yml names does
+# not exist at all -- the bundle loaded its images as aow-bundle/<alias>:<commit>
+# -- so release-version.txt is what decides which of the two names to guess. Its
+# absence means an ordinary checkout, where `aow/services:dev` is what `make
+# stage` built. Guessing wrong is not silent either way: the image inspect below
+# refuses the backup by name.
+if [ -z "$HELPER_IMAGE" ]; then
+  if [ -f release-version.txt ]; then
+    HELPER_IMAGE="aow-bundle/services:$AOW_IMAGE_VERSION"
+  else
+    HELPER_IMAGE="aow/services:dev"
+  fi
+fi
 docker image inspect "$HELPER_IMAGE" >/dev/null 2>&1 \
   || die "the helper image $HELPER_IMAGE is not present; build it or set AOW_SERVICES_IMAGE" 1
 

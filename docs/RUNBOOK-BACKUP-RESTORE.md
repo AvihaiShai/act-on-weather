@@ -30,7 +30,7 @@ one with `--dir` — holding five artefacts and a manifest.
 
 | Artefact | What it is | How it is taken |
 |---|---|---|
-| `postgres.dump` | The whole application database: `weather_daily`, `recommendations`, `places`, `facts`, `events`, `itineraries`, `record_history` and the `ingest_log` idempotency ledger. | `pg_dump -Fc` inside the `postgres` container. |
+| `postgres.dump` | The whole application database — all nine tables `db/migrations/001_init.sql` creates: `cities`, `weather_daily`, `recommendations`, `places`, `facts`, `events`, `itineraries`, `record_history` and the `ingest_log` idempotency ledger. `cities` is the one of the nine that is not irreplaceable: `seed_cities()` in `services/consumer/main.py` rewrites it from `data/cities.yml` at every consumer start. | `pg_dump -Fc` inside the `postgres` container. |
 | `outbox-ingestor.sqlite3` | The ingestor's producer outbox. | Online copy via `sqlite3.Connection.backup()`, inside the owning container. |
 | `outbox-api.sqlite3` | The API's producer outbox — user edits, itineraries, activity requests. | Same. |
 | `outbox-enricher.sqlite3` | The enricher's producer outbox — model-worded recommendations on their way back. | Same. |
@@ -148,7 +148,9 @@ The policy for this system, and why:
   the agent will correctly refuse to answer from them. They are still worth
   keeping for the irreplaceable part: itineraries, user corrections and the
   `record_history` behind them, none of which can be re-fetched from anywhere.
-* Size makes this cheap. A full backup of a five-city stack is a few megabytes.
+* Size makes this cheap. A full backup of a five-city stack is well under a
+  megabyte at the volumes this system holds — the drill prints the byte count
+  of every artefact, so measure rather than budget.
 
 Pruning is manual. Before deleting a directory, check that the seven most
 recent **separate backup days** and four weekly backups remain, then remove
@@ -164,15 +166,17 @@ executes is honest about what it is.
 ## 6. Restoring
 
 `restore-state.sh` restores into a **separate Compose project** by default
-(`aow-restore`), never over a running stack. Rehearse there, look at the
-result, and only then decide.
+(`aow-restore`), and refuses to destroy a target that is still running unless
+you say so explicitly. Rehearse there, look at the result, and only then
+decide.
 
 ```bash
 # Rehearsal / inspection: a parallel stack, nothing else touched.
 # `edge` is excluded because it publishes 8080 and 8000, which a running stack
 # already holds.
 bash scripts/restore-state.sh backups/20260924T101500Z \
-  --services "postgres rabbitmq migrate consumer api ingestor enricher agent llm ui"
+  --services "postgres rabbitmq migrate consumer api ingestor enricher agent llm ui" \
+  --disruption-at 2026-09-24T10:15:26Z
 
 # The real thing, after the live stack is down and you have decided to discard
 # whatever it now holds:
@@ -181,10 +185,35 @@ bash scripts/restore-state.sh backups/20260924T101500Z \
   --project aow --overwrite-live-project
 ```
 
-Without `--overwrite-live-project` the script refuses to target the live
-project and tells you both commands. That is not a formality: the target's
-volumes are destroyed and recreated, so a restore aimed at the wrong project on
-the strength of a path typed at 3am is how a recovery becomes the outage.
+Two guards stand in front of the `down -v`, and both print the two commands
+you might have meant rather than only saying no:
+
+* **The live project.** Without `--overwrite-live-project` the script will not
+  target `aow` (or whatever `AOW_PROJECT` names) at all.
+* **A target that is still running.** Without `--overwrite-running-target` the
+  script will not destroy the volumes of *any other* project that currently has
+  containers up. This is the one that catches a second rehearsal: restoring a
+  different backup into `aow-restore` while you are still reading the first one
+  would otherwise wipe it without a word. The test is running containers, not
+  volumes that exist, so restoring again into a project you have stopped — or
+  one that never existed — still works with no extra flag, which is exactly what
+  `demos/06_backup_restore.sh` does after its own `down -v`.
+
+Both refusals exit 2 and happen before anything is touched. That is not a
+formality: the target's volumes are destroyed and recreated, so a restore aimed
+at the wrong project on the strength of a path typed at 3am is how a recovery
+becomes the outage.
+
+`--disruption-at` is optional and changes nothing the restore *does*; it
+changes what the last section can report. Without it the script prints
+`measured RPO: not computed` and states the reference point on its own. With it
+— the moment the state was lost, in the same `YYYY-MM-DDTHH:MM:SSZ` form the
+manifest uses — it subtracts the backup's `started_at` and reports the RPO as a
+measured span rather than a timestamp you still have to do arithmetic on. That
+is the difference between "everything after 10:15:00Z is gone" and "26 s of
+accepted work was lost", and it is why `demos/06_backup_restore.sh` always
+passes it. If you do not know the moment, leave it out; an invented one is worse
+than none.
 
 What it does, in order:
 
@@ -221,7 +250,23 @@ cannot tell a loss and a duplicate apart.
 
 ```bash
 P=aow-restore     # or aow, after a live restore
-Q() { docker compose -p "$P" -f compose.yml exec -T postgres \
+DC=(docker compose -p "$P" -f compose.yml)
+
+# On an offline release install, run these from the release folder and layer the
+# bundle overlay on, which is the invocation the two scripts make for themselves:
+#
+#   export AOW_IMAGE_VERSION="$(cat release-version.txt)"
+#   DC=(docker compose -p "$P" -f compose.yml -f compose.bundle.yml)
+#
+# `exec` attaches to a container that is already running and finds it by Compose
+# project and service name, so the image a Compose file names is not what these
+# commands turn on. The overlay is included because it costs nothing and keeps
+# the rendered stack identical to the one the scripts addressed; whether `exec`
+# would also work without it is not something this runbook needs to rely on.
+# The two go together: `compose.bundle.yml` demands `AOW_IMAGE_VERSION` and
+# fails by name without it.
+
+Q() { "${DC[@]}" exec -T postgres \
         psql -U aow -d aow -tAc "$1"; }
 
 # For each message_id you care about: exactly one, never "at least one".
@@ -236,7 +281,7 @@ Q "SELECT count(*) FROM itineraries"
 Q "SELECT status, count(*) FROM recommendations GROUP BY status"
 
 # The producers can open their restored outboxes.
-docker compose -p "$P" -f compose.yml exec -T api python -c \
+"${DC[@]}" exec -T api python -c \
   "from services.common import config
 from services.common.outbox import Outbox
 print(Outbox(config.OUTBOX_PATH, readonly=True).counts())"
@@ -246,9 +291,24 @@ If you know a specific `message_id` that was in flight when the loss happened,
 ask the producer directly rather than guessing:
 
 ```bash
-docker compose -p "$P" -f compose.yml exec -T api \
+"${DC[@]}" exec -T api \
   python -m services.common.reconcile --id <message_id>
 ```
+
+There are three answers, and **two of them are answers rather than failures**.
+Each producer has its own outbox, so a `message_id` you hold belongs to exactly
+one of `api`, `ingestor` and `enricher`, and you will usually have to ask all
+three in turn to find out which.
+
+| What you get | Exit | What it means |
+|---|---|---|
+| a JSON audit line | 0 | This producer owns the id. `"missing": 0` means the restored database already accounts for it; `"missing": 1`, with the id in `missing_ids`, means it does not — `--replay --id <id>` republishes exactly that envelope. |
+| `reconcile: <id> is absent from this producer outbox` | 3 | Not a failure. This producer never accepted it. Ask the next one. |
+| `reconcile: <id> is still unpublished; the normal publisher owns it` | 3 | Not a failure, and the best of the three: the record is in the outbox, was never published, and this producer's own publisher loop sends it when it starts. There is nothing for you to do. |
+
+Any other non-zero exit is a real problem: 2 is argparse rejecting the
+arguments, and an outbox row whose stored envelope does not match it raises with
+a traceback on purpose, because that is corruption rather than a lookup miss.
 
 ## 8. The limits — read these before you rely on any of it
 
@@ -274,14 +334,30 @@ docker compose -p "$P" -f compose.yml exec -T api \
   host loss takes them with it unless you copy them off.
 * **The restore needs the images.** The manifest records digests; it does not
   contain images. On an air-gapped host they must already be loaded.
-* **On an offline release install, both commands need the bundle overlay.** The
-  bundle loads its images as `aow-bundle/<alias>:<commit>`, not as the
-  `aow/services:dev` and `aow/ui:dev` tags `compose.yml` names, so a plain run
-  would try to build or pull and fail with no network. From inside the release
-  folder:
+* **On an offline release install, both commands find the bundle themselves.**
+  The bundle loads its images as `aow-bundle/<alias>:<commit>`, not as the
+  `aow/services:dev` and `aow/ui:dev` tags `compose.yml` names, so neither
+  script may run the plain file. Run them from inside the release folder and
+  neither needs an argument: both see `release-version.txt`, export
+  `AOW_IMAGE_VERSION` from it, default the overlay to `compose.bundle.yml`, and
+  pick the bundle's `aow-bundle/services:<commit>` for the helper containers
+  they start outside Compose. `restore-state.sh` also adds `--pull never` to
+  every `up` and `create`, so nothing reaches for a registry.
 
   ```bash
-  export AOW_IMAGE_VERSION="$(cat release-version.txt)"
+  cd <the release folder>        # the one holding release-version.txt
+  bash scripts/backup-state.sh
+  bash scripts/restore-state.sh backups/<id>
+  ```
+
+  The explicit form is the **override**, for the two cases the auto-detection
+  cannot cover: running against a bundle-started stack from a checkout that has
+  no `release-version.txt`, or selecting a different overlay such as CI's
+  `compose.ci.yml`.
+
+  ```bash
+  export AOW_IMAGE_VERSION="<commit>"
+  export AOW_SERVICES_IMAGE="aow-bundle/services:$AOW_IMAGE_VERSION"
   AOW_COMPOSE_OVERLAY=compose.bundle.yml bash scripts/backup-state.sh
   AOW_COMPOSE_OVERLAY=compose.bundle.yml bash scripts/restore-state.sh backups/<id>
   ```
@@ -298,10 +374,14 @@ docker compose -p "$P" -f compose.yml exec -T api \
 bash demos/06_backup_restore.sh
 ```
 
-It needs no arguments, no running stack and no `.env`: it creates an isolated
-Compose project with its own volumes and credentials, and tears it down again.
-It never starts `edge`, so it publishes no ports and cannot collide with a
-running stack.
+It needs no arguments and no running stack. The volumes are always its own —
+an isolated Compose project, torn down again on the way out. The credentials are
+its own only when it has to invent them: it takes `AOW_ENV_FILE` if that is set,
+then a `.env` beside the working tree if there is one, and generates a throwaway
+set only when neither exists (`demos/06_backup_restore.sh`). So on a developer
+machine with a `.env` it reuses those passwords in its own project. It never
+starts `edge`, so it publishes no ports and cannot collide with a running
+stack.
 
 It accepts three sets of records, each traced by its own `message_id`:
 
@@ -320,33 +400,49 @@ It accepts three sets of records, each traced by its own `message_id`:
 Then it destroys the project's volumes (`down -v`), restores, and verifies with
 `psql` from a separate session.
 
-**Measured on the development machine (Windows 11, Docker Desktop 4.92, WSL2
-backend, CPU only) on 2026-09-24, by the command above.** This is the run taken
-*before* F9 merged. The drill was run again on the tree as merged and is the
-figure the README and `docs/EVIDENCE-observability-and-recovery.md` quote:
-**RPO 26 s, RTO 35 s, 120 s wall clock**, with the raw console output in that
-document. The table below is kept because it carries the backup-size breakdown
-the later run did not record; where the two differ, the later one is current.
+**Measured on the development machine** (Windows 11, Docker Desktop 4.92, WSL2
+backend, CPU only) by the command above. Two runs are on record. They are kept
+apart on purpose, each named by its backup's `manifest.json` `started_at` — the
+one identifier the drill prints and the artefact carries. A figure is only worth
+reading next to the run it came from, and these must not be merged into one
+guarantee.
 
-| Figure | Measured | What it is |
-|---|---|---|
-| **RTO** | **33 s** | Invocation of `restore-state.sh` to the separate-reader verification passing. `restore-state.sh` measured 29 s of that for itself; the extra 4 s is the drill's own per-id `psql` assertions. |
-| **RPO** | **25 s** | Backup `started_at` (`2026-09-24T15:43:47Z`) to the last write that was accepted and then lost (`15:44:12Z`). |
-| At-risk window | 30 s | Backup `started_at` to the disruption (`15:44:17Z`). |
-| Records lost | 2 of 2 set B ids | Both asserted absent. |
-| Records recovered by replay | 1 | The set C id, confirmed to the broker before the backup and absent from the dump. |
-| Whole drill | 115 s wall clock | Including building the isolated stack and tearing it down. |
-| Backup size | 844 KB | 105 KB dump + 696 KB ingestor outbox + 20 KB each for the api and enricher outboxes + 1.4 KB of RabbitMQ definitions, for 792 `ingest_log` rows across five cities. |
+| Run | RPO | At-risk window | RTO | Wall clock |
+|---|---|---|---|---|
+| **`2026-09-24T16:09:39Z`** — the tree as merged, and the one quoted verbatim in the evidence document | **26 s** | 31 s | **35 s** | **120 s** |
+| `2026-09-24T15:56:01Z` — the same drill before merge `3b40949` | 24 s | not recorded | 31 s | 110 s |
 
-Two consecutive runs on that machine, with four other Compose projects sharing
-the daemon, gave 33 s and 34 s RTO and 115 s total, so these are stable rather
-than a lucky sample.
+The console output of the later run is quoted verbatim in
+[EVIDENCE-observability-and-recovery.md](EVIDENCE-observability-and-recovery.md)
+§4, with all six `message_id`s and the per-id assertions. The earlier run is
+summarised in the same document.
 
-The RPO of 25 s is a property of *this drill*, not of the system: it is simply
-how long the drill kept writing after the backup. In production the RPO is the
-interval between backups, because that is the window in which accepted work has
-nowhere else to come back from. What the drill proves is that the boundary sits
-exactly at `manifest.json`'s `started_at` and not somewhere vaguer.
+The two straddle merge commit `3b40949` (2026-09-24T16:08:11Z, PR #11), which
+added `db/migrations/006_event_validity.sql` and `007_city_coast.sql` and about
+65 seeded event rows. The later run's backup started 88 seconds after that
+merge; the earlier one predates it. `scripts/restore-state.sh` runs *this tree's*
+migrations inside the window it reports as the RTO, so more migrations and a
+larger dump are a **plausible** mechanism for 31 s → 35 s. One sample on each
+side of a merge, on a shared development daemon, cannot attribute the
+difference, and it is not claimed as a measured cause.
+
+A CI figure exists too and is deliberately not in the table above, because a
+GitHub-hosted runner is a different machine and not comparable:
+[CICD_EVIDENCE.md](CICD_EVIDENCE.md) records the `restore-drill` job of CI
+run `36055211121` at RPO 15 s, at-risk window 19 s, RTO 20 s.
+
+**No backup-size breakdown is quoted here.** Every run prints one —
+`scripts/backup-state.sh` reports `<artefact>  <bytes> bytes  sha256:<...>` for
+each of the five artefacts, and the drill prints the `ingest_log` row count —
+but neither run above was transcribed with its sizes, and a number nobody wrote
+down is not a measurement. Transcribe it from the next run rather than
+reconstructing it.
+
+The RPO figures are a property of *these drills*, not of the system: they are
+simply how long each run kept writing after its backup. In production the RPO is
+the interval between backups, because that is the window in which accepted work
+has nowhere else to come back from. What the drill proves is that the boundary
+sits exactly at `manifest.json`'s `started_at` and not somewhere vaguer.
 
 Re-measure after any change to the stack's size. The RTO is dominated by
 `pg_restore` and by how long the consumer takes to drain whatever reconcile
