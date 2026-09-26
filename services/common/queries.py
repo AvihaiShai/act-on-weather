@@ -291,6 +291,17 @@ def forecast(
     return conn.execute("\n".join(sql), params).fetchall()
 
 
+def stored_forecast_days(
+    days: list[date], rows: list[dict[str, Any]]
+) -> tuple[list[date], list[date]]:
+    """Partition requested days using this city's actual forecast rows."""
+    stored = {str(row["forecast_date"]) for row in rows}
+    return (
+        [day for day in days if day.isoformat() in stored],
+        [day for day in days if day.isoformat() not in stored],
+    )
+
+
 # ------------------------------------------------------ recommendations ----
 
 

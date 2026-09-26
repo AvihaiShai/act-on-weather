@@ -175,6 +175,8 @@ _NEGATION = re.compile(r"(?<!\w)(no|not|none|never|without|nor|nothing|lacks?)(?
 # this week" is a claim about London; "no concert is on record for that week"
 # is a claim about the feed, and only the second one is ours to make.
 WORLD_SCHEDULE_WORDS = (
+    "there is",
+    "there are",
     "taking place",
     "take place",
     "takes place",
@@ -294,19 +296,31 @@ _LONG_DATE = re.compile(
 )
 
 
-def _dates_in(sentence: str) -> set[str]:
+def _dates_in(sentence: str, candidates: list[str] | None = None) -> set[str]:
     """Every calendar day a sentence names, in ISO form.
 
-    Both spellings the model uses -- "2026-09-25" and "September 25, 2026" --
-    because a date the rows do not carry is the same invention either way.
+    ISO and written dates are accepted. Year-less dates and weekdays resolve
+    only when the asked window gives them exactly one possible day.
     """
     found = {f"{y}-{m}-{d}" for y, m, d in _ISO_DATE.findall(sentence)}
+    possible = [date.fromisoformat(day) for day in candidates or []]
     for day_first, month_a, month_b, day_second, year in _LONG_DATE.findall(sentence):
-        if not year:
-            continue
         month = (month_a or month_b).lower()
-        day = day_first or day_second
-        found.add(f"{year}-{_MONTHS.index(month) + 1:02d}-{int(day):02d}")
+        month_number = _MONTHS.index(month) + 1
+        day_number = int(day_first or day_second)
+        if year:
+            found.add(f"{year}-{month_number:02d}-{day_number:02d}")
+        else:
+            matches = [d for d in possible if d.month == month_number and d.day == day_number]
+            if len(matches) == 1:
+                found.add(matches[0].isoformat())
+    weekdays = "monday tuesday wednesday thursday friday saturday sunday".split()
+    for weekday in re.findall(
+        r"\b(?:on|this)\s+(" + "|".join(weekdays) + r")\b", sentence, re.IGNORECASE
+    ):
+        matches = [d for d in possible if d.weekday() == weekdays.index(weekday.lower())]
+        if len(matches) == 1:
+            found.add(matches[0].isoformat())
     return found
 
 
@@ -1051,21 +1065,16 @@ def violations(answer: str, brief: Brief) -> list[str]:
             #     Only dates after the claim word count (`_claim_tail`): the
             #     clause is not split on a comma, so "2026-09-26 will be sunny,
             #     and a concert is on the 25th" would otherwise place a concert
-            #     on the 26th. A clause that is also describing the weather is
-            #     left alone for the same reason -- a deliberate trade, since
-            #     it means "a concert on 2026-09-26, which will be sunny" is
-            #     missed, and a miss costs one wording while a false positive
-            #     costs every answer that mentions the forecast and a listing
-            #     in one breath. A clause scoped to the record is left alone
+            #     on the 26th. Weather phrasing after the event claim is cut
+            #     off before its own date can be mistaken for an event date.
+            #     A clause scoped to the record is left alone
             #     too: "between the 25th and the 30th the only concert on
             #     record is on the 25th" states the window and then the row,
             #     and both dates are honest.
             #
-            #     A relative or year-less date is not reached at all: `_dates_in`
-            #     resolves neither "on Friday" nor "September 27", and guessing
-            #     which Friday would be the invention this file exists to stop.
-            #     The prompt renders every date in ISO, so the model echoes ISO.
-            if not negated and not on_record and not weather_said:
+            #     Year-less dates and weekdays resolve only when the asked
+            #     window identifies exactly one calendar day.
+            if not negated and not on_record:
                 for category in sorted(asserted & present):
                     covered = {
                         day
@@ -1074,7 +1083,19 @@ def violations(answer: str, brief: Brief) -> list[str]:
                         for day in event.days()
                     }
                     tail = _claim_tail(scheduled, claims[category])
-                    for day in sorted(_dates_in(tail) - covered):
+                    # A second weather assertion can carry its own date.
+                    # Only dates before that assertion belong to the event.
+                    weather_starts = [
+                        m.start()
+                        for word in WEATHER_WORDS
+                        for m in re.finditer(rf"(?<!\w){re.escape(word)}(?!\w)", tail)
+                    ]
+                    if weather_starts:
+                        # In "concert on the 25th, and the 26th stays dry",
+                        # the second date precedes its weather adjective.
+                        tail = re.split(r",\s+and\s+", tail, maxsplit=1)[0]
+                        tail = tail[: min(weather_starts)]
+                    for day in sorted(_dates_in(tail, brief.window_days) - covered):
                         found.append(
                             f"places a {event_label(category)} on {day}, "
                             "which no stored event row covers"
@@ -1116,6 +1137,31 @@ def violations(answer: str, brief: Brief) -> list[str]:
                     if _says(sentence, word) and not _says(supporting, word):
                         found.append("describes the weather with no stored forecast row")
                         break
+
+            # A claim about the entire asked period needs every day in that
+            # period. An isolated, dated claim is checked against its row by
+            # check 7 below; this catches the undated "warm all week" form.
+            if (
+                brief.weather_scoped
+                and brief.uncovered_days
+                and not negated
+                and not on_record
+                and weather_said
+                and not _dates_in(sentence, brief.window_days)
+                and any(
+                    _says(sentence, scope)
+                    for scope in (
+                        "all week",
+                        "this week",
+                        "throughout the week",
+                        "the whole week",
+                        "every day",
+                        "throughout the trip",
+                        "the whole trip",
+                    )
+                )
+            ):
+                found.append("describes the whole period without weather for every day")
 
             # 5. A verdict on an activity this city has no row for. The
             #    observed shape is agreement followed by an invented
@@ -1161,7 +1207,24 @@ def violations(answer: str, brief: Brief) -> list[str]:
 
         # 7. A calendar day no row carries. An event moved by a day is a worse
         #    answer than no answer, because it reads as confirmed.
-        for day in sorted(_dates_in(raw) - allowed_dates):
+        # A record-scoped absence may name the missing date honestly. It does
+        # not turn that date into a forecast claim.
+        unsupported: set[str] = set()
+        for clause in _clauses(raw):
+            wording = clause.lower()
+            dates = _dates_in(clause, brief.window_days) - allowed_dates
+            record_weather_gap = (
+                bool(_NEGATION.search(wording))
+                and any(_says(wording, word) for word in WEATHER_WORDS)
+                and (
+                    any(_says(wording, phrase) for phrase in RECORD_PHRASES)
+                    or _says(wording, "stored weather")
+                )
+            )
+            if record_weather_gap:
+                dates -= set(brief.uncovered_days)
+            unsupported.update(dates)
+        for day in sorted(unsupported):
             found.append(f"states the date {day}, which no retrieved row carries")
 
         # 8. A proper noun that came from the model's weights rather than from

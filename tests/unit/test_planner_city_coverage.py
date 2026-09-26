@@ -87,13 +87,15 @@ def build(monkeypatch):
     rows follow it, because the consumer scores a day only when it stored one.
     """
 
-    def _build(city_days, start=WINDOW[0], end=WINDOW[-1]):
+    def _build(city_days, start=WINDOW[0], end=WINDOW[-1], stamps=None):
         monkeypatch.setattr(agent_main.queries, "cities", lambda _conn: [LISBON])
         monkeypatch.setattr(agent_main.queries, "coverage", lambda _conn: COVERAGE)
         monkeypatch.setattr(
             agent_main.queries,
             "forecast",
-            lambda *_a, **_k: [{"forecast_date": d, "as_of": AS_OF} for d in city_days],
+            lambda *_a, **_k: [
+                {"forecast_date": d, "as_of": (stamps or {}).get(d, AS_OF)} for d in city_days
+            ],
         )
         monkeypatch.setattr(
             agent_main.queries, "recommendations", lambda *_a, **_k: [_score(d) for d in city_days]
@@ -196,3 +198,11 @@ def test_a_fully_covered_request_is_unchanged(build):
     assert [day["date"] for day in plan["days"]] == [d.isoformat() for d in WINDOW]
     assert plan["requested_days_outside_coverage"] == []
     assert plan["title"] == "5 days in Lisbon"
+
+
+def test_plan_provenance_comes_from_its_own_days(build):
+    newer = "2026-09-24T06:00:00+00:00"
+    plan = build(WINDOW[:2], stamps={WINDOW[1]: newer})
+
+    assert plan["as_of"] == newer
+    assert [day["weather_as_of"] for day in plan["days"]] == [AS_OF, newer]

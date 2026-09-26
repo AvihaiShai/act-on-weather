@@ -519,11 +519,9 @@ class Router:
             # or a single day failed to ingest. Deriving this from the returned
             # rows is the only version that is true per city, and it is also
             # what makes a missing day in the *middle* of the window visible.
-            stored = {str(row["forecast_date"]) for row in result.forecast}
-            result.covered_days = [d.isoformat() for d in window.days() if d.isoformat() in stored]
-            result.uncovered_days = [
-                d.isoformat() for d in window.days() if d.isoformat() not in stored
-            ]
+            covered, uncovered = queries.stored_forecast_days(list(window.days()), result.forecast)
+            result.covered_days = [day.isoformat() for day in covered]
+            result.uncovered_days = [day.isoformat() for day in uncovered]
 
         # The `where` route. An activity the question named is located from its
         # own declared venue categories, not from the general places list --

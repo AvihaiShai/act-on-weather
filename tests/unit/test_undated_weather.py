@@ -187,22 +187,28 @@ def test_our_own_coverage_sentence_repeated_is_not_a_violation():
     assert grounding.violations(gap[0], brief) == []
 
 
-def test_a_paraphrase_of_the_gap_sentence_is_still_checked():
-    """Only the wording we guarantee is exempt.
-
-    A reworded version names the same uncovered days without the guarantee, so
-    the date check still has to look at it. What it must not do is also
-    complain about the *figures* in it: "1" and "10" came out of the window the
-    traveller asked about, which is vocabulary whatever the forecast reaches.
-    """
+def test_a_record_scoped_paraphrase_of_the_gap_sentence_is_allowed():
+    """A clear statement about the missing record can name the missing day."""
     brief = _brief(
         "What can I do this week in Rome?",
         forecast=[_forecast_row(DAY1)],
         uncovered=WEEK[1:],
     )
     found = grounding.violations("I have no stored weather for 2026-10-01.", brief)
-    assert any("2026-10-01" in v and "no retrieved row carries" in v for v in found), found
+    assert not any("2026-10-01" in v and "no retrieved row carries" in v for v in found), found
     assert not any("states the figure" in v for v in found), found
+
+
+def test_record_scoped_absence_does_not_excuse_a_weather_claim_in_another_clause():
+    brief = _brief(
+        "What can I do this week in Rome?",
+        forecast=[_forecast_row(DAY1)],
+        uncovered=WEEK[1:],
+    )
+    found = grounding.violations(
+        "I have no stored weather for 2026-10-01, but it is sunny on 2026-10-01.", brief
+    )
+    assert any("2026-10-01" in v and "no retrieved row carries" in v for v in found)
 
 
 def test_the_asked_window_stays_quotable_after_the_allow_list_narrows():
@@ -259,3 +265,15 @@ def test_a_partial_week_does_not_make_4b_fire_on_the_days_it_does_hold():
     )
     answer = "On 2026-09-25 Rome is warm and dry, and 2026-09-26 stays clear."
     assert grounding.violations(answer, brief) == [], answer
+
+
+def test_a_partial_week_cannot_be_described_as_warm_all_week():
+    brief = _brief(
+        "What is the weather this week in Rome?",
+        forecast=[_forecast_row(DAY1), _forecast_row(DAY2)],
+        uncovered=WEEK[2:],
+    )
+    assert any(
+        "whole period" in reason
+        for reason in grounding.violations("Rome is warm and dry all week.", brief)
+    )

@@ -699,11 +699,18 @@ def render_plan(plan: dict, cov) -> None:
     saved = plan.get("saved")
     st.markdown(f"### {plan['title']}")
     if saved:
-        st.caption(
-            f"Saved itinerary · Updated {fmt_ts(saved['updated_at'])} · "
-            f"{scored_from(plan.get('as_of'))}"
+        provenance = (
+            scored_from(plan.get("as_of"))
+            if all(day.get("weather_as_of") for day in plan["days"])
+            else (
+                f"recorded weather timestamp {fmt_ts(plan['as_of'])}; "
+                "per-day provenance unavailable"
+                if plan.get("as_of")
+                else scored_from(None)
+            )
         )
-        render_plan_staleness(plan, cov)
+        st.caption(f"Saved itinerary · Updated {fmt_ts(saved['updated_at'])} · " f"{provenance}")
+        render_plan_staleness(plan)
     else:
         built = (
             f"Built from data as of {fmt_ts(plan['as_of'])}"
@@ -742,7 +749,7 @@ def scored_from(as_of) -> str:
     return f"scored from weather as of {fmt_ts(as_of)}"
 
 
-def render_plan_staleness(plan: dict, cov) -> None:
+def render_plan_staleness(plan: dict) -> None:
     """A stored itinerary is a snapshot of a snapshot.
 
     Its scores are the rule engine's output against the forecast of the day it
@@ -750,8 +757,31 @@ def render_plan_staleness(plan: dict, cov) -> None:
     header's current as-of stamp would let stale numbers read as live, which is
     the one thing this UI is not allowed to do.
     """
-    current = cov.get("weather_as_of")
-    if current and plan.get("as_of") and str(current) != str(plan["as_of"]):
+    saved_days = {str(day["date"]): day for day in plan["days"]}
+    current_rows = (
+        api_get(f"/weather/{plan['city']}", start=plan["start_date"], end=plan["end_date"]) or []
+    )
+    current_days = {
+        str(row["forecast_date"]): row
+        for row in current_rows
+        if str(row["forecast_date"]) in saved_days
+    }
+
+    def stamp(value):
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+    stamped_days = [day for day in saved_days.values() if day.get("weather_as_of")]
+    if len(stamped_days) == len(saved_days):
+        changed = any(
+            date_key in current_days
+            and stamp(current_days[date_key]["as_of"]) != stamp(day["weather_as_of"])
+            for date_key, day in saved_days.items()
+            if day.get("weather_as_of")
+        )
+    else:
+        changed = False  # Older plans stored no per-day provenance to compare.
+    if changed:
+        current = max((stamp(row["as_of"]) for row in current_days.values()), default=None)
         st.info(
             "The stored forecast has been refreshed since this was saved (it is now "
             f"as of {fmt_ts(current)}). The days below are the ones that were saved, "
@@ -759,12 +789,7 @@ def render_plan_staleness(plan: dict, cov) -> None:
             "against what is stored now."
         )
 
-    first, last = cov.get("weather_first_date"), cov.get("weather_last_date")
-    outside = [
-        str(day["date"])
-        for day in plan["days"]
-        if first and last and not (first <= str(day["date"]) <= last)
-    ]
+    outside = [day for day in saved_days if day not in current_days]
     if outside:
         st.warning(
             "The stored forecast no longer covers: "

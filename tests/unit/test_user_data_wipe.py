@@ -24,6 +24,50 @@ def test_wipe_requires_explicit_confirmation(monkeypatch):
     assert result.json()["message_id"][0] == config.RK_USER_DATA_WIPE
 
 
+def test_publisher_does_not_wait_for_wipe_cleanup(monkeypatch, tmp_path):
+    box = Outbox(tmp_path / "api.sqlite3")
+    envelope = Envelope.create(
+        config.RK_USER_DATA_WIPE,
+        {"requested_by": "api"},
+        source="api",
+        observed_at=datetime.now(UTC),
+    )
+    box.accept(envelope)
+    seq = box.conn.execute(
+        "SELECT seq FROM outbox WHERE message_id = ?", (envelope.message_id,)
+    ).fetchone()[0]
+    box.mark_published(seq)
+    queued = Envelope.create(
+        config.RK_ITINERARY,
+        {"id": "later"},
+        source="api",
+        observed_at=datetime.now(UTC),
+    )
+    box.accept(queued)
+
+    monkeypatch.setattr(api, "outbox", box)
+    monkeypatch.setattr(
+        api,
+        "_purge_completed_wipes",
+        lambda: pytest.fail("wipe cleanup must not run in the publisher thread"),
+    )
+
+    class Publisher:
+        def __init__(self, **_kwargs):
+            pass
+
+        def publish(self, *_args):
+            pass
+
+    monkeypatch.setattr(api, "Publisher", Publisher)
+    monkeypatch.setattr(api.time, "sleep", lambda _seconds: (_ for _ in ()).throw(StopIteration))
+    with pytest.raises(StopIteration):
+        api._publisher_loop()
+    assert box.status_of(envelope.message_id) is not None
+    assert box.published_id(queued.message_id) is not None
+    box.close()
+
+
 def test_wipe_status_waits_for_model_outbox_cleanup(monkeypatch, tmp_path):
     path = tmp_path / "model.sqlite3"
     with Outbox(path) as box:
