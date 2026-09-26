@@ -38,6 +38,20 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILES = sorted(ROOT.glob("compose*.yml"))
 
+
+class ComposeLoader(yaml.SafeLoader):
+    """Read Compose's reset tag while inspecting the source port bindings."""
+
+
+def reset_value(loader: ComposeLoader, node: yaml.Node) -> None:
+    # The release overlay uses `build: !reset null`. The tag affects Compose's
+    # merge, but this test only needs the ports present in each source file.
+    loader.construct_scalar(node)
+    return None
+
+
+ComposeLoader.add_constructor("!reset", reset_value)
+
 # Loopback, and nothing else. A hostname is not accepted: it would move the
 # decision into the host's resolver, where this test cannot see it.
 LOOPBACK = {"127.0.0.1", "::1", "[::1]"}
@@ -90,7 +104,7 @@ def published_ports() -> list[tuple[str, str, str]]:
     """(compose file, service, port entry) for every published port there is."""
     found = []
     for path in COMPOSE_FILES:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=ComposeLoader) or {}
         for service, spec in (doc.get("services") or {}).items():
             for entry in (spec or {}).get("ports") or []:
                 if isinstance(entry, dict):
