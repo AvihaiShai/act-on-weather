@@ -157,11 +157,13 @@ same queue**. A slow or unavailable model therefore does not stop the weather
 row or score from being stored. A connected forecast refresh rescoring a day
 invalidates wording for that day.
 
-For recovery, the [README's reconciliation procedure](../README.md#reconcile-accepted-records-after-an-incident)
+For recovery, [`services/common/reconcile.py`](../services/common/reconcile.py)
 compares confirmed outbox IDs with committed `ingest_log` IDs before selected
-replay. This matters because a publisher confirm proves RabbitMQ accepted a
-message; it does not prove the business row reached Postgres. Persistent volumes
-must be kept until their messages have been accounted for.
+replay; the README states the guarantee it supports under
+[the delivery guarantee, and its boundary](../README.md#the-delivery-guarantee-and-its-boundary).
+This matters because a publisher confirm proves RabbitMQ accepted a message; it
+does not prove the business row reached Postgres. Persistent volumes must be
+kept until their messages have been accounted for.
 
 ## Follow a person: the user flow
 
@@ -184,19 +186,21 @@ must be kept until their messages have been accounted for.
    `202` and follows the data flow above. A correction creates a new revision
    and a history row. Re-enrichment changes wording, not the score.
 
-The seven UI tabs are Forecast, Suitability, Trip planner, Places map, Ask the
-agent, Update data, and Data coverage. See the [README's tab guide](../README.md#tabs)
-for what each shows.
+The nine UI pages, in navigation order, are Dashboard, Forecast, Suitability,
+Trip planner, Places map, Ask the agent, Update data, Data coverage and
+Monitoring -- the set registered in `PAGES` in
+[`services/ui/app.py`](../services/ui/app.py). See
+[the README](../README.md#using-it) for what each one shows.
 
 ## Follow a deployment: the infrastructure flow
 
 | Stage | What happens | Where to check |
 |---|---|---|
-| **Stage once, while connected** | Pull digest-pinned base images, download and checksum the model, build the service and UI images. The source snapshot and map files are already in Git. | [Quick start](../README.md#quick-start), [`models.lock`](../models.lock), [`IMAGES.lock`](../IMAGES.lock) |
+| **Stage once, while connected** | Pull digest-pinned base images, download and checksum the model, build the service and UI images. The source snapshot and map files are already in Git. | [Setup](../README.md#setup), [`models.lock`](../models.lock), [`IMAGES.lock`](../IMAGES.lock) |
 | **Start offline** | `docker compose up -d` starts Postgres and RabbitMQ; one-shot `migrate` installs the schema and roles. Services start, and the ingestor replays the committed snapshot through its outbox. | [`compose.yml`](../compose.yml), [`db/migrations/`](../db/migrations/) |
 | **Serve locally** | nginx alone joins the routable `frontend` and isolated `backend` networks. Host ports 8080 and 8000 bind to `127.0.0.1` by default. Postgres, RabbitMQ, and the model have no published ports. | [`edge/nginx.conf`](../edge/nginx.conf), [`compose.yml`](../compose.yml) |
-| **Refresh when connected** | The operator temporarily attaches only the ingestor to `egress`, runs the forecast refresh, then returns it to the default network. Newly accepted weather follows the normal outbox and queue path. | [`compose.connected.yml`](../compose.connected.yml), [refresh instructions](../README.md#updating-stored-information-m12) |
-| **Prove and release** | GitHub Actions lint, test, check secrets and pinned images, scan vulnerabilities, run a Compose integration test, and publish tested service/UI images by commit SHA on main. An offline bundle can be packaged separately. | [CI workflow](../.github/workflows/ci.yml), [release instructions](../README.md#offline-release-and-installation) |
+| **Refresh when connected** | The operator temporarily attaches only the ingestor to `egress`, runs the forecast refresh, then returns it to the default network. Newly accepted weather follows the normal outbox and queue path. | [`compose.connected.yml`](../compose.connected.yml), [connected refresh](../README.md#connected-refresh) |
+| **Prove and release** | GitHub Actions lint, test, check secrets and pinned images, scan vulnerabilities, run a Compose integration test, and publish tested service/UI images by commit SHA on main. An offline bundle can be packaged separately. | [CI workflow](../.github/workflows/ci.yml), [RELEASE.md](RELEASE.md), [installing a packaged release](../README.md#installing-a-packaged-release) |
 
 The default `backend` network is Docker `internal: true`; services attached
 only to it have no internet route. The `frontend` network lets nginx publish

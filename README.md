@@ -4,9 +4,12 @@ Weather for five cities, turned into activity recommendations by a local
 open-weights model, with every collected record travelling through a queue into
 Postgres. Once it has been staged, the whole stack runs with no internet at all.
 
-Ask it about the weather in Rome on 2026-09-24 and the answer names the weather
-source and the time the forecast was collected. Ask about a date outside the
-stored window and it says it has no forecast rather than guessing.
+Ask it about the weather in Rome and the answer names the weather source and the
+time the forecast was collected. Ask about a date outside the stored window and
+it says it has no forecast rather than guessing.
+
+**In a hurry?** [docs/REVIEWER-QUICKSTART.md](docs/REVIEWER-QUICKSTART.md) is two
+commands and nothing else. This file is the long version.
 
 ---
 
@@ -42,9 +45,12 @@ by `scripts/snapshot_manifest.py` and recorded in `data/snapshot/MANIFEST.json`:
 forecast window and the event listings age from the dates above. After
 2026-10-08 every weather question is out of coverage; after 2026-10-15 every
 verified listing has expired and a default run reports no current events. The
-expiry is derived, not written into the rows: `AOW_EVENT_RECHECK_DAYS` (default
-21) from each listing's `checked_at`. Every answer and every chart carries its
-as-of stamp, and a question past the window is refused rather than guessed.
+expiry is computed rather than authored per listing: the consumer stores
+`valid_until` as `checked_at` plus `AOW_EVENT_RECHECK_DAYS` (default 21) and
+recomputes it on every ingest, so changing the window and re-ingesting moves
+every stored expiry. It is deliberately not patchable on its own. Every answer
+and every chart carries its as-of stamp, and a question past the window is
+refused rather than guessed.
 
 A question that only *partly* reaches past the window — the ordinary case a few
 days after the snapshot was taken — is answered for the days that have rows and
@@ -73,9 +79,9 @@ Windows or macOS, Docker Engine with the Compose plugin on Linux.
 
 | | |
 |---|---|
-| **Compose v2** | the `docker compose` subcommand, with a space. Standalone `docker-compose` v1 cannot read the top-level `name:` key these files use. `scripts/bootstrap.sh` needs more than that floor — it uses `ps --format` with a Go template, `config --images` and `up --pull` — so it wants **v2.21 or newer**; it probes for the capability and says so rather than hanging. The by-hand path below needs only v2. Verified on Docker Engine 29.8 with Compose v5.5.1, and on Engine 28.5.2 with Compose v2.40.3. |
-| **Memory** | 8 GB for Docker. The `compose.yml` caps total 6.7 GB, 3 GB of it the model server. |
-| **Disk** | about 6 GB of images and model, plus ~1.2 GB more if you build the test image. |
+| **Compose v2** | the `docker compose` subcommand, with a space. Standalone `docker-compose` v1 cannot read the top-level `name:` key these files use. `scripts/bootstrap.sh` needs more than that floor — it uses `ps --format` with a Go template, `config --images` and `up --pull` — so it wants **v2.21 or newer**; it probes for the capability and says so rather than hanging. The by-hand path below needs only v2. Verified on Compose **v2.40.3** (Engine 28.5.2) and on the newer **v5** plugin line (v5.5.1, Engine 29.8). |
+| **Memory** | 8 GiB for Docker. The `compose.yml` caps total 6.7 GB, 3 GB of it the model server. |
+| **Disk** | two different filesystems, which is worth knowing before you measure the wrong one: roughly **4.3 GB on Docker's filesystem** for the images, plus **~1.2 GB on the host drive holding this checkout**, because the model is staged into `./models/`. Building the test image adds ~1.2 GB more on Docker's side. `scripts/bootstrap.sh` reports Docker's free space and warns below 6 GiB; it cannot see the host drive. |
 | **CPU** | CPU-only, and that is the only mode. No GPU override ships. `LLM_THREADS` in `.env` (default 4) is the knob. |
 | **Internet** | for staging only. Everything after it runs with the network off. |
 | **Ports** | 8080 (UI) and 8000 (API), on `127.0.0.1` only. Nothing else is published. |
@@ -132,6 +138,27 @@ never removes a volume.
 | `--no-start` | stop after staging |
 | `--wait-only` | poll a stack that is already up |
 | `--timeout N` | seconds to wait for health (default 900; `llm` reports unhealthy for about 3 minutes while it loads the model) |
+
+### One Compose project, pinned
+
+`compose.yml` opens with `name: aow`, so the project name is fixed rather than
+derived from the directory. That is deliberate — it is what makes an upgrade
+install over the same volumes instead of stranding the old data beside the new
+release — but it has a consequence worth knowing before you trip over it:
+
+**Two checkouts of this repository on one Docker engine share one project and
+one set of volumes.** Running `bootstrap.sh` from a second clone does not start
+a second stack; it takes over the first one's containers. So you cannot try
+something out in a scratch clone on a machine that is already running the stack
+without moving the project name first:
+
+```sh
+COMPOSE_PROJECT_NAME=aow-scratch AOW_PROJECT=aow-scratch AOW_BIND_ADDR=127.0.0.3 \
+  bash scripts/bootstrap.sh
+```
+
+All three matter, and [the quickstart](docs/REVIEWER-QUICKSTART.md) says which
+does what. On a machine running one copy, none of this applies.
 
 ### The same thing by hand
 
@@ -200,7 +227,8 @@ enters the database. `docker compose ps` shows progress; an exited `migrate`
 container with code 0 is normal. If the page does not load after a few minutes,
 `docker compose logs --tail 50` shows the startup messages.
 
-Nine tabs: **Dashboard** (the best stored activity per city for a chosen day),
+Nine pages — the navigation, the URL and this file all call them pages:
+**Dashboard** (the best stored activity per city for a chosen day),
 **Forecast** (temperature and rainfall per city), **Suitability** (a
 city × day × activity heatmap, plus a box for any activity you type),
 **Trip planner** (a day-by-day plan, saved as a row like any other),
@@ -374,12 +402,24 @@ model are not in Git.
 
 Follow the [offline-host procedure](docs/RELEASE.md#operator-procedure-offline-host)
 from inside a verified release bundle. Set real passwords in `.env` on the first
-install; on an upgrade, carry the previous release's `.env` forward. The installer
-prints the Docker engine ID and the image, volume and container counts before
-loading the bundle. It refuses a fault-injection test artifact unless
-`AOW_ALLOW_FAULT_INJECTION=1` is set deliberately. The packaged
-`scripts/prove-offline.sh` runs with `--no-build --pull never`, so a missing image
-fails the proof instead of starting a build or a pull.
+install.
+
+**On an upgrade, reuse the previous release's `.env` verbatim.** This is a hard
+requirement, not a convenience: a new release installs over the same volumes, so
+the database still holds the roles the old passwords created. A `.env` with
+freshly generated passwords leaves the stack unable to authenticate against its
+own data. The installer refuses that combination up front, before it loads
+anything.
+
+The installer prints the Docker engine ID and the image, volume and container
+counts before loading the bundle, checks the prerequisites and that `.env`
+renders the Compose files before the multi-gigabyte load rather than after it,
+and takes a `pg_dump` of a previous release whether that release is running or
+stopped — a skipped dump is what makes a migration irreversible. It refuses a
+fault-injection test artifact unless `AOW_ALLOW_FAULT_INJECTION=1` is set
+deliberately. The packaged `scripts/prove-offline.sh` runs with `--no-build
+--pull never`, so a missing image fails the proof instead of starting a build or
+a pull.
 
 ### Connected refresh
 
@@ -393,7 +433,7 @@ Three update paths, two of which work offline:
    `pending` and the enricher rewords them. Scores are untouched, since only a
    weather refresh changes them. Works offline.
 
-All three are on the **Update data** tab, which names each one, says which work
+All three are on the **Update data** page, which names each one, says which work
 air-gapped, and shows the command for the one that cannot.
 
 The refresh is one command, while connected:
@@ -425,18 +465,21 @@ docker run --rm aow/tests:dev
 
 Dependencies are baked into that image at build time, so the run itself makes no
 network call; CI runs the same container with `--network none`. `make test` is
-the shorthand. The unit suite is 44 modules under `tests/unit/`, covering the
-rule engine's truth table, envelope round-tripping and the rejection of malformed
+the shorthand. The unit suite lives in `tests/unit/`, and covers the rule
+engine's truth table, envelope round-tripping and the rejection of malformed
 messages, payload validation, the outbox's two load-bearing properties (accepting
 the same message twice is a no-op, and an accepted-but-unpublished record
 survives the process dying), the consumer's ack decision (acked on success,
 dead-lettered on a poison message, requeued on anything else), the agent's date
 parsing and intent matching, what an answer may say when the snapshot covers only
 part of the question, the planner, API responses including a save accepted while
-the database is unreachable, UI rendering, the compose port bindings, and the
-snapshot counts quoted in this file. The release artefacts have their own suites:
-`test_bundle_tamper.py`, `test_bundle_archive.py` and `test_airgap_evidence.py`
-cover bundle integrity, archive completeness and the evidence-capture tool.
+the database is unreachable, UI rendering, the compose port bindings, that every
+migration on disk is one `migrate` actually runs, and the snapshot counts quoted
+in this file. The release artefacts have their own suites: `test_bundle_tamper.py`,
+`test_bundle_archive.py`, `test_bundle_aliases.py`, `test_promotion_record_model.py`
+and `test_airgap_evidence.py` cover bundle integrity, archive completeness, the
+bundle's image table against the Compose files, the promotion record and the
+evidence-capture tool.
 
 `make verify` runs the four gates that can run locally: `ruff check`,
 `ruff format --check`, the unit tests, and `scripts/snapshot_manifest.py
@@ -581,8 +624,11 @@ or a UI-only guard was deliberately not implemented in its place, because either
 would read as authentication without being it.
 
 `AOW_BIND_ADDR` widens the binding, and widening it is the point at which this
-system becomes multi-user without having become multi-user safe. To reach a stack
-on a remote host, forward the ports over SSH instead:
+system becomes multi-user without having become multi-user safe. It can be set
+in `.env` as well as in the shell, and the shell wins; `scripts/bootstrap.sh`
+reads it from both, so its closing report names the address the ports are
+actually on rather than assuming loopback. To reach a stack on a remote host,
+forward the ports over SSH instead:
 
 ```sh
 ssh -L 8080:127.0.0.1:8080 -L 8000:127.0.0.1:8000 user@host
@@ -598,11 +644,15 @@ tunnel has every route.
 
 * **Single-replica broker and database.** Fine for this; not an HA design.
 * **`/docs` is the one page that needs a network.** FastAPI's default Swagger UI
-  loads from a CDN, and the API port carries no CSP. Use
-  `GET /openapi.json` on an air-gapped host.
-* **The places map is a bundled 20 km extract per city, not a tile service.** No
+  fetches its bundle from `cdn.jsdelivr.net` and its favicon from
+  `fastapi.tiangolo.com`, and the API port carries no CSP to stop it. Use
+  `GET /openapi.json` instead — it answers 200 and is self-contained.
+* **The places map is a bundled extract per city, not a tile service.** No
   residential streets, no buildings, no labels and no routing; the geometry is
-  simplified, and there is nothing at all beyond 20 km of the city centre.
+  simplified, and there is nothing at all beyond **10 km of the city centre** —
+  `HALF_BOX_KM = 10.0` in `services/ingestor/fetch_basemap.py`, staged as a box
+  20 km on a side. The stored places sit within about 5 km of centre in all five
+  cities, so the extract leaves room to pan and zoom out and no more.
 * **No marine data, and coastal scores are capped because of it.** Surfing,
   swimming, fishing and a boat ride are scored in coastal cities from wind,
   temperature and precipitation, never from wave height, swell period or water
@@ -684,13 +734,26 @@ tunnel has every route.
   install keeps an accurate forecast while its events quietly expire, which is
   [the bargain described above](#the-data-on-board-and-when-it-goes-stale) and
   is visible in every as-of stamp.
-* **No physical air-gap proof.** Offline operation is proven on a separate Docker
-  engine with an empty image store, no pulls and no reachable egress, and by a
-  per-release clean-engine CI gate. Neither is separate physical hardware, and
-  neither closes this: a VM, a second Docker daemon, a CI runner and a firewall
-  rule are all explicitly recorded as *not* closing it. The drill is prepared and
-  its artifacts are built, but it has not been run — it needs a disposable second
-  physical host. See
+* **No physical air-gap proof.** Three claims sit near each other here and are
+  not the same claim, so they are kept apart on purpose:
+  * **The archive is self-contained.** `scripts/verify-bundle-images.sh` checks
+    that from the bundle's own bytes, by manifest digest. It is a property of a
+    file and can be checked anywhere, connected or not.
+  * **The bundle installs on an empty image store with no pulls.** That is what
+    the release workflow's clean-engine gate proves, and it runs **on a
+    connected GitHub-hosted runner**, inside a second daemon on the same VM.
+    The engine is clean; the machine is on the internet. The manual rig in
+    `docs/RELEASE-PROOF.md` §2 went further and blocked egress with nftables,
+    and it was still not separate hardware.
+  * **A physical air gap.** Not established by anything in this repository. A
+    VM, a second Docker daemon, a CI runner and a firewall rule are each
+    explicitly recorded as *not* closing it. The drill is prepared and its
+    artifacts are built, but it has not been run — it needs a disposable second
+    physical host.
+
+  What *is* enforced at runtime, on every host, is that the application network
+  has no gateway (`backend` is `internal: true`). That is the offline property
+  the stack actually guarantees; it is not a statement about the hardware. See
   [docs/EVIDENCE-physical-airgap.md](docs/EVIDENCE-physical-airgap.md), which
   states exactly what is still missing.
 
@@ -738,20 +801,20 @@ command you can run.
 | ID | Requirement | Where it lives | Verify |
 |---|---|---|---|
 | M1 | Weather for five cities from an external API | `services/ingestor/providers.py` (Open-Meteo), `data/cities.yml` | `curl localhost:8000/coverage` |
-| M2 | LLM recommendation: is the weather suitable for the activity | `common/rules.py` scores it, `services/enricher/` words it | `… demos reenrich`; the Suitability tab |
+| M2 | LLM recommendation: is the weather suitable for the activity | `common/rules.py` scores it, `services/enricher/` words it | `… demos reenrich`; the Suitability page |
 | M3 | Local open-weights LLM, no external API | `llm` (llama.cpp + Qwen3-1.7B); `common/llm.py` is the only client | `… demos offline` |
 | M4 | All collected data → queue → database | outbox → `aow.events` → consumer, the only writer | `… demos no-data-loss`; the `psql` grants |
 | M5 | Containerized, one uniform way to run | `compose.yml`; `compose.tools.yml` stages it and runs the proofs | [Setup](#setup), ending in `docker compose up -d` |
 | M6 | Runs on-prem without full internet | `backend` is `internal: true`; the committed snapshot | `… demos offline`, ideally with the host NIC down; the air-gap scope, the prepared artifacts and what is still open are recorded in [docs/EVIDENCE-physical-airgap.md](docs/EVIDENCE-physical-airgap.md) |
 | M7 | Agent answering varied questions from stored data | `services/agent/` | `… demos questions` |
 | M8 | Tourism: history, places, sports events | the `facts`, `places` and `events` tables | `… demos questions` |
-| M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner tab | build, save and reopen a plan in the UI |
-| M10 | Good data visualization | forecast chart, suitability heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map tabs |
+| M9 | Itinerary for chosen destinations | `POST /agent/itinerary`, the Trip planner page | build, save and reopen a plan in the UI |
+| M10 | Good data visualization | forecast chart, suitability heatmap, offline places map, coverage banner | the Forecast, Suitability and Places map pages |
 | M11 | Temporary failures without data loss | outbox, confirms, ack-after-commit, DLQ and redrive, reconciliation | `… demos no-data-loss`; the CI gate in `scripts/ci-integration.sh` |
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh, re-enrichment | `… demos update`; `make refresh-check` |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml` and `release.yml`; release tooling in `scripts/`, including `airgap-evidence.sh` (captures engine identity, image/volume census, link state, bundle digests and exit codes) and `make-fault-injection-bundle.sh` (derives the deliberately-broken artifact for the rollback drill) | `gh run list`; [docs/RELEASE.md](docs/RELEASE.md) |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates; component and end-to-end depth remains incomplete | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
+| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates. Targeted work has since covered the consumer's ack decision, partial and undated forecast coverage, the grounding guard's weather check, per-city planner coverage, and the wiring of the migration list — that last one found a migration that had been written and never run. Still uncovered: the connected fetch path, because CI has no egress, and end-to-end user flows | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
 | B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at <http://127.0.0.1:3000> |
 | B3 | Automatic recovery from failures | **partial** — reconnect with backoff, `restart: unless-stopped`, healthchecks, automatic re-enrichment, and an operator backup/restore with a measured RPO and RTO | `make backup-restore`; then `… demos no-data-loss` |
 
@@ -789,6 +852,8 @@ stored in demo mode only.
 | [docs/RELEASE-PROOF.md](docs/RELEASE-PROOF.md) | what was actually run for staging, transport, install, upgrade and rollback, and what remains unproven |
 | [docs/EVIDENCE-physical-airgap.md](docs/EVIDENCE-physical-airgap.md) | the physical air-gap proof: what was prepared and measured, and what is still missing to run it (status: open) |
 | [docs/RUNBOOK-BACKUP-RESTORE.md](docs/RUNBOOK-BACKUP-RESTORE.md) | operator backup and restore, with the measured RPO and RTO |
+| [docs/EVIDENCE-b1-targeted-tests.md](docs/EVIDENCE-b1-targeted-tests.md) | the targeted test work behind B1: the grounding weather check, per-city coverage, and what it left open |
+| [docs/EVIDENCE-fresh-demo.md](docs/EVIDENCE-fresh-demo.md) | a first run on a clean engine, start to finish: what passed, the defects it found in `bootstrap.sh`, and what it does not prove |
 | [docs/CICD_EVIDENCE.md](docs/CICD_EVIDENCE.md) | the CI/CD evidence matrix: which gate proves which claim |
 | [docs/EVIDENCE-observability-and-recovery.md](docs/EVIDENCE-observability-and-recovery.md) | executed evidence for the metrics stack and for backup and restore |
 | [docs/EVIDENCE-f9-events-and-coastal.md](docs/EVIDENCE-f9-events-and-coastal.md) | event validity mechanics and the sea-state claims |
