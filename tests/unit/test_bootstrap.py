@@ -186,7 +186,7 @@ def test_the_report_never_calls_snapshot_data_fresh() -> None:
     assert "REFRESH_RESULT=not-attempted" in source
     assert "REFRESH_RESULT=ok" in source
     assert "REFRESH_RESULT=failed" in source
-    assert "THE FETCH FAILED" in source
+    assert "THE REFRESH DID NOT COMPLETE" in source
     assert "the committed snapshot, as cloned" in source
 
 
@@ -249,8 +249,9 @@ def test_a_failed_fetch_is_visible_and_not_dressed_up(tmp_path: Path) -> None:
     result, _, _ = _refreshed(tmp_path, "2")
     combined = result.stdout + result.stderr
     assert result.returncode == 2, combined
-    assert "THE FETCH FAILED" in combined
-    assert "not fresh data" in combined
+    assert "THE REFRESH DID NOT COMPLETE" in combined
+    assert "Some cities may have" in combined
+    assert "advanced while others retain older forecasts" in combined
     assert "fetched just now" not in combined
 
 
@@ -359,3 +360,17 @@ def test_the_default_run_still_says_localhost(tmp_path: Path) -> None:
     )
     assert "http://localhost:8080" in result.stdout
     assert "resolves localhost to ::1" in result.stdout
+
+
+def test_nonloopback_bind_report_does_not_claim_the_api_is_local_only(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("POSTGRES_PASSWORD=test\n", encoding="utf-8")
+    result, _, _ = bootstrap(
+        tmp_path,
+        env_file=env_file,
+        images_present=True,
+        extra_env={"AOW_STUB_HEALTHY": "1", "AOW_BIND_ADDR": "0.0.0.0"},
+    )
+    assert result.returncode == 0
+    assert "can expose the unauthenticated API to other machines" in result.stdout
+    assert "never on a routable interface" not in result.stdout
