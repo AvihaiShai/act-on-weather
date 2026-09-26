@@ -6,8 +6,17 @@ it and the output that came back. Steps that could not be run are recorded as
 **NOT RUN**, with the reason. Nothing that was not executed is written up as a
 pass.
 
-- **Commit under test:** `a21dff9d4b38cdfead8be717db4599fc602ba668` (`review/bootstrap-proof`, branched from `main` at `a21dff9`)
-- **Scope of §1–§11:** `scripts/bootstrap.sh`, `tests/unit/test_bootstrap.py`, this file — committed as `dfbe0db`. `README.md` and `DEVOPS_REVIEW.md` are deliberately untouched and left for integration.
+- **Commit under test:** `dfbe0db` (branch `review/bootstrap-proof`, cut from
+  `main` at `a21dff9`). Every figure in §1–§11 is as of that commit and is left
+  as it was measured, not restated against a later tree.
+- **Scope of §1–§11:** `scripts/bootstrap.sh`, `tests/unit/test_bootstrap.py`,
+  this file — committed as `dfbe0db`.
+- **The merged script is not the one §1–§11 measured.** It is 142 lines longer:
+  the `--refresh` step (§7 of the script) arrived from `main` after this branch
+  was cut, and **no live run in this document exercised it** — see §9.5.
+  Integration review then found and fixed a further defect in the health wait
+  and three weaknesses in the offline and drill paths; those are §12.6. Read
+  §1–§11 as the record of `dfbe0db`, not as a description of what merged.
 - **§12 is a follow-up branch** (`fix/grounded-event-dates`, commits `a1417ff`
   and `c535faf`) that fixes two of the defects §5.5 and §6.1 reported but did
   not fix. Where §12 contradicts an earlier section, §12 is the later state;
@@ -938,7 +947,8 @@ README's supported-platform list includes.
 
 ## 8. Tests
 
-`tests/unit/test_bootstrap.py` grew from 5 tests to 21. They need no network,
+`tests/unit/test_bootstrap.py` grew from 5 tests to 21 at `dfbe0db`
+(**39** on the merged tree, after §12.6). They need no network,
 no Docker daemon and no stack: a stub `docker` on `PATH` answers the handful of
 questions bootstrap asks, and each test shapes exactly one failure mode through
 `AOW_STUB_*` variables.
@@ -1021,8 +1031,15 @@ $ python -m ruff format --check tests/unit/test_bootstrap.py
 ## 9. The fixes, verified against the live stack
 
 Unit tests prove the logic; these runs prove it on a real engine with real
-containers. The script under test is the committed one
-(`sha256 = 22c4cd70…`, checked identical inside the engine).
+containers. The script under test is the committed one at `dfbe0db`
+(`sha256 = 0844d411…`).
+
+> Two corrections, made at integration. An earlier draft of this line quoted
+> `sha256 = 22c4cd70…`, which matches no committed version of
+> `scripts/bootstrap.sh` at any commit on this branch, in either line ending;
+> it has been replaced with the hash that was actually verifiable. And every
+> run in this section predates the `--refresh` step, so nothing below is
+> evidence about it.
 
 ### 9.1 No false positive on a container with restart history
 
@@ -1083,7 +1100,10 @@ $ docker run --rm --network none aow/tests:review
 ```
 
 All 21 bootstrap tests are included and pass, and on Linux none is skipped —
-the POSIX file-mode test that is skipped on Windows runs here.
+the POSIX file-mode test that is skipped on Windows runs here. (On the merged
+tree the file holds 39. Note that a count taken on Windows is one lower than
+the same tree on Linux for exactly this reason, so quote the Linux figure:
+that is the platform CI runs on.)
 
 This also settles a loose end: `test_backup_restore.py` and
 `test_refresh_report.py` failed on the Windows host with
@@ -1097,7 +1117,8 @@ container, which is where the repository intends them to run.
 |---|---|---|
 | Crash-loop detection fires on a real crash loop | **unit-tested only** | I could not induce one. The kernel shields PID 1 from default-action signals, so `kill 1` inside the container does nothing, and `docker kill` did not trigger the restart policy on this engine (container went to `exited`, `RestartCount` unchanged). The test drives the real script with a growing counter and asserts `consumer(restarting)` + exit 1. |
 | Old-Compose capability probe on an actually-old plugin | **unit-tested only** | The engine ships Compose v2.40.3 and I did not install an old plugin. The test makes `ps --format` fail and asserts the message names the plugin, not the containers. |
-| `chmod` before `mv` closes the umask window | **partly** | The generated `.env` was confirmed `0600` on the live run, and the POSIX-mode test passes in the container. Neither observes the window itself, which is the point of moving the call. |
+| `chmod` before `mv` closes the umask window | **partly** | The generated `.env` was confirmed `0600` on the live run, and the POSIX-mode test passes in the container. Neither observes the window itself, which is the point of moving the call. Integration went further and created the file `0600` (§12.6), because the `chmod` still ran after the generator. |
+| The `--refresh` step, against a real egress window | **unit-tested only** | It is not in the script this section ran. `--refresh` came from `main` after this branch was cut, and no run in §2, §3, §5 or §9 exercised it. It is driven by stub tests only, here and on the merged tree. |
 ---
 
 ## 10. For the integrator: README changes this branch implies
@@ -1207,7 +1228,7 @@ is the record of what was observed at the time.
 | 10 | `demos no-data-loss` | **flaky**: 1 fail in 3, no data ever lost (§5.5) |
 | 11 | E1 Rome, E2 London, out-of-coverage control | all grounded, all timestamped |
 | 12 | Same three questions, network disconnected | identical results |
-| 13 | Full unit suite in the container, `--network none` | 1502 passed, 2 skipped |
+| 13 | Full unit suite in the container, `--network none` | 1502 passed, 2 skipped at `dfbe0db`; **1554 passed, 2 skipped** on the merged tree |
 
 ### What this does not prove
 
@@ -1278,7 +1299,8 @@ Sections 1–11 record the bootstrap proof at commit `dfbe0db`, which stands
 unchanged. This section records the follow-up branch
 `fix/grounded-event-dates`, which fixes two of the three findings that §5.5,
 §6.1 and §10.5 had reported rather than fixed. The README edits in §10 are
-still deliberately left for integration.
+**applied** on the integration branch that carries this document; §12.6
+records what else integration changed.
 
 Both fixes were verified against the same staged system, restarted from the
 same disposable engine volume after a reboot: all 14 images and 11 containers
@@ -1347,7 +1369,7 @@ E  AssertionError: []
 ```
 
 Full suite: **1507 passed, 2 skipped** in the container with `--network none`
-(was 1502).
+(was 1502). On the merged tree, after §12.6, it is **1554 passed, 2 skipped**.
 
 ### 12.2 The flaky M11 drill (§5.5) — fixed
 
@@ -1428,16 +1450,65 @@ of the health fix wrong. The settling-sample design handles it.
 
 ### 12.5 What is still open after this section
 
-1. **The README edits in §10** — left for integration, as planned.
+1. ~~**The README edits in §10** — left for integration, as planned.~~
+   **Done.** They are applied on the branch that carries this document.
 2. **`demos/01_offline.sh` asserts nothing about the two example answers**
    (§10.5). Untouched. §6 of this document is the substitute.
 3. **`demos/01_offline.sh`'s per-service egress probe is vacuous for `llm`**
    (§5.2). Untouched; the structural check covers the claim.
 4. **Drill 3's misleading failure message** (§12.2). Untouched.
-5. **Check 3b is narrow by design.** It only fires when a clause both asserts a
-   scheduled event *and* names a calendar day. A claim with no date in the same
-   clause ("there are concerts all week") is not caught by it — checks 1, 2 and
-   6b cover the shapes of that seen so far, but the class is not closed.
+5. **Check 3b is narrow by design, and integration narrowed it further.** It
+   fires only when a clause asserts a scheduled event *and* names a calendar
+   day *after* the claim word. A claim with no date in the same clause ("there
+   are concerts all week") is not caught by it — checks 1, 2 and 6b cover the
+   shapes of that seen so far, but the class is not closed. Three further
+   shapes are deliberately out of reach, and §12.6 says why: a date before the
+   claim word, a clause that also describes the weather, and a relative or
+   year-less date ("on Friday"), which `_dates_in` cannot resolve and which it
+   would have to guess at to test.
 6. Everything in §11 still applies: this is a nested Alpine engine, not a
    reviewer's machine; the UI was checked for HTTP 200 only; and the data ages
    out after 2026-10-08.
+
+### 12.6 Found at integration, after §1–§12.5 were written
+
+Review of this branch against the merged tree found five more defects. All are
+fixed on the branch; none was observed on a live stack, because each was found
+by reading the merged script and reproduced against the stub.
+
+1. **The health wait died silently when a measurement failed.**
+   `read_restart_count` documents that "anything unreadable answers 0, so a
+   service is never held back by a failure to measure it". It did not: under
+   `set -euo pipefail` a non-zero `docker inspect` or `compose ps -q` killed the
+   script one line *before* the `case` that implements that fallback, so the
+   fallback was unreachable code. The run exited 1 with no `bootstrap failed:`,
+   no `next:` and no service named — from the reviewer's first command, and in
+   violation of the contract stated at the top of the script. The container id
+   is memoised for the whole 15-minute wait, so any recreate or transient daemon
+   hiccup reached it. Reproduced with a `docker` wrapper that fails only
+   `inspect`; two tests now pin that an unreadable count is neutral in **both**
+   directions.
+2. **`PASS the tooling images are here too` could pass without reading the
+   list.** A failing command substitution inside a `<<<` herestring does not
+   trip `set -e`, and this was the one image list of three with no `|| die`.
+   Demonstrated: the list failed, the line printed `PASS`, the run exited 0.
+3. **`--wait-only` against a stopped stack waited out the full timeout** and
+   then printed `docker compose logs` for a container that does not exist —
+   the same 15-minute silent wait §7.1 fixed, reached by a different door.
+4. **Drill 1 asserted on queue depth before it knew its own record had been
+   published**, so any other message in `aow.ingest` satisfied it. §12.2 names
+   this as the trigger of the flake it fixed; the assertion above the new
+   helper was still the old shape.
+5. **Check 3b rejected correct answers.** It attributed *every* date in a
+   clause to the event claim, and `_clauses` does not split on a comma — so
+   "2026-09-26 will be sunny, and a concert is scheduled on 2026-09-25" was
+   reported as placing a concert on the 26th. Reproduced on the brief's own E2
+   London question, which is exactly the question 3b was written for. It now
+   attributes only dates after the claim word, and stands down on a clause that
+   also describes the weather or scopes itself to the record.
+
+Also corrected here, and worth stating because this is an evidence file: the
+`sha256` in §9 identified no committed version of the script; §1 named the
+branch's base as the commit under test, contradicting §11 and §12; and the
+test counts in §8, §9.4, §11 and §12.1 were written in the present tense and
+had gone stale. The figures are now labelled with the commit they belong to.

@@ -600,7 +600,8 @@ tunnel has every route.
   said". Three gaps are known and open:
   * an event claim that names **no calendar date** — "there are concerts all
     week" — is outside the dated-claim check, which needs a date in the clause
-    to test;
+    to test, and so is one that names a **relative or year-less** day ("on
+    Friday"), which the date parser will not guess at;
   * an **undated weather claim** has no check at all: "Rome is warm and dry
     this week" passes against an empty brief, where a dated equivalent would
     not;
@@ -609,9 +610,18 @@ tunnel has every route.
     can still offer a day the selected city has no row for; it renders as "no
     scored activity" rather than as a stated gap.
 
+  The dated event-claim check deliberately gives up two more shapes, because
+  the first version of it rejected correct answers on the assignment's own
+  London question: a date that sits **before** the claim word is read as the
+  window the sentence opens with rather than the event's date, and a clause
+  that is **also describing the weather** is left alone. Both are cases where
+  one clause carries a forecast date and a listing date at once, which is a
+  sentence the model writes constantly. The trade is a rare miss against a
+  common false positive, and checks 1 and 7 still apply to those clauses.
+
   The dated event-claim check is measured in
-  [docs/EVIDENCE-fresh-demo.md](docs/EVIDENCE-fresh-demo.md) §12.1; §12.5
-  records what it does not cover.
+  [docs/EVIDENCE-fresh-demo.md](docs/EVIDENCE-fresh-demo.md) §12.1; §12.5 and
+  §12.6 record what it does not cover and why it was narrowed.
 * **The enricher polls** rather than binding to the weather stream. A deliberate
   trade: no second delivery branch means no silent partial fan-out.
 * **Per-message accounting starts at an accepted outbox envelope.** Enrichment
