@@ -336,6 +336,17 @@ again.
 A fresh clone on its own is **not** ready for offline use: the images and the
 model are not in Git.
 
+### Installing a packaged release
+
+Follow the [offline-host procedure](docs/RELEASE.md#operator-procedure-offline-host)
+from inside a verified release bundle. Set real passwords in `.env` on the first
+install; on an upgrade, carry the previous release's `.env` forward. The installer
+prints the Docker engine ID and the image, volume and container counts before
+loading the bundle. It refuses a fault-injection test artifact unless
+`AOW_ALLOW_FAULT_INJECTION=1` is set deliberately. The packaged
+`scripts/prove-offline.sh` runs with `--no-build --pull never`, so a missing image
+fails the proof instead of starting a build or a pull.
+
 ### Connected refresh
 
 Three update paths, two of which work offline:

@@ -250,10 +250,11 @@ bash scripts/install-offline.sh          # docker load, migrate, start, smoke-te
 bash scripts/prove-offline.sh            # run the packaged offline proof
 ```
 
-`install-offline.sh` and `prove-offline.sh` are documented in full in the
-[README](../README.md); this page only orders the steps. If `install-offline.sh`
-finds a running previous release under the same Compose project, it takes a
-`pg_dump` backup before touching anything -- see `scripts/restore-offline.sh`
+The [README](../README.md#installing-a-packaged-release) summarizes the install
+guards; the command sequence above is the offline-host procedure. If
+`install-offline.sh` finds a running previous release under the same Compose
+project, it takes a `pg_dump` backup before touching anything -- see
+`scripts/restore-offline.sh`
 if a rollback is needed afterward.
 
 ## What this boundary does and does not claim
