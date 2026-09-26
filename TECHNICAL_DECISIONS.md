@@ -97,12 +97,13 @@ accepted-but-unpublished record survives the process dying.
 | **No schema-wide `DELETE`.** The writer's only DELETE grants are `events` (removing demo samples) and `itineraries` with `record_history` (user data) | Collected records are revised, not deleted, so history stays intact | A genuine bulk delete needs a migration |
 | **The user-data wipe runs through an owner-defined `SECURITY DEFINER` function** | Rebuilding from the outbox needs one destructive step. Granting direct DELETE on every collected table to reach it would be a far wider permission than the operation needs | The function is privileged code that has to be read carefully |
 | **`provider` is deliberately not in `weather_daily`'s key** | A second provider must *replace* a day, not shadow it, or the join to `recommendations` stops being unique | Two providers cannot be compared side by side |
-| **An `as_of` guard on every upsert** (`EXCLUDED.as_of > <table>.as_of`) | At-least-once delivery means redelivery in any order; an older forecast must never overwrite a newer one | A record with a missing or wrong `as_of` will not apply |
+| **Freshness guards on collected-data upserts** | Weather, place and fact updates require a newer `as_of`, so replaying an older snapshot cannot replace newer data. Events also update when their derived `valid_until` changes with the configured recheck window | The event exception can update a row without a newer `as_of`; itinerary and recommendation writes follow their own rules |
 | **One history trigger over five tables, addressing the row through `to_jsonb(NEW)`** | PL/pgSQL rejects a column reference that does not exist on the table currently firing, *even in a branch never taken*, so a per-table `CASE` on column names cannot work | The history rows are JSON, not typed columns |
 | **Event local days derived in SQL from the city's IANA zone** | An event starting at local midnight lands on its local day rather than the UTC one, and a multi-day run matches every day it is active on | Needs real Postgres tzdata, so it can only be tested against a live database |
 
-**Evidence:** the grants are readable in `db/migrations/001_init.sql` and
-checkable with `psql`; `tests/integration/event_local_days.py` runs against a
+**Evidence:** the base grants are in `db/migrations/001_init.sql`; the narrow
+DELETE grants and wipe function are in migrations 003–005, and can be checked
+with `psql`; `tests/integration/event_local_days.py` runs against a
 real Postgres in CI; `demos update` shows a `PATCH` producing `revision + 1` and
 a `record_history` row.
 
@@ -157,8 +158,8 @@ the real model for release candidates.
 **Not measured reproducibly:** per-call latency and the thinking-on/off
 difference were observed during development but never captured by a benchmark,
 on a recorded host, with a command anyone can rerun. No figures are quoted here,
-and the README was corrected to match. The `model-grounding` job proves the
-model answers correctly from rows; it does not time it.
+and the README was corrected to match. The `model-grounding` job checks selected
+answers against supplied rows; it does not time the model.
 
 ## 8. Interface, data sources and provenance
 
@@ -168,7 +169,7 @@ model answers correctly from rows; it does not time it.
 | **The map is Plotly traces over a bundled 20 km OpenStreetMap extract, never a tile URL** | Tiles are a runtime download, and the air-gap rule outranks the cartography | No residential streets, labels, buildings or routing, and nothing beyond the extract |
 | **Open-Meteo for weather** | No API key, so the air-gapped bundle carries no secret and no account that can expire, and the free tier includes the 16-day daily forecast "this week" needs. Chosen over **OpenWeather**, which means a key to manage and a free tier that splits the horizon awkwardly | Bound to one provider's model and grid |
 | **Wikidata SPARQL for places**, with Overpass kept behind `--places-source osm` | A free shared Overpass endpoint signals an internal timeout as HTTP 200 with an empty element list and a `remark` — a silent failure indistinguishable from "this city has no museums" — and at staging time all four public mirrors were refusing connections. The fetcher now checks the body rather than the status | Wikidata holds notable venues, so the data skews to landmarks rather than every café |
-| **Every collected row carries `source`, `source_url`, `as_of`, `is_sample` and a revision** | Provenance is per row, so sources with different coverage stay distinguishable and nothing has to be taken on trust | The licence rides in the source string rather than its own column |
+| **Collected rows carry provenance and a revision** | Weather rows record `provider`, `source_url` and `as_of`; place, fact and event rows also record `source` and `is_sample`. Sources with different coverage stay distinguishable per row | There is no dedicated licence column; the weather table has no `is_sample` flag |
 | **Events carry `checked_at` (a fact) and a derived `valid_until`** | A stored event is a reading of a listing page on a particular day, not an observation. Deriving expiry means `AOW_EVENT_RECHECK_DAYS` takes effect without rebuilding the snapshot, and expired rows stay stored and counted, so a stale feed is distinguishable from a city nobody checked | The feed goes out of date on a timer by design, and extending a listing is a manual one-row operation |
 | **Generated sample events are opt-in, not merely labelled** | The ingestor builds no envelope for the 45 generated sample events without `AOW_DEMO_EVENTS`, the consumer drops them at the write boundary anyway, and leftovers are deleted when demo mode ends | Two gates to keep in step |
 | **Documentation counts are machine-checked against the snapshot** | Counts in prose go stale silently. A regex that stops matching anything is itself an error, so the guard cannot quietly retire | Rewording a sentence that quotes a count means updating the pattern |
