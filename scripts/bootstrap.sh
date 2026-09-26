@@ -114,8 +114,8 @@ What --refresh does and does not update:
               with a validity timer. Rebuilding them is `make snapshot`, a
               maintainer step that rewrites files in the repository and expects
               the diff to be reviewed. There is no marine data at all.
-  A failed fetch is reported as a failure and leaves the stored snapshot in
-  place. It is never presented as fresh.
+  An incomplete refresh is reported as a failure. Some cities may already
+  have advanced; check the per-city result and each stored as-of stamp.
 
 Options:
   --refresh       after the stack is healthy, fetch a fresh forecast. Needs a
@@ -756,8 +756,9 @@ if [ "$REFRESH" -eq 1 ]; then
         4) note "accepted and queued, but nothing reached the database in time" ;;
         *) note "see the output above" ;;
       esac
-      note "The stored forecast is unchanged: it is the committed snapshot, not"
-      note "a fresh fetch. Retry with: docker compose -f compose.tools.yml run --rm refresh"
+      note "Check the per-city result above and GET /refresh/last. Some forecasts"
+      note "may have advanced; each stored as-of stamp shows the current state."
+      note "Retry with: docker compose -f compose.tools.yml run --rm refresh"
       ;;
   esac
 fi
@@ -791,9 +792,9 @@ case "$REFRESH_RESULT" in
     note "and events are the committed snapshot -- they are never auto-fetched."
     ;;
   failed)
-    printf '%s   Data: THE FETCH FAILED.%s The forecast shown is the committed\n' "$C_YELLOW" "$C_OFF"
-    note "snapshot, not fresh data. Every answer and chart still carries its"
-    note "own as-of stamp, so nothing here is presented as newer than it is."
+    printf '%s   Data: THE REFRESH DID NOT COMPLETE.%s Some cities may have\n' "$C_YELLOW" "$C_OFF"
+    note "advanced while others retain older forecasts. Check /refresh/last;"
+    note "each answer and chart carries the stored data's own as-of stamp."
     ;;
   *)
     note "Data: the committed snapshot, as cloned. Nothing was fetched -- rerun"
@@ -801,7 +802,10 @@ case "$REFRESH_RESULT" in
     ;;
 esac
 printf '\n'
-note "Both are published on $bind only, never on a routable interface."
+case "$bind" in
+  127.* | ::1) note "Both are published on $bind only." ;;
+  *) note "Both are published on $bind; this can expose the unauthenticated API to other machines." ;;
+esac
 if [ "$bind" = 127.0.0.1 ]; then
   note "If your browser resolves localhost to ::1 and does not fall back, use"
   note "http://127.0.0.1:8080."
