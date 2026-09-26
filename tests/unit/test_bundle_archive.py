@@ -758,6 +758,57 @@ def test_a_stopped_previous_release_is_refused_rather_than_silently_migrated(
     assert not marker.exists(), "nothing may be loaded over a database that was not dumped"
 
 
+# ------------------------------------------------------- the bind address --
+#
+# The closing report names the addresses the stack is published on. That is the
+# one line in this script describing a security property, over an API whose
+# write routes have no authentication, so it is the one line that must not be
+# able to be wrong. compose.yml publishes on ${AOW_BIND_ADDR:-127.0.0.1} and
+# compose.bundle.yml does not touch edge's ports, so the value has to be read
+# from the same two places Compose reads it. These mirror the two tests
+# scripts/bootstrap.sh has for the same report.
+
+
+def test_a_widened_bind_address_in_the_env_file_is_reported_as_it_is(
+    release: Path, tmp_path: Path
+) -> None:
+    """The regression this replaced: a hardcoded 127.0.0.1 in the closing line.
+
+    .env is the documented way to move the boundary, and Compose reads it
+    through --env-file, so a release whose .env says 0.0.0.0 must not be
+    reported as loopback.
+    """
+    (release / ".env").write_bytes(b"POSTGRES_PASSWORD=placeholder\nAOW_BIND_ADDR=0.0.0.0\n")
+    result = install(release, tmp_path)
+    assert result.returncode == 0, output(result)
+    assert "Published on 0.0.0.0:8080 (UI) and 0.0.0.0:8000 (API)" in result.stdout
+    assert "127.0.0.1" not in result.stdout
+    assert "WARNING: 0.0.0.0 is not loopback" in result.stdout
+    assert "no authentication" in result.stdout
+
+
+def test_the_shell_overrides_the_env_file_for_the_bind_address(
+    release: Path, tmp_path: Path
+) -> None:
+    """Compose takes the shell environment ahead of --env-file, so the report
+    has to as well -- otherwise it names an address nothing is listening on."""
+    (release / ".env").write_bytes(b"POSTGRES_PASSWORD=placeholder\nAOW_BIND_ADDR=0.0.0.0\n")
+    result = install(release, tmp_path, AOW_BIND_ADDR="192.168.1.10")
+    assert result.returncode == 0, output(result)
+    assert "Published on 192.168.1.10:8080 (UI) and 192.168.1.10:8000 (API)" in result.stdout
+    assert "0.0.0.0" not in result.stdout
+    assert "WARNING: 192.168.1.10 is not loopback" in result.stdout
+
+
+def test_the_default_is_loopback_and_carries_no_warning(release: Path, tmp_path: Path) -> None:
+    """Neither place sets it, so compose.yml's own default is what applies. A
+    warning here would train an operator to ignore the one that matters."""
+    result = install(release, tmp_path)
+    assert result.returncode == 0, output(result)
+    assert "Published on 127.0.0.1:8080 (UI) and 127.0.0.1:8000 (API)" in result.stdout
+    assert "WARNING" not in result.stdout
+
+
 def test_installing_over_a_stopped_database_without_a_dump_has_to_be_asked_for(
     release: Path, tmp_path: Path
 ) -> None:

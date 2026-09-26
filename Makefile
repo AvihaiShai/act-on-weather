@@ -27,13 +27,22 @@ PYIMAGE        := python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a
 # network error for what was really a tag problem.
 #
 # A developer checkout has no version file, so both variables are empty there
-# and every command below is exactly what it was.
+# and every command below is exactly what it was, with one caveat: naming
+# compose.yml with an explicit -f turns off Compose's automatic discovery of
+# compose.override.yml. The repository has no override file, but if you keep a
+# local one, add `-f compose.override.yml` after $(BUNDLE). The explicit -f is
+# what makes the bundle overlay possible, so it stays.
 #
 # scripts/install-offline.sh exports AOW_IMAGE_VERSION only for its own process,
 # so a later `make up` on the release host reads the version file itself.
 ifeq ($(strip $(AOW_IMAGE_VERSION)),)
 ifneq ($(wildcard release-version.txt),)
-AOW_IMAGE_VERSION := $(shell cat release-version.txt)
+# `tr -d`, not `cat`: $(shell) strips a trailing newline but not a trailing CR,
+# and a release folder that crossed a line-ending-rewriting transfer would hand
+# Make a version with a CR in it, so every aow-bundle tag would silently fail to
+# resolve. scripts/install-offline.sh and scripts/restore-offline.sh guard the
+# same file the same way.
+AOW_IMAGE_VERSION := $(shell tr -d '\r\n' < release-version.txt)
 endif
 endif
 export AOW_IMAGE_VERSION

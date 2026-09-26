@@ -249,10 +249,29 @@ for attempt in 1 2 3; do
   sleep 10
 done
 dc exec -T api python - < scripts/release-smoke.py
+
+# The bind address, resolved from the same two places Compose reads it and in
+# the same order: the shell environment first, then --env-file. compose.yml
+# publishes on ${AOW_BIND_ADDR:-127.0.0.1}:8080 and :8000, and
+# compose.bundle.yml overrides only the images, never edge's ports -- so this
+# .env is what decides the boundary. Printing a constant 127.0.0.1 would be this
+# script asserting a security property it never read, over an API whose write
+# routes have no authentication. scripts/bootstrap.sh resolves it identically,
+# for the same reason; the two must not disagree about this.
+bind="${AOW_BIND_ADDR:-}"
+if [ -z "$bind" ]; then
+  bind="$(sed -n 's/^[[:space:]]*AOW_BIND_ADDR=\([^[:space:]#]*\).*/\1/p' .env | tail -n1)"
+fi
+bind="${bind:-127.0.0.1}"
+
 # What was actually proved: the smoke test runs inside the api container, so it
 # checked the API, the stored forecast and the scores from inside the stack,
 # along with the agent, the model, the UI and edge answering their own health
-# endpoints. It did not reach a published host port, so the ports are stated
-# here as configuration rather than as a result.
+# endpoints. It did not reach a published host port, so the addresses below are
+# stated as configuration rather than as a result.
 echo "Release $AOW_IMAGE_VERSION is up: the API is serving stored forecasts and scores from inside the stack"
-echo "Published on 127.0.0.1:8080 (UI) and 127.0.0.1:8000 (API)"
+echo "Published on $bind:8080 (UI) and $bind:8000 (API)"
+case "$bind" in
+  127.* | ::1) ;;
+  *) echo "WARNING: $bind is not loopback, so the write API -- which has no authentication of its own -- is reachable from every machine that can route here. See the Security section of the README." ;;
+esac
