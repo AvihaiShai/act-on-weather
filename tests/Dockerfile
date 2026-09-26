@@ -29,6 +29,12 @@ COPY pytest.ini ruff.toml Makefile ./
 # test_refresh.py reads compose.tools.yml from the same set: the
 # operator-refresh container must not be on the egress network.
 COPY compose*.yml .env.example ./
+# test_migrations_applied.py checks the migration files against the `-f` list
+# in compose.yml's migrate command. Only the filenames are read, but the
+# directory has to be here for the glob to see them at all -- and a glob that
+# silently matches nothing is how the unwired migration this test exists for
+# would have gone on being invisible.
+COPY db/ ./db/
 # test_observability.py reads the monitoring configuration as shipped: the
 # Prometheus scrape config and alert rules, Grafana's provisioning and both
 # dashboards. Its most valuable assertion is that every aow_ metric named in a
