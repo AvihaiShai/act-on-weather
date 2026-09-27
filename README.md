@@ -720,14 +720,17 @@ tunnel has every route.
   requested is a separate matter: the noun is extracted, slugified with the same
   function the write path uses, and looked up, so an activity with no stored row
   is reported as not on record rather than answered with another activity's
-  number, and one that *was* requested earlier answers from its own row. **One
-  case is still open**: a name that carries a catalogue keyword inside it as a
-  whole word and has no stored row of its own — "kite surfing" with nothing ever
-  requested for it — still resolves to the catalogue's `surfing` and reports that
-  score. Narrowing it would take discarding a catalogue match on the strength of
-  a phrase with no rows behind it, which would break the catalogue's own
-  multi-word keywords ("a long walk" is one of hiking's). Surfacing the generic
-  label in the UI and closing that last case are
+  number, and one that *was* requested earlier answers from its own row. A name
+  that carries a catalogue keyword inside it as a whole word — "kite surfing",
+  which contains `surfing` — is resolved on its own terms first and never from
+  the keyword inside it, whether or not a row for it exists. The catalogue's own
+  multi-word keywords are told apart by being keywords: "a long walk" is one of
+  hiking's, so it still answers about hiking. A question whose only named
+  activity has no score is answered in code, from the gap, without the model
+  being called at all. The cost is stated rather than hidden — "a long run" is
+  not one of running's keywords, so it is reported as not on record instead of
+  borrowing running's score, which is the direction this project takes
+  everywhere. Surfacing the generic label in the UI remains
   [future work](#production-path).
 * **The grounding guard is a set of specific checks, not a general proof.**
   `services/agent/grounding.py` validates the model's prose against the typed

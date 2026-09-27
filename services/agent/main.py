@@ -160,10 +160,20 @@ def ask(body: AskIn) -> dict[str, Any]:
         base = f"I have no stored records matching that for {result.resolution.city['name']}."
         return respond(result, f"{base} {missing}".strip(), llm_called=False)
 
-    if result.resolution.activities:
+    if result.resolution.activities or result.resolution.unknown_activities:
         # The small CPU model repeatedly turns seven "fair" daily scores into
         # a "good week". Render named verdicts from their stored rows so every
         # date, band and score survives without an invented overall verdict.
+        #
+        # `unknown_activities` is on this branch for the same reason, and it is
+        # the stronger half. A question naming ONLY activities with no score --
+        # "is tomorrow a good day to ski in Reykjavik?" -- used to fall through
+        # to the model with the gap stated in the prompt and every catalogue row
+        # beside it, and the model answered "it is a good day to ski", three
+        # times out of three, attributing it to the stored data. There is no
+        # wording for the model to get right here: the whole answer is that
+        # nothing scores this activity. Rendering it in code means the model is
+        # not called, so there is no verdict for it to invent.
         answer = named_activity_answer(result)
         # And the gaps, for the same reason they are appended on the model path
         # below. This route returned before that line, so a named activity asked
@@ -432,7 +442,14 @@ def named_activity_answer(result: Retrieval) -> str:
     number from.
     """
     city = result.resolution.city["name"]
-    lines = [f"Stored suitability for the activities you asked about in {city}:"]
+    # The heading has to be true of what follows it. With no row at all, every
+    # line below is a gap, and calling that list "stored suitability" would be
+    # the one sentence in a refusal that still sounds like an answer.
+    lines = [
+        f"Stored suitability for the activities you asked about in {city}:"
+        if result.recommendations
+        else f"I hold no suitability score for what you asked about in {city}:"
+    ]
     for row in result.recommendations:
         lines.append(
             f"- {row['forecast_date']}: {row['activity_label']} is "

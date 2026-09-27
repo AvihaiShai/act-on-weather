@@ -231,8 +231,21 @@ def test_a_verdict_on_the_typed_activity_is_rejected(stub, answer):
 
 
 def test_the_fabricated_score_never_reaches_the_traveller(monkeypatch, stub):
-    """The end-to-end property: the model may still write it, and the answer
-    the traveller reads carries no number for paragliding at all."""
+    """The end-to-end property: whatever the model would write, the answer the
+    traveller reads carries no number for paragliding at all.
+
+    This used to be proved through the grounding guard -- the model was called,
+    it wrote the fabricated verdict, check 5 threw the wording away and `respond`
+    attached a `note`. It is now proved one step earlier and one step harder: a
+    question whose only named activity has no score is answered in code, so the
+    model is never asked. `llm_called is False` is the assertion that says so,
+    and it is strictly stronger than catching the wording afterwards, because
+    there is no wording to catch.
+
+    The stub below stays in place deliberately. If this route ever falls back to
+    the model again, `chat_json` is there to write the fabrication and the
+    assertions below will fail on it rather than quietly passing.
+    """
     route, _rows, _asked = stub
     result = route.retrieve(PARAGLIDING)
     main = agent(monkeypatch, result)
@@ -247,16 +260,28 @@ def test_the_fabricated_score_never_reaches_the_traveller(monkeypatch, stub):
     )
     response = main.ask(main.AskIn(question=PARAGLIDING))
 
-    assert "note" in response, "the ungrounded wording was accepted"
-    assert "paragliding" in response["note"]
-    # The specific regression: no number of any kind beside the word. The
-    # fallback still reports the beach_day row's real 100/100, which is where
-    # the stolen number came from -- the point is that it keeps its own name.
+    assert response["llm_called"] is False, "the model was asked to phrase a gap"
+    # The specific regression: no number of any kind beside the word.
     for line in response["answer"].splitlines():
         if "paragliding" in line.lower():
             assert not any(char.isdigit() for char in line), line
     assert "score for paragliding" not in response["answer"]
-    assert "not on record" in response["answer"]
+    assert "no suitability score on record" in response["answer"]
+    # And no other activity's number was substituted for the missing one --
+    # `beach_day`'s real 100/100 is where the stolen number came from.
+    assert "100/100" not in response["answer"]
+
+
+def test_the_grounding_guard_still_rejects_the_wording_it_was_written_for(stub):
+    """The guard is now a second line rather than the first, and it must stay
+    armed. `grounding.violations` is what protects every route that DOES reach
+    the model, so the checks are asserted directly here even though `ask()` no
+    longer depends on them for this question."""
+    route, _rows, _asked = stub
+    brief = grounding.build(route.retrieve(PARAGLIDING))
+
+    found = grounding.violations("The suitability score for paragliding is good (100/100).", brief)
+    assert any("paragliding" in v for v in found), found
 
 
 # ------------------------------------- RC2: scuba diving in a coastal city ----

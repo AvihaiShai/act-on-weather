@@ -559,14 +559,24 @@ def ask_for_activity(cov) -> None:
     with middle:
         day = st.date_input("Date", value=first, min_value=first, max_value=last)
     with right:
-        # Every example here has to survive the round trip, or the form shows the
-        # opposite of what it claims. "kite surfing" contains the catalogue
-        # keyword `surfing`, so a question about it was answered from the
-        # catalogue surfing row -- coast-gated and score-capped -- and never
-        # reached the row this form stored. "a picnic" stored `a_picnic` while
-        # the read path resolves the same words to `picnic`, so that row was
-        # unreachable too. These three match no keyword in data/activities.yml
-        # and slugify identically on the write and the read path.
+        # Every example here has to survive the round trip, or the form shows
+        # the opposite of what it claims. Both of the names this placeholder used
+        # to carry failed it, in different ways, and both are now fixed at the
+        # source rather than by choosing different words:
+        #
+        #   "kite surfing" contains the catalogue keyword `surfing`, so a
+        #   question about it was answered from the catalogue surfing row --
+        #   a different activity's number, band and caveat -- and never reached
+        #   the row this form stored. `Router.shadowing_activities` resolves the
+        #   longer name first now, to its own row or to a stated gap.
+        #
+        #   "a picnic" stored `a_picnic` while the read path resolved the same
+        #   words to `picnic`, so that row was unreachable. `schemas.slugify`
+        #   trims the same leading filler on both routes now, from one list.
+        #
+        # These three are kept anyway: they match no keyword in
+        # data/activities.yml, so they exercise the plain path a first-time
+        # reader is most likely to try.
         activity = st.text_input(
             "Activity", placeholder="rock climbing, stargazing, hot air ballooning..."
         )

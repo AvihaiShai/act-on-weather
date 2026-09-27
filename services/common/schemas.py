@@ -16,14 +16,55 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import config
 
-__all__ = ["ValidationError", "PAYLOAD_MODELS", "validate", "slugify"]
+__all__ = [
+    "ValidationError",
+    "PAYLOAD_MODELS",
+    "validate",
+    "slugify",
+    "ACTIVITY_FILLER_WORDS",
+]
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# Words that carry no activity meaning of their own and that a name may open or
+# close with. They are dropped so that one activity has one key, however it was
+# typed.
+#
+# This list lives here, beside `slugify`, because it has to be the SAME list on
+# both routes. The agent's extraction already skipped opening filler -- "is
+# tomorrow a good day for a picnic?" yields the candidate "picnic" -- while the
+# write path slugified the form field verbatim. So `POST /recommendations` with
+# "a picnic" stored `a_picnic`, and the question asking about it looked up
+# `picnic`, found nothing, and reported an activity the user had just had scored
+# as not on record. `services/agent/router.py` imports this name rather than
+# keeping its own copy, so the two lists cannot drift apart again.
+ACTIVITY_FILLER_WORDS: frozenset[str] = frozenset(
+    """
+    a an the some any go going goes gone went do doing does be being been
+    have has had get getting got take taking try trying enjoy enjoying
+    my our your out
+    """.split()
+)
+
 
 def slugify(text: str) -> str:
-    """Free-text activity -> a stable key. 'Fine Dining!' -> 'fine_dining'."""
-    slug = _SLUG_RE.sub("_", text.strip().lower()).strip("_")
+    """Free-text activity -> a stable key. 'Fine Dining!' -> 'fine_dining'.
+
+    Leading and trailing filler is dropped, so "a picnic", "go picnic" and
+    "picnic" are one activity rather than three. Only the ends are trimmed:
+    filler inside a name is part of it ("watch the sunset"), and removing it
+    would merge names that are genuinely different.
+
+    Raises `ValueError` when nothing is left -- "the", "a go" -- which
+    `POST /recommendations` already turns into a 422 rather than storing a row
+    keyed on a filler word.
+    """
+    words = [word for word in _SLUG_RE.split(text.strip().lower()) if word]
+    while words and words[0] in ACTIVITY_FILLER_WORDS:
+        words.pop(0)
+    while words and words[-1] in ACTIVITY_FILLER_WORDS:
+        words.pop()
+    slug = "_".join(words)
     if not slug:
         raise ValueError("activity is empty after normalisation")
     return slug[:64]

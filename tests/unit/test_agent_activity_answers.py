@@ -511,15 +511,152 @@ def test_a_phrase_keyword_still_answers_about_its_catalogue_activity(monkeypatch
     assert "- 2026-10-06: Hiking is good (74/100)." in response["answer"]
 
 
-def test_a_custom_name_with_no_stored_row_keeps_the_catalogue_answer(monkeypatch, stub):
-    """The documented limit of this repair, pinned so it is not mistaken for a
-    fix. With no `kite_surfing` row anywhere, the question still resolves to the
-    catalogue's `surfing`. Narrowing it would take masking a phrase that has no
-    rows of its own, which is exactly what breaks the case above."""
-    route, _rows, _asked = stub
-    result, _response = ask(monkeypatch, route, KITE_SURFING)
+def test_a_custom_name_with_no_stored_row_is_a_gap_not_the_catalogue_answer(monkeypatch, stub):
+    """The live demo failure, and the half the first repair left open.
 
-    assert result.resolution.activities == ["surfing"]
+    `aow-demo` on efaec14 answered "is tomorrow a good day for kite surfing in
+    Lisbon?" with "Surfing is fair (69/100)" and one retrieved row. Nothing said
+    kite surfing was not on record. That is worse than a refusal precisely
+    because the number, the band and the sea caveat were all genuine -- they
+    simply belonged to a different activity.
+
+    The earlier repair fixed it only when a `kite_surfing` row already existed.
+    The live failure had none, which is the ordinary case: a reviewer types the
+    UI's own placeholder and nobody has requested a score for it.
+    """
+    route, _rows, _asked = stub
+    result, response = ask(monkeypatch, route, KITE_SURFING)
+
+    assert result.resolution.activities == []
+    assert result.resolution.unknown_activities == ["kite_surfing"]
+    answer = response["answer"]
+    assert "kite surfing: no suitability score on record." in answer, answer
+    # The substituted answer, in every form it took.
+    assert "69/100" not in answer
+    assert "Surfing is fair" not in answer
+    assert "Surfing" not in answer
+    # And rendered in code, so there is no wording for the model to invent.
+    assert response["llm_called"] is False
+
+
+def test_an_unscored_named_activity_retrieves_no_catalogue_rows(stub):
+    """The mechanism under the answer above, and the one the live transcript
+    measured directly: `rows_used.recommendations` was 18 -- one row per
+    catalogue activity, none of them the activity asked about. A model handed
+    that list has eighteen numbers to pick from and no row that says no."""
+    route, _rows, _asked = stub
+    result = route.retrieve(KITE_SURFING)
+
+    assert result.recommendations == []
+    assert result.resolution.unknown_activities == ["kite_surfing"]
+
+
+def test_the_short_noun_is_answered_in_code_from_its_gap(monkeypatch, stub):
+    """The other live failure, on the same mechanism. Reproduced 3/3 on
+    `aow-demo`: "is tomorrow a good day to ski in Reykjavik?" was answered
+    "tomorrow is a good day to ski ... based on the stored data", with no `ski`
+    row anywhere and 18 unrelated rows retrieved. The fabrication was the
+    VERDICT, not a number, so a check forbidding a digit beside the noun would
+    have passed it.
+
+    The model is now not called at all on this route, which is what makes the
+    failure unreachable rather than merely guarded against.
+    """
+    route, _rows, _asked = stub
+    result, response = ask(monkeypatch, route, SKI)
+
+    assert result.recommendations == []
+    assert response["llm_called"] is False
+    answer = response["answer"]
+    assert "ski: no suitability score on record." in answer, answer
+    assert "good day to ski" not in answer.lower()
+    # The heading may not describe a list of gaps as stored suitability.
+    assert answer.startswith("I hold no suitability score for what you asked about in Reykjavik:")
+
+
+@pytest.mark.parametrize(
+    ("phrase", "activity", "line"),
+    [
+        ("a long walk", "hiking", "- 2026-10-06: Hiking is good (74/100)."),
+        ("walking tour", "sightseeing", None),
+        ("sea swim", "swimming", None),
+        ("boat ride", "boat_ride", None),
+        ("street market", "farmers_market", None),
+        ("farmers market", "farmers_market", None),
+        ("outdoor workout", "outdoor_workout", None),
+    ],
+)
+def test_a_multi_word_catalogue_keyword_still_answers_about_its_own_activity(
+    monkeypatch, stub, phrase, activity, line
+):
+    """The bound on the repair, and the reason it keys on the keyword list
+    rather than on whether rows exist.
+
+    Every phrase here contains a shorter keyword as a whole word -- "long walk"
+    contains "walk", "walking tour" contains "walking", "sea swim" contains
+    "swim" -- so every one of them reaches the shadow probe. Each is also a
+    catalogue keyword in its own right, which is what sends it back to the
+    keyword loop. Masking them instead would lose their activity and print
+    "long walk: not on record" where hiking's score belongs.
+    """
+    route, _rows, _asked = stub
+    result, response = ask(monkeypatch, route, f"Is tomorrow a good day for {phrase} in Tel Aviv?")
+
+    # `in`, not `==`: "walking tour" carries two catalogue keywords ("walking"
+    # is hiking's) and has always resolved both. That ambiguity predates this
+    # repair and is untouched by it -- what matters here is that the phrase's
+    # own activity survives and that nothing is reported as a gap.
+    assert activity in result.resolution.activities, phrase
+    assert result.resolution.unknown_activities == [], phrase
+    if line:
+        assert line in response["answer"]
+
+
+def test_the_multi_word_keywords_really_do_shadow_a_shorter_one(stub):
+    """The premise of the test above, asserted rather than assumed. If the
+    catalogue ever stopped carrying both the long and the short form, the
+    parametrisation would be passing for the wrong reason."""
+    route, _rows, _asked = stub
+
+    for phrase in ("long walk", "walking tour", "sea swim", "boat ride", "street market"):
+        assert route._shadows_a_keyword(phrase), phrase
+        assert router.slugify(phrase) in route.keyword_slugs, phrase
+    # And the name that must NOT be treated as one.
+    assert route._shadows_a_keyword("kite surfing")
+    assert router.slugify("kite surfing") not in route.keyword_slugs
+
+
+def test_a_name_that_shadows_a_keyword_and_is_stored_still_wins(monkeypatch, stub):
+    """The first repair, unchanged by the second: a stored row for the longer
+    name is answered from that row, not from the keyword inside it."""
+    route, rows, _asked = stub
+    rows.extend(
+        verdict_row(day, "kite_surfing", "Kite surfing", 42, "poor", requested=True)
+        for day in STORED
+    )
+    result, response = ask(monkeypatch, route, KITE_SURFING)
+
+    assert result.resolution.activities == ["kite_surfing"]
+    assert result.resolution.unknown_activities == []
+    assert "- 2026-10-06: Kite surfing is poor (42/100)." in response["answer"]
+
+
+def test_the_cost_of_the_repair_is_a_gap_and_never_a_borrowed_score(monkeypatch, stub):
+    """Recorded as a decision, not discovered later as a defect.
+
+    "a long run" is not one of running's keywords, so under this repair it is
+    reported as not on record rather than answered with running's score. That is
+    the direction this project takes everywhere -- an honest gap over a borrowed
+    figure -- and it is the same judgement that makes "kite surfing" a gap. What
+    must never happen is the other outcome: a number that belongs to a different
+    activity, presented as the answer.
+    """
+    route, _rows, _asked = stub
+    result, response = ask(monkeypatch, route, "Is tomorrow a good day for a long run in Tel Aviv?")
+
+    assert result.resolution.activities == []
+    assert result.resolution.unknown_activities == ["long_run"]
+    assert "long run: no suitability score on record." in response["answer"]
 
 
 def test_open_wording_keeps_its_ordinary_answer(monkeypatch, stub):
