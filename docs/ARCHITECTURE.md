@@ -275,7 +275,24 @@ it has no separate architectural role.
   in `/coverage`, and the mark is carried across a `user_data.wipe` rather than
   replayed away. The row stays, with its source, its as-of and its history,
   because a withdrawal that can be read back is worth more than a row that
-  silently disappeared. There is no un-retract route by design.
+  silently disappeared.
+
+  Since migration 010 the decision is written to its own table,
+  `record_retractions`, **before** it is applied to anything, and the mark on the
+  row is derived from that ledger. This is what makes arrival order stop
+  mattering: a withdrawal that reaches an install before the record it names is
+  no longer spent against an absent row, and the record is marked as it arrives
+  (`upsert_by_id` → `apply_recorded_retraction`). The ledger is deliberately not
+  one of the tables `wipe_business_rows()` deletes, and the wipe's retraction
+  pass restores decisions rather than revising them, so a rebuild cannot
+  republish a withdrawn record or revert a corrected one. The two statements are
+  correct together only under a single consumer process; nothing enforces that,
+  and 010's header says so.
+
+  There is no un-retract route by design. Reinstating a record takes a migration
+  numbered above 010 that, in one transaction, clears the row's mark **and**
+  deletes its ledger entry — either half on its own is undone, by the ledger on
+  the next message or by 010's backfill on the next boot.
 - **Meaning of a score:** A weather score is an estimate from rules. It does
   not establish that a beach is safe to swim at, a venue is open, or an event
   still has tickets. Plans only name places and events present in stored rows.

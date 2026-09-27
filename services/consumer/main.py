@@ -326,9 +326,17 @@ def apply_recorded_retraction(cur: psycopg.Cursor, table: str, row_id: str) -> N
         {"entity": table, "id": row_id},
     )
     if cur.rowcount:
-        log.warning(
-            "%s %s was withdrawn before this install held it; applying the "
-            "recorded retraction on arrival",
+        # Deliberately `info`, and deliberately not "before this install held
+        # it". Both halves used to be wrong. This fires on the designed path --
+        # the ledger is the durable half of the mechanism and the mark is
+        # derived from it -- and it fires once per withdrawn record on every
+        # `user_data.wipe`, where the row is one this install held and had
+        # marked seconds earlier, before the rebuild deleted it. A burst of
+        # warnings claiming the opposite is how a routine rebuild came to look
+        # like an incident. The wording below is true of both arrivals.
+        log.info(
+            "applied the recorded withdrawal of %s %s: the row was just written "
+            "and the ledger holds a decision for it",
             table,
             row_id,
         )
@@ -734,7 +742,9 @@ def delete_itinerary(cur: psycopg.Cursor, p: schemas.ItineraryDelete) -> None:
 HANDLERS[config.RK_ITINERARY_DELETE] = delete_itinerary
 
 
-def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
+def apply_retraction(
+    cur: psycopg.Cursor, p: schemas.RecordRetraction, *, replay: bool = False
+) -> None:
     """Withdraw one collected record from the published output (migration 009).
 
     An UPDATE, not a DELETE: the writer holds no DELETE grant on these tables
@@ -763,20 +773,36 @@ def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
     retraction a silent republish once its target finally arrived. The ledger
     is the durable half of the mechanism and the mark on the row is derived
     from it -- see migration 010 and `apply_recorded_retraction`.
+
+    `replay=True` is the rebuild, and it is a different thing from a delivery.
+    `wipe_user_data` re-plays every collected envelope the ingestor ever
+    accepted, which includes retractions that have since been CORRECTED through
+    `POST /records/.../retract`. An api correction is excluded from the replay
+    set (`source <> 'api'`), so replaying the older curated envelope as though
+    it were news overwrote the corrected reason and author in both the ledger
+    and the row, silently reverting a deliberate operator decision to wording
+    that had already been withdrawn. A rebuild must restore state, never revise
+    it, so on that path the ledger is written only where it has no entry at all
+    and the row is marked FROM the ledger rather than from the envelope.
     """
     if p.entity not in RETRACTABLE:
         raise Poison(f"cannot retract {p.entity}: only {sorted(RETRACTABLE)} are collected records")
-    # The ledger first, because it is the half that has to survive. Its
-    # conflict clause mirrors the row's exactly: `retracted_at` is absent from
-    # the SET list, so the first decision date stands however often this is
-    # replayed, and the reason and the author can still be corrected.
+    # The ledger first, because it is the half that has to survive. On a
+    # delivery the conflict clause mirrors the row's exactly: `retracted_at` is
+    # absent from the SET list, so the first decision date stands however often
+    # this is replayed, and the reason and the author can still be corrected. On
+    # a rebuild nothing is corrected -- see `replay` in the docstring.
+    conflict = (
+        " ON CONFLICT (entity, entity_id) DO NOTHING"
+        if replay
+        else " ON CONFLICT (entity, entity_id) DO UPDATE SET"
+        "   retraction_reason = EXCLUDED.retraction_reason,"
+        "   retracted_by = EXCLUDED.retracted_by"
+    )
     cur.execute(
         "INSERT INTO record_retractions"
         " (entity, entity_id, retracted_at, retraction_reason, retracted_by)"
-        " VALUES (%(entity)s, %(id)s, %(at)s, %(reason)s, %(by)s)"
-        " ON CONFLICT (entity, entity_id) DO UPDATE SET"
-        "   retraction_reason = EXCLUDED.retraction_reason,"
-        "   retracted_by = EXCLUDED.retracted_by",
+        " VALUES (%(entity)s, %(id)s, %(at)s, %(reason)s, %(by)s)" + conflict,
         {
             "entity": p.entity,
             "id": p.entity_id,
@@ -785,6 +811,14 @@ def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
             "by": p.retracted_by,
         },
     )
+    if replay:
+        # The row is marked from whatever the ledger now holds, which is the
+        # corrected decision if there is one and this envelope's if there is
+        # not. Pass 1 of the rebuild has usually done this already; this covers
+        # a record that is in the table without having come through
+        # `upsert_by_id` on this rebuild.
+        apply_recorded_retraction(cur, p.entity, p.entity_id)
+        return
     cur.execute(
         f"UPDATE {p.entity} SET retracted_at = COALESCE(retracted_at, %(at)s),"
         " retraction_reason = %(reason)s, retracted_by = %(by)s"
@@ -796,10 +830,18 @@ def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
     if cur.rowcount:
         log.info("retracted %s %s: %s", p.entity, p.entity_id, p.reason)
     else:
+        # Three ways to get here and the message has to be true of all of them:
+        # this install holds no such row, or it holds one already withdrawn for
+        # exactly this reason and author, or the row is marked with a CORRECTED
+        # reason that this older envelope must not overwrite. The previous
+        # wording promised the decision "will be applied if the record arrives",
+        # which is false in the second and third cases -- the record is here and
+        # is already withdrawn.
         log.warning(
-            "retraction for %s %s marked no row: no such row here, or already "
-            "withdrawn for the same reason. The decision is recorded and will "
-            "be applied if the record arrives",
+            "retraction for %s %s marked no row: either this install holds no "
+            "such record, or the row already carries this withdrawal. The "
+            "decision is in record_retractions either way, and is applied to "
+            "the row whenever the record is written",
             p.entity,
             p.entity_id,
         )
@@ -901,8 +943,11 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
         else:
             HANDLERS[routing_key](cur, payload)
 
-    for routing_key, payload in retractions:
-        HANDLERS[routing_key](cur, payload)
+    for _routing_key, payload in retractions:
+        # `apply_retraction` directly rather than through `HANDLERS`, because
+        # this pass needs `replay=True`: a rebuild restores the decisions this
+        # install already holds and must not revise one. See the handler.
+        apply_retraction(cur, payload, replay=True)
 
     restored = 0
     for entity, rows in held.items():

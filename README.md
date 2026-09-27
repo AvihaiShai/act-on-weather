@@ -821,15 +821,33 @@ tunnel has every route.
   ingestor's with no ordering relationship between them, and a record that
   dead-letters is stored only once an operator redrives it. It is
   forward-looking: a withdrawal that was already spent this way before migration
-  010 left no trace in the database and has to be re-issued, which works, because
-  changing the reason, the author or the decision date mints a new message.
+  010 left no trace in the database and has to be re-issued. Both routes can
+  re-issue one, and they key on different things — `POST /records/.../retract`
+  mints a fresh id every time, while the curated list keys on entity, id, reason
+  and author, so editing a line's reason or author re-issues it and editing only
+  its decision date does not. A rebuild restores those decisions and never
+  revises one: a withdrawal corrected through the API is not reverted by the
+  older curated envelope the wipe replays.
 
   The row itself is kept, with its source, its as-of and its
   history, because "withdrawn on the 27th, the venue cancelled it" is a stronger
   statement than a row that silently vanished. There is deliberately **no
-  un-retract route**: reinstating something means putting the corrected listing
-  back in the snapshot with a newer as-of. One line, `POST
-  /records/{entity}/{id}/retract`, does the same thing for a single install.
+  un-retract route**. Reinstating something takes a migration numbered above 010
+  that puts the corrected listing back in the snapshot under a newer as-of and,
+  **in one transaction, both clears the row's mark and deletes its
+  `record_retractions` entry**. Doing only one half fails silently in either
+  direction: the ledger re-marks a cleared row on the next message, and 010's
+  backfill recreates a deleted entry from a still-marked row on the next boot.
+  The procedure is written out in `db/migrations/010_retraction_ledger.sql`.
+  One line, `POST /records/{entity}/{id}/retract`, withdraws a record for a
+  single install.
+
+  **Gated in CI.** `retraction-drill` runs `scripts/retraction-drill.sh` against
+  a real Postgres on its own disposable Compose project, covering both arrival
+  orders, the rebuild, and a correction surviving a second rebuild. Before that
+  job existed the ledger was exercised only empty: `data/retractions.jsonl` is
+  zero bytes, no CI step withdrew anything, and the three
+  `tests/integration/retraction_*.py` files were collected by nothing.
 * **No physical air-gap proof.** Three claims sit near each other here and are
   not the same claim, so they are kept apart on purpose:
   * **The archive is self-contained.** `scripts/verify-bundle-images.sh` checks

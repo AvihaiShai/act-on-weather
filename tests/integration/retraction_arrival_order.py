@@ -26,13 +26,16 @@ What this phase proves:
   3. it is absent from ``/events`` and from ``include_expired``, the read an
      operator uses to see what the freshness filter hid, which must not become a
      back door into withdrawn content;
-  4. a rebuild replays it back into the table and it is STILL absent.
+  4. a rebuild replays it back into the table and it is STILL absent;
+  5. a correction made to the wording through the API survives a SECOND rebuild,
+     rather than being reverted to the older curated envelope that the replay
+     carries.
 
 Step 1 is the one that fails on the old code: the row appears, published, and
 every read serves it.
 
 Destructive: ``POST /user-data/wipe`` deletes every collected row and rebuilds
-them from the outbox. It takes no backup.
+them from the outbox, twice. It takes no backup.
 """
 
 from __future__ import annotations
@@ -115,6 +118,25 @@ def ledger_row(entity: str, entity_id: str):
         ).fetchone()
 
 
+def stored_event(entity_id: str):
+    """The row itself, read directly, because a withdrawn row is served by no
+    published route at all -- that is the whole point of withdrawing it.
+
+    `history_of` used to stand in for this and could not. `record_history` is
+    written by the AFTER UPDATE triggers only, so a row that is INSERTed files no
+    history; and `wipe_user_data` deletes `record_history` as its very last
+    statement, after both replay passes. So after a rebuild the history of this
+    row is empty by construction and waiting for it to be non-empty could never
+    return. The property actually worth proving is this one: the row is back in
+    the table, and it is back withdrawn.
+    """
+    with connect(config.reader_dsn(), autocommit=True) as observer:
+        return observer.execute(
+            "SELECT id, retracted_at, retraction_reason, retracted_by" " FROM events WHERE id = %s",
+            (entity_id,),
+        ).fetchone()
+
+
 # ----------------------------- 0. the drill really is in the state claimed ----
 
 # Absence is what every assertion below looks for, and absence is also what an
@@ -182,10 +204,18 @@ print(f"absent from /events, from include_expired, and from the {CITY} counts")
 post("/user-data/wipe", {"confirm": "WIPE"})
 wait_until(lambda: not history_of("events", EVENT_ID), "the rebuild to clear record_history")
 wait_until(lambda: len(events(include_expired=True)) > 1, "the rebuild to restore the event feed")
-wait_until(
-    lambda: history_of("events", EVENT_ID),
+# Read the row itself. Waiting on `record_history` here was unreachable -- see
+# `stored_event` -- so this step timed out at 180 s rather than proving anything.
+replayed = wait_until(
+    lambda: stored_event(EVENT_ID),
     "the rebuild to replay the withdrawn listing back into the table",
 )
+assert replayed["retracted_at"] is not None, (
+    "the rebuild replayed the record but did not re-mark it. It is in the table "
+    "and nothing is withdrawing it -- the absence assertions below would then be "
+    "measuring the freshness filter, not the withdrawal."
+)
+print(f"{EVENT_ID} was replayed into the table and re-marked from the ledger")
 
 assert EVENT_ID not in ids(events()), (
     "the rebuild republished the withdrawn record. A wipe replays collected "
@@ -202,5 +232,56 @@ assert after["retracted_at"] == DECIDED_AT, (
     f"{DECIDED_AT.isoformat()} -> {after['retracted_at'].isoformat()}"
 )
 
+
+# ------------- 5. a correction made here is not reverted by a rebuild ----
+
+# The second wipe, and a different property from the first. `wipe_user_data`
+# replays every collected envelope the INGESTOR accepted and excludes the API's
+# own (`source <> 'api'`), so an operator who corrects the wording of a
+# withdrawal through the API and then rebuilds used to get the older curated
+# envelope replayed over the top of it -- reverting both the ledger and the row
+# to a reason that had already been withdrawn, with nothing said.
+#
+# A rebuild restores state; it does not revise it. That is why the replay pass
+# writes the ledger only where it has no entry and marks the row FROM the
+# ledger. This step is what would catch that coming undone.
+CORRECTED = f"{REASON} (corrected during the drill)"
+post(
+    f"/records/events/{EVENT_ID}/retract",
+    {"reason": CORRECTED, "retracted_by": "drill-operator"},
+)
+
+
+def corrected_in_ledger():
+    row = ledger_row("events", EVENT_ID)
+    return bool(row) and row["retraction_reason"] == CORRECTED
+
+
+wait_until(corrected_in_ledger, "the corrected withdrawal to reach the ledger")
+print(f"the withdrawal was corrected to: {CORRECTED}")
+
+post("/user-data/wipe", {"confirm": "WIPE"})
+wait_until(lambda: not history_of("events", EVENT_ID), "the second rebuild to clear history")
+wait_until(lambda: len(events(include_expired=True)) > 1, "the second rebuild to restore the feed")
+rebuilt_row = wait_until(lambda: stored_event(EVENT_ID), "the second rebuild to replay the row")
+
+rebuilt = ledger_row("events", EVENT_ID)
+assert rebuilt["retraction_reason"] == CORRECTED, (
+    "the rebuild reverted the corrected withdrawal in the ledger: "
+    f"{CORRECTED!r} -> {rebuilt['retraction_reason']!r}. The older curated "
+    "envelope was replayed over a correction the operator had already made."
+)
+assert rebuilt["retracted_by"] == "drill-operator", rebuilt
+assert rebuilt_row["retraction_reason"] == CORRECTED, (
+    "the rebuild reverted the corrected withdrawal on the row itself: "
+    f"{CORRECTED!r} -> {rebuilt_row['retraction_reason']!r}"
+)
+assert (
+    rebuilt["retracted_at"] == DECIDED_AT
+), "correcting the wording moved the decision date, which it must never do"
+assert EVENT_ID not in ids(events(include_expired=True)), "still withdrawn, after both rebuilds"
+print("the correction survived the rebuild, on the ledger and on the row")
+
 print("OK: a record withdrawn before this install held it stayed withdrawn when it")
-print("    arrived, and stayed withdrawn across a full rebuild from the outbox.")
+print("    arrived, stayed withdrawn across a full rebuild from the outbox, and a")
+print("    correction to its wording was not reverted by a second rebuild.")

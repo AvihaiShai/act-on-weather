@@ -58,7 +58,15 @@ envelope = Envelope.create(
         "is_sample": False,
         "as_of": now.isoformat(),
         "checked_at": now.isoformat(),
-        "valid_until": None,
+        # Required, and it was `None`. `schemas.Event.valid_until` is a plain
+        # `datetime` under `extra="forbid"`, so the envelope was accepted by the
+        # outbox -- which validates nothing -- published, and then rejected by
+        # the consumer as `Poison` and dead-lettered. Phase 2 still printed a
+        # message_id and exited 0, and phase 3 then waited 180 s for a record
+        # that was never going to be stored. Derived from the same helper both
+        # real producers call, so the injected listing expires by the shipped
+        # policy rather than by a literal invented here.
+        "valid_until": config.event_valid_until(now).isoformat(),
     },
     source="drill",
     observed_at=now,

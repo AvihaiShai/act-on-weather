@@ -616,8 +616,14 @@ def retract_record(entity: str, entity_id: str, body: RetractIn) -> dict[str, An
 
     There is no un-retract route. Reinstating a record is a decision somebody
     should have to make deliberately and record, not a button next to the one
-    that withdrew it; today it means putting the corrected listing back in the
-    snapshot with a newer as-of and clearing the mark in a migration.
+    that withdrew it. Since migration 010 it takes two statements rather than
+    one, and doing only the first silently fails: clearing the row's mark leaves
+    the entry in `record_retractions`, and the next collected message for that
+    id -- or the next `user_data.wipe` -- re-marks the row straight out of the
+    ledger. The procedure is one migration, numbered above 010, that clears the
+    mark AND deletes the ledger row in one transaction, with the corrected
+    listing back in the snapshot under a newer as-of. It is written out in full
+    in `db/migrations/010_retraction_ledger.sql`.
     """
     message_id = accept(
         config.RK_RETRACT,
