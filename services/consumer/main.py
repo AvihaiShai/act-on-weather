@@ -289,7 +289,7 @@ RETRACTABLE = {"events", "places", "facts"}
 
 
 def apply_recorded_retraction(cur: psycopg.Cursor, table: str, row_id: str) -> None:
-    """Mark a row that was withdrawn before this install held it (migration 010).
+    """Mark a row from the retraction ledger as the row is written (migration 010).
 
     A `record.retract` can arrive before the record it names, and often does:
     the curated list is applied on every boot against whatever the install has
@@ -747,9 +747,11 @@ def apply_retraction(
 ) -> None:
     """Withdraw one collected record from the published output (migration 009).
 
-    An UPDATE, not a DELETE: the writer holds no DELETE grant on these tables
-    and is not being given one. The row keeps its source, its as-of and its
-    history, and the `_bump`/`_hist` triggers file the withdrawal as an
+    An UPDATE, not a DELETE, and nothing here widens what the writer may delete.
+    (It does hold a table-wide DELETE on `events`, which `enforce_event_mode()`
+    needs for the sample purge and which its own `WHERE is_sample` confines; it
+    holds none on `places` or `facts`.) The row keeps its source, its as-of and
+    its history, and the `_bump`/`_hist` triggers file the withdrawal as an
     ordinary revision, so `record_history` shows exactly when it happened.
 
     The decision date is never moved. `COALESCE` keeps the first

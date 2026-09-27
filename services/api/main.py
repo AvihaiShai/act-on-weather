@@ -430,6 +430,17 @@ def request_recommendation(body: RecommendationRequestIn) -> dict[str, Any]:
         slug = schemas.slugify(body.activity)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    # The floor is checked on the SLUG, not on the text. `min_length=2` above
+    # applies before `slugify` trims leading and trailing filler, so "a x"
+    # satisfied it and stored a row under `x` -- one character, which the
+    # agent's extraction discards as too short. The row was then unreachable by
+    # the question that asked for it. One constant, checked on both routes.
+    if len(slug) < schemas.MIN_ACTIVITY_SLUG_CHARS:
+        raise HTTPException(
+            422,
+            f"activity is only {len(slug)} character(s) after normalisation "
+            f"({slug!r}); at least {schemas.MIN_ACTIVITY_SLUG_CHARS} are needed",
+        )
     message_id = accept(
         config.RK_RECOMMENDATION_REQUEST,
         {

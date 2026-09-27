@@ -26,7 +26,7 @@ from typing import Any
 
 import yaml
 
-from ..common import config, queries
+from ..common import config, queries, schemas
 from ..common.schemas import ACTIVITY_FILLER_WORDS, slugify
 from . import dates, grounding
 
@@ -270,10 +270,11 @@ NOT_AN_ACTIVITY: frozenset[str] = frozenset(
 # jumping" and "hot air ballooning", and stops well short of a clause.
 MAX_CANDIDATE_WORDS = 3
 
-# The shortest slug that may be treated as an activity, matching the floor the
-# write path already enforces -- `RecommendationRequestIn.activity` in
-# services/api/main.py carries `min_length=2`, so two characters is exactly what
-# a traveller is allowed to request a score for.
+# The shortest slug that may be treated as an activity. Imported, not declared:
+# `POST /recommendations` checks the SAME constant against the SAME slug, so a
+# row the write path is willing to store is always one this path is willing to
+# look up. Two separate floors is how "a x" came to be stored as `x` and then
+# discarded here as too short.
 #
 # It was 4, with no comment and no test. That silently discarded every
 # three-letter noun -- "ski", "gym", "spa", "bbq" -- and discarding is the one
@@ -284,7 +285,7 @@ MAX_CANDIDATE_WORDS = 3
 # grounding check is armed. "Is tomorrow a good day to ski in Reykjavik?" was
 # answered from `beach_day`'s row. At 2 the noun reaches `unknown_activities`
 # instead, which is the existing, tested path for a noun with no score.
-MIN_ACTIVITY_SLUG_CHARS = 2
+MIN_ACTIVITY_SLUG_CHARS = schemas.MIN_ACTIVITY_SLUG_CHARS
 
 
 # Deliberately not a synonym list the model can extend: these are the only
@@ -355,6 +356,18 @@ def load_activity_keywords(path) -> dict[str, list[str]]:
         key: sorted(cfg.get("keywords") or [], key=len, reverse=True)
         for key, cfg in activities.items()
     }
+
+
+def load_distinct_names(path) -> frozenset[str]:
+    """`distinct_names` from activities.yml -- names that contain a catalogue
+    keyword as a whole word and are NOT that activity.
+
+    Declared data rather than a rule, and the file says why at length. Absent or
+    empty is legal and means the old behaviour.
+    """
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    return frozenset(str(name).strip().lower() for name in (doc.get("distinct_names") or []))
 
 
 def _candidate_phrases(text: str) -> list[str]:
@@ -433,6 +446,9 @@ class Resolution:
     event_categories: list[str] = field(default_factory=list)
     # "where can I surf?" asks for a place, not a verdict.
     asks_where: bool = False
+    # Whether the question matched a weather intent word ITSELF, before the
+    # weather+activities default widened `intents`. See `resolve`.
+    weather_asked: bool = False
     # True when the question named a date, or asked about timing or conditions.
     # A question that asks only `where` gets no weather in its answer, because
     # it did not ask for any.
@@ -510,18 +526,21 @@ class Router:
         self.conn = conn
         self.interests = load_interests(config.DATA_DIR / "interests.yml")
         self.activity_keywords = load_activity_keywords(config.DATA_DIR / "activities.yml")
-        # Every catalogue keyword under the one slug rule both routes use. This
-        # is what tells "a long walk" -- hiking's own keyword, handed back by the
-        # extraction as the candidate "long walk" -- apart from "kite surfing",
-        # which no catalogue entry claims. `slugify` trims the leading article
-        # from the keyword and from the candidate alike, so the two forms meet:
-        # both become `long_walk`. Read by `shadowing_activities`.
-        self.keyword_slugs = frozenset(
-            slugify(word)
-            for keywords in self.activity_keywords.values()
-            for word in keywords
-            if word.strip()
-        )
+        # Names the catalogue declares are NOT the activity whose keyword they
+        # carry -- "kite surfing" is not surfing. Slugs, so a question and the
+        # write path meet on one key. Read by `shadowing_activities`.
+        #
+        # `slugify` raises on a name that is nothing but filler. Every other call
+        # site is guarded; this one runs in `__init__`, and a `Router` is built
+        # per request, so an unguarded raise here would turn one bad line in
+        # operator-editable data into a 500 on every question. A bad entry is
+        # skipped and logged instead.
+        self.distinct_name_slugs = set()
+        for name in load_distinct_names(config.DATA_DIR / "activities.yml"):
+            try:
+                self.distinct_name_slugs.add(slugify(name))
+            except ValueError:
+                log.warning("distinct_names entry %r is empty after normalisation; ignored", name)
 
     # -- a typed activity --------------------------------------------------
     def _rejected_candidate(self, phrase: str, resolution: Resolution) -> bool:
@@ -593,44 +612,47 @@ class Router:
         one -- with the number, the band and the sea caveat all genuine and all
         belonging to something the user had not asked about.
 
-        Two conditions admit a phrase, and between them they are the whole of
-        this method's judgement:
+        Two things admit a phrase, and between them they are the whole of this
+        method's judgement:
 
         1. It contains a catalogue keyword as a whole word without BEING one
            (`_shadows_a_keyword`), so an ordinary "is it good for surfing?"
            never reaches here at all.
-        2. Its own slug is not itself a catalogue keyword (`_keyword_slugs`).
-           This is what protects the multi-word keywords. Hiking's "a long walk"
-           yields the candidate "long walk", which contains "walk"; sightseeing's
-           "walking tour" contains "walking"; swimming's "sea swim" contains
-           "swim". Every one of them is a keyword in its own right, so every one
-           of them is left to the keyword loop and still answers about its own
-           activity.
+        2. EITHER the catalogue declares it a distinct name (`distinct_names` in
+           data/activities.yml), OR this city already has a stored row under its
+           own slug.
 
-        What a phrase that passes both resolves TO depends on the data, and
-        either way the catalogue's own answer is suppressed:
+        The second condition is the one that had to be got right, and the
+        obvious general rule is wrong. Treating every longer phrase containing a
+        keyword as a different activity was tried: it makes "a museum visit", "a
+        football match" and "a market visit" answer "not on record", which is a
+        FALSE statement about rows this system holds and scores every day --
+        worse than the substitution it was meant to fix, because a substitution
+        is at least a real number. "kite surfing" and "a surfing lesson" cannot
+        be told apart by shape, so the catalogue declares which is which.
+
+        What an admitted phrase resolves TO depends on the data, and either way
+        the catalogue's own answer is suppressed:
 
         * stored rows for this city and window -> its own slug joins
           `activities`, and the answer reports that activity's score.
         * no rows -> `unknown_activities`, and the answer states the gap.
 
-        The second half is the correction. It used to require stored rows and
-        silently fall through to the catalogue otherwise, which is precisely the
+        The second bullet is the correction. Admission used to REQUIRE stored
+        rows and fall through to the catalogue otherwise, which is exactly the
         live failure: "kite surfing in Lisbon", with nothing ever requested for
-        it, was answered "Surfing is fair (69/100)". A name the catalogue does
-        not hold is now reported as not on record whether or not somebody
-        happened to request a score for it earlier -- the same answer the
-        stored and unstored cases deserve, and never another activity's number.
+        it, answered "Surfing is fair (69/100)". A declared name now answers the
+        same way whether or not somebody happened to request a score for it
+        earlier, and never with another activity's number.
 
-        The cost is stated rather than hidden: "a long run" is not one of
-        running's keywords, so it is now a gap instead of running's score. That
-        direction is the one this project takes everywhere -- an honest "not on
-        record" over a borrowed figure -- and `tests/unit/test_agent_activity_answers.py`
-        pins it as a decision rather than leaving it to be rediscovered.
+        The cost is that `distinct_names` is not exhaustive: a name that belongs
+        on it and is not there still answers with the catalogue's score, as
+        before. That is a bounded, additive gap rather than a rule that can lie
+        about what is stored.
 
         Read-only, and fail-soft through `_stored_rows`: a probe that cannot be
-        answered files the noun as unscored, which states a gap rather than
-        inventing a verdict.
+        answered leaves a declared name as unscored, which states a gap rather
+        than inventing a verdict.
         """
         phrases: list[str] = []
         for phrase in _candidate_phrases(resolution.question.lower()):
@@ -644,12 +666,17 @@ class Router:
                 continue
             if len(slug) < MIN_ACTIVITY_SLUG_CHARS or slug in resolution.activities:
                 continue
-            if slug in self.activity_keywords or slug in self.keyword_slugs:
+            if slug in self.activity_keywords:
                 continue
             if self._stored_rows(resolution, slug):
                 resolution.activities.append(slug)
-            elif slug not in resolution.unknown_activities:
-                resolution.unknown_activities.append(slug)
+            elif slug in self.distinct_name_slugs:
+                if slug not in resolution.unknown_activities:
+                    resolution.unknown_activities.append(slug)
+            else:
+                # Not declared and not stored: leave it to the keyword loop, and
+                # do NOT mask it. This is the ordinary catalogue question.
+                continue
             phrases.append(phrase)
         return phrases
 
@@ -745,6 +772,22 @@ class Router:
         for intent, words in INTENT_WORDS.items():
             if any(_mentions(text, word) for word in words):
                 resolution.intents.append(intent)
+        # Recorded here, before the defaults below widen `intents`. "Is tomorrow
+        # a good day to ski in Reykjavik?" matches no intent word at all and is
+        # then defaulted to ["weather", "activities"], so `"weather" in intents`
+        # cannot tell it apart from "is it raining tomorrow, and good for
+        # stargazing?" -- which really did ask for a forecast and must keep it.
+        # `ask()` reads this, not `intents`, when deciding whether an unscored
+        # activity is the whole of the question.
+        # `grounding.WEATHER_WORDS` as well as the intent words, because the
+        # intent list is narrower: "is it rainy tomorrow and good for
+        # stargazing?" matches no intent word, so it was defaulted into
+        # ["weather", "activities"] and then, on the flag alone, answered about
+        # stargazing with the rain it had retrieved thrown away. It asked about
+        # the rain. Anything naming the weather keeps its forecast.
+        resolution.weather_asked = "weather" in resolution.intents or any(
+            _mentions(text, word) for word in grounding.WEATHER_WORDS
+        )
         # Asking where is asking about places, whatever else the sentence
         # contains. Without this, "where should I go in Rome?" fell through to
         # the weather default below and answered with a forecast.

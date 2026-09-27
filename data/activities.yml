@@ -12,6 +12,10 @@
 #                    agent's router matches on them so it can tell when a
 #                    question asks about an activity it holds no row for,
 #                    and say so instead of letting the model improvise one.
+#                    They are also slugified into `Router.keyword_slugs`, which
+#                    is what keeps a multi-word keyword ("a long walk") from
+#                    being read as a name of its own -- so editing one changes
+#                    how a longer name containing it resolves.
 #   indoor           true -> scored as the inverse of outdoor comfort
 #   interests        which data/interests.yml keys this activity serves. The
 #                    trip planner uses it to weight the day's pick towards
@@ -37,14 +41,18 @@
 #                    old behaviour: the day lists interest-matched places only.
 #   requires_coast   only scored for cities with `coastal: true` in cities.yml.
 #                    A city with no coast gets no row at all, rather than a
-#                    surfing score invented from an inland forecast.
+#                    surfing score invented from an inland forecast. An activity
+#                    a user types has no row here, so it is gated the same way on
+#                    its own name -- see `rules.SEA_WORDS`.
 #   sea_state_unmeasured
 #                    the quality of this activity depends on the water, and
 #                    this system holds no evidence about the water. It ingests
 #                    a land forecast -- temperature, rain, wind, sun, UV -- and
 #                    no wave height, no swell period and no sea temperature
 #                    from any source. Surfing, swimming, fishing and a boat
-#                    ride carry it. A beach day deliberately does not: a day
+#                    ride carry it, as does `rules.GENERIC_SEA_CFG` for an
+#                    activity a user types whose name says water. A beach day
+#                    deliberately does not: a day
 #                    on the sand is a judgement about shore weather, which is
 #                    exactly what is measured. Every answer that shows a score
 #                    for a flagged activity must carry the caveat in
@@ -52,7 +60,8 @@
 #                    how far the city's forecast point is from its coast.
 #   score_ceiling    the highest score this activity may reach, applied in
 #                    rules.score_activity after the penalties and before the
-#                    band. The four flagged above are capped at 69, which is
+#                    band. The four flagged above are capped at 69, and so is
+#                    any typed activity `rules.names_water` matches. 69 is
 #                    one point below the `good` floor in rules.BANDS: an
 #                    activity whose sea conditions are unknown can be reported
 #                    as at best `fair`, and can never be the thing the planner
@@ -87,6 +96,43 @@
 # -- see the surfing block below. The rule is gone rather than retuned,
 # because no threshold on land wind makes it a measurement of swell.
 rule_version: 4
+
+# Names that CONTAIN a catalogue keyword as a whole word but are not that
+# activity. The agent resolves one of these to its own slug -- to its stored row
+# if somebody has requested a score for it, and to a stated gap if nobody has --
+# instead of answering with the catalogue activity whose keyword it carries.
+#
+# Why a list and not a rule. "kite surfing" contains `surfing`, and the live demo
+# answered "is tomorrow a good day for kite surfing in Lisbon?" with "Surfing is
+# fair (69/100)" -- a real number, a real band and a real sea caveat, all
+# belonging to a different activity, with nothing saying kite surfing was not on
+# record. The obvious general rule, "a longer phrase containing a keyword is a
+# different activity", was tried and is wrong: it turns "a museum visit", "a
+# football match" and "a market visit" into "not on record", which is a FALSE
+# statement about rows this system holds and scores every day. There is no
+# reliable way to tell "kite surfing" from "a surfing lesson" by shape, so the
+# distinction is declared here, where it can be read and reviewed, rather than
+# guessed.
+#
+# The cost is that this list is not exhaustive: a name that belongs on it and is
+# not here still answers with the catalogue activity's score, exactly as before.
+# Add one when you find it. Nothing here can invent a score -- an entry only ever
+# redirects to the name's own row or to an honest gap.
+#
+# Each entry must contain a catalogue keyword as a whole word and must not BE
+# one; tests/unit/test_agent_activity_answers.py asserts both.
+#
+# Only multi-word names belong here. "kitesurfing" written as one word contains
+# no catalogue keyword as a whole word -- `surfing` is not a word of it -- so it
+# never reaches this path at all and is already reported as not on record by the
+# ordinary typed-activity route. Listing it would be misleading, and the test
+# above rejects it.
+distinct_names:
+  - kite surfing
+  - wind surfing
+  - body surfing
+  - wild swimming
+  - ice swimming
 
 activities:
 

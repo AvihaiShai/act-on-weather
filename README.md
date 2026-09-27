@@ -504,7 +504,7 @@ and `test_airgap_evidence.py` cover bundle integrity, archive completeness, the
 bundle's image table against the Compose files, the promotion record and the
 evidence-capture tool.
 
-`make verify` runs the four gates that can run locally: `ruff check`,
+`make verify` runs the four cheap gates: `ruff check`,
 `ruff format --check`, the unit tests, and `scripts/snapshot_manifest.py
 --check`. As the script itself puts it, passing it does not promise CI is green;
 failing it promises CI is not.
@@ -523,8 +523,8 @@ failing it promises CI is not.
 | `model-grounding` | release candidates only — `workflow_dispatch`, a `release/*` branch, or the `release-candidate` label | the real model against hand-written rows |
 | `restore-drill` | release candidates only, same condition | a restore after destroying every volume |
 
-`publish-images` needs `build-and-scan` only, so the browser gate runs alongside
-it rather than blocking it.
+`publish-images` needs `build-and-scan` only, so the browser gate and the
+retraction drill run alongside it rather than blocking it.
 
 `.github/workflows/release.yml` is the CD half, on manual dispatch against a
 merged SHA whose CI passed: it re-verifies the published image digests against
@@ -565,6 +565,7 @@ README put the place count at 289 while the snapshot already held 620.
 | `… run --rm demos update` | a correction end to end |
 | `… run --rm demos reenrich` | re-enrichment, including a full model outage |
 | `… run --rm demos backup-restore` (`make backup-restore`) | the backup and restore drill, with its measured RPO and RTO |
+| `make retraction-drill` | both arrival orders of a withdrawal and its record, a rebuild, and a corrected withdrawal surviving a second rebuild — on its own disposable Compose project, which it refuses to run if the name is already taken |
 | `make dlq` / `make redrive` | list and redrive quarantined messages |
 | `make backup` / `make restore DIR=…` | `pg_dump` plus the three outboxes and the broker definitions; restore defaults to an isolated Compose project, and refuses to destroy a target that is the live project or still has containers running unless told to |
 | `make monitor` / `make monitor-down` | start and stop the opt-in Prometheus and Grafana overlay, Grafana at <http://127.0.0.1:3000> |
@@ -695,7 +696,9 @@ tunnel has every route.
   measurement. An activity you name yourself is held to the same cap when its
   name says it happens in water — "scuba diving", "kite surfing", "sea kayaking"
   — and is refused outright for a city with no coast on record, exactly as the
-  four catalogue activities are. That test is a word list
+  five coast-gated catalogue activities are. (Five carry `requires_coast`; the
+  four above carry the 69 ceiling as well, because `beach_day` has no ceiling of
+  its own and there is no number to cap it to.) That test is a word list
   (`rules.SEA_WORDS`) rather than a property of a catalogue row, because a typed
   activity has no catalogue row; it is deliberately not exhaustive, and a word it
   does not know is scored generically as before. **It can only ever lower a score
@@ -718,28 +721,34 @@ tunnel has every route.
   holds notable venues, so the data skews to landmarks. Each row records its own
   source.
 * **A user-entered activity is scored against general outdoor comfort**, not a
-  rule tuned for it — but only when you request it, and the label is not yet on
-  screen. Requesting one through the UI form or `POST /recommendations` scores
-  that city-day with the generic measure and stores the caveat on the row, and
-  `GET /recommendations/{city}` returns both the `requested` flag and the
-  `reasons` that carry it. **The Streamlit UI renders neither, and the agent's
-  answer does not state the generic label**, so today the caveat is visible only
-  in the API response. Asking the agent about an activity that has never been
+  rule tuned for it — under the 69 sea ceiling if its name says water, and not
+  scored at all for an inland city if it does. Only when you request it, and the
+  label is not yet on screen everywhere. Requesting one through the UI form or
+  `POST /recommendations` scores that city-day with the generic measure and
+  stores the caveat on the row, and `GET /recommendations/{city}` returns both
+  the `requested` flag and the `reasons` that carry it. **The Streamlit UI
+  renders neither**, so on screen the caveat is visible only in the API
+  response; the agent's own answer does state it, through `requested_caveat`.
+  Asking the agent about an activity that has never been
   requested is a separate matter: the noun is extracted, slugified with the same
   function the write path uses, and looked up, so an activity with no stored row
   is reported as not on record rather than answered with another activity's
   number, and one that *was* requested earlier answers from its own row. A name
   that carries a catalogue keyword inside it as a whole word — "kite surfing",
-  which contains `surfing` — is resolved on its own terms first and never from
-  the keyword inside it, whether or not a row for it exists. The catalogue's own
-  multi-word keywords are told apart by being keywords: "a long walk" is one of
-  hiking's, so it still answers about hiking. A question whose only named
-  activity has no score is answered in code, from the gap, without the model
-  being called at all. The cost is stated rather than hidden — "a long run" is
-  not one of running's keywords, so it is reported as not on record instead of
-  borrowing running's score, which is the direction this project takes
-  everywhere. Surfacing the generic label in the UI remains
-  [future work](#production-path).
+  which contains `surfing` — is resolved on its own terms and never from the
+  keyword inside it, whether or not a row for it exists, **when the catalogue
+  declares it a distinct name** (`distinct_names` in `data/activities.yml`).
+  That is a declared list rather than a rule, and the file says why at length:
+  the general rule was tried and turns "a museum visit", "a football match" and
+  "a market visit" into "not on record", which is a false statement about rows
+  the system holds and scores every day. Its cost is that the list is not
+  exhaustive — an undeclared name still answers with the catalogue activity's
+  score, as before — and that cost is additive and bounded, where the rule's was
+  a lie about stored data. A question whose only named activity has no score, and
+  that asks nothing else, is answered in code from the gap without the model
+  being called at all; one that also asks about the weather or about *where*
+  keeps its forecast and its places. Surfacing the generic label in the UI
+  remains [future work](#production-path).
 * **The grounding guard is a set of specific checks, not a general proof.**
   `services/agent/grounding.py` validates the model's prose against the typed
   facts and throws away wording that fails, falling back to a deterministic
@@ -833,10 +842,10 @@ tunnel has every route.
   dead-letters is stored only once an operator redrives it. It is
   forward-looking: a withdrawal that was already spent this way before migration
   010 left no trace in the database and has to be re-issued. Both routes can
-  re-issue one, and they key on different things — `POST /records/.../retract`
-  mints a fresh id every time, while the curated list keys on entity, id, reason
-  and author, so editing a line's reason or author re-issues it and editing only
-  its decision date does not. A rebuild restores those decisions and never
+  re-issue one: `POST /records/.../retract` mints a fresh id every time, and the
+  curated list's id covers the entity, the id, the reason, the author and the
+  decision date, so editing any of them re-issues the line. A rebuild restores
+  those decisions and never
   revises one: a withdrawal corrected through the API is not reverted by the
   older curated envelope the wipe replays.
 

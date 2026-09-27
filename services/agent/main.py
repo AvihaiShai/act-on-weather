@@ -160,7 +160,30 @@ def ask(body: AskIn) -> dict[str, Any]:
         base = f"I have no stored records matching that for {result.resolution.city['name']}."
         return respond(result, f"{base} {missing}".strip(), llm_called=False)
 
-    if result.resolution.activities or result.resolution.unknown_activities:
+    # `unknown_activities` reaches the code-rendered route only when the question
+    # is ABOUT the activity and about nothing else. Two exclusions, both found by
+    # asking the questions rather than by reading the branch:
+    #
+    #   `asks_where` -- "where can I go kite surfing in Tel Aviv?" asks for a
+    #   place. Answering it with a heading about suitability scores answers a
+    #   question nobody asked and throws away the places that were retrieved.
+    #   It falls through, as it did before.
+    #
+    #   "weather" in intents -- "what is the weather tomorrow in London, and is
+    #   it good for stargazing?" asks two things. `named_activity_answer` renders
+    #   recommendations and gaps and never touches `result.forecast`, so the
+    #   forecast row was fetched and silently discarded, and the user was told
+    #   only that stargazing is not on record. The model still answers that one,
+    #   with the gap in its brief and grounding check 5 armed on the noun.
+    #
+    # A resolved activity is unaffected: `named_activity_answer` has always
+    # rendered those, and it renders them from their own rows.
+    answer_in_code = bool(result.resolution.activities) or (
+        bool(result.resolution.unknown_activities)
+        and not result.resolution.asks_where
+        and not result.resolution.weather_asked
+    )
+    if answer_in_code:
         # The small CPU model repeatedly turns seven "fair" daily scores into
         # a "good week". Render named verdicts from their stored rows so every
         # date, band and score survives without an invented overall verdict.
@@ -389,10 +412,20 @@ def sea_state_caveat(result: Retrieval, *, lead: str = "These scores") -> str | 
 
     A beach day is deliberately not flagged and gets no caveat here: sun, heat,
     rain and wind are what make a day on the sand, and those are measured.
+
+    An activity the traveller typed has no row in data/activities.yml, so the
+    flag cannot be read off one -- but `rules.GENERIC_SEA_CFG` gives it the same
+    69 ceiling when its name says water, and a capped score that does not say why
+    it is capped is a number quietly lowered behind the reader's back. Scuba
+    diving in Tel Aviv was reported as "fair (69/100)" with no explanation while
+    catalogue surfing at the identical 69 carried one. The same two-sided test
+    the write path uses decides it here.
     """
     meta = _activity_meta()
     if not any(
         (meta.get(activity) or {}).get("sea_state_unmeasured")
+        if activity in meta
+        else rules.names_water(activity)
         for activity in result.resolution.activities
     ):
         return None

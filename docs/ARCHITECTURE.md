@@ -175,7 +175,8 @@ kept until their messages have been accounted for.
 2. **Ask:** The UI sends a question to the API, which forwards it to the agent.
    The agent resolves the city, dates, and question type in code, checks
    forecast coverage, and reads matching Postgres rows. A named activity
-   answer is rendered directly from stored daily scores. For other questions,
+   answer is rendered in code, from stored daily scores or from the stated gap
+   where there are none. For other questions,
    the local model may phrase the retrieved rows once; code adds the data
    freshness footer. If the model fails, code renders a plainer answer.
 3. **Plan:** The agent builds a day-by-day plan from stored scores, places, and
@@ -256,8 +257,12 @@ it has no separate architectural role.
   checked. Re-checking a row is a patch through the queue like any other
   correction.
 - **A collected row can be corrected, but not withdrawn.** Records are revised,
-  never deleted (see `TECHNICAL_DECISIONS.md`), and the writer holds no DELETE
-  grant that reaches a non-sample event or place row. So a listing that is
+  never deleted (see `TECHNICAL_DECISIONS.md`). What enforces that differs per
+  table: the writer's table-wide DELETE on `events` (migration 003, deliberately
+  not revoked by 005) is confined to sample rows by the `WHERE is_sample`
+  predicate in `enforce_event_mode()`, while `places` and `facts` have no table
+  grant at all and can only be deleted through the `SECURITY DEFINER` wipe. So a
+  listing that is
   removed from `data/events.seed.jsonl` after it was collected — because the
   venue cancelled it, or because a recheck could not confirm it — stops being
   shipped to new installs but **stays in a database that already has it**.
@@ -298,13 +303,16 @@ it has no separate architectural role.
   still has tickets. Plans only name places and events present in stored rows.
 - **Sea state:** Nothing in this system measures waves, swell or water
   temperature. Surfing, swimming, fishing and a boat ride are therefore capped
-  one point below the `good` band, and every answer carrying one of those
+  one point below the `good` band, as is any activity a user types whose name
+  says water (`rules.SEA_WORDS`), and every answer carrying one of those
   scores names the city's forecast point and its distance from the coast
   reference in `data/cities.yml`.
 - **Event dates:** Derived in SQL from the city's own IANA zone, so an event
   starting at local midnight lands on its local day rather than the UTC one,
   and a multi-day run matches every day it is active on.
-- **AI answers:** Named activity verdicts come directly from rows. Open-ended
+- **AI answers:** Named activity verdicts come directly from rows, or from the
+  stated absence of one -- an activity with no score is answered in code and the
+  model is not called at all. Open-ended
   replies are prompted with retrieved data, but the wording is not checked
   claim by claim; inspect the rows and source links for important claims.
 - **Availability and data protection:** There is one Compose host, broker, and

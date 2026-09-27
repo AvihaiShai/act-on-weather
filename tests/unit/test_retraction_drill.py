@@ -202,7 +202,19 @@ def test_the_demo_project_is_named_in_the_refusal():
     source = (REPO / DRILL).read_text(encoding="utf-8")
     assert 'DEMO_PROJECT="${AOW_DEMO_PROJECT:-aow-demo}"' in source
     assert 'LIVE_PROJECT="${AOW_PROJECT:-aow}"' in source
-    assert 'RESERVED="aow aow-demo $LIVE_PROJECT $DEMO_PROJECT' in source
+    # The two literals, wherever in the RESERVED expression they sit. Pinning
+    # the whole line was brittle for no gain: deduplicating the list broke this
+    # test while the behaviour it names was unchanged, and the behaviour is
+    # pinned properly by the two tests above and by
+    # `test_the_live_names_are_reserved_even_when_the_variables_point_elsewhere`.
+    reserved_line = next(
+        line for line in source.splitlines() if line.startswith("RESERVED_CANDIDATES=")
+    )
+    candidates = reserved_line.split("=", 1)[1].strip().strip('"').split()
+    assert "aow" in candidates, reserved_line
+    assert "aow-demo" in candidates, reserved_line
+    assert "$LIVE_PROJECT" in candidates, reserved_line
+    assert "$DEMO_PROJECT" in candidates, reserved_line
 
 
 def test_a_further_reserved_name_can_be_added_without_editing_the_script(tmp_path):

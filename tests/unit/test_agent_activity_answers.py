@@ -620,10 +620,40 @@ def test_the_multi_word_keywords_really_do_shadow_a_shorter_one(stub):
 
     for phrase in ("long walk", "walking tour", "sea swim", "boat ride", "street market"):
         assert route._shadows_a_keyword(phrase), phrase
-        assert router.slugify(phrase) in route.keyword_slugs, phrase
-    # And the name that must NOT be treated as one.
+    # And the name that is a shadow AND is declared distinct.
     assert route._shadows_a_keyword("kite surfing")
-    assert router.slugify("kite surfing") not in route.keyword_slugs
+    assert router.slugify("kite surfing") in route.distinct_name_slugs
+
+
+def test_every_declared_distinct_name_really_is_one(stub):
+    """The contract `data/activities.yml` states for `distinct_names`, checked
+    against the catalogue rather than by eye.
+
+    Each entry must contain a catalogue keyword as a whole word -- otherwise it
+    is not a shadow at all and the ordinary typed-activity path already handles
+    it, so listing it here is misleading. And none may BE a keyword, which would
+    mean declaring a catalogue activity to be not itself.
+    """
+    route, _rows, _asked = stub
+    declared = router.load_distinct_names(router.config.DATA_DIR / "activities.yml")
+
+    assert declared, "distinct_names is empty; the kite-surfing repair does nothing"
+    keywords = {word for words in route.activity_keywords.values() for word in words}
+    for name in declared:
+        assert route._shadows_a_keyword(name), f"{name!r} contains no catalogue keyword"
+        assert name not in keywords, f"{name!r} IS a catalogue keyword"
+        assert router.slugify(name) not in route.activity_keywords, name
+
+
+def test_a_bad_distinct_name_does_not_take_the_agent_down(monkeypatch, stub):
+    """`Router` is built per request and `slugify` raises on a name that is
+    nothing but filler, so an unguarded entry in operator-editable data would be
+    a 500 on every question rather than one bad line."""
+    monkeypatch.setattr(router, "load_distinct_names", lambda _path: frozenset({"the", "a go"}))
+
+    built = router.Router(object())
+
+    assert built.distinct_name_slugs == set()
 
 
 def test_a_name_that_shadows_a_keyword_and_is_stored_still_wins(monkeypatch, stub):
@@ -641,22 +671,45 @@ def test_a_name_that_shadows_a_keyword_and_is_stored_still_wins(monkeypatch, stu
     assert "- 2026-10-06: Kite surfing is poor (42/100)." in response["answer"]
 
 
-def test_the_cost_of_the_repair_is_a_gap_and_never_a_borrowed_score(monkeypatch, stub):
-    """Recorded as a decision, not discovered later as a defect.
+@pytest.mark.parametrize(
+    ("question", "activity"),
+    [
+        ("Is tomorrow a good day for a long run in Tel Aviv?", "running"),
+        ("Is tomorrow a good day for a surfing lesson in Tel Aviv?", "surfing"),
+        ("Is tomorrow a good day for a museum visit in Tel Aviv?", "museums"),
+        ("Is tomorrow a good day for a football match in Tel Aviv?", "soccer"),
+        ("Is tomorrow a good day for a market visit in Tel Aviv?", "farmers_market"),
+        ("Is tomorrow a good day for outdoor swimming in Tel Aviv?", "swimming"),
+        ("Is tomorrow a good day for beach football in Tel Aviv?", "soccer"),
+    ],
+)
+def test_an_undeclared_modifier_still_answers_about_the_catalogue_activity(
+    monkeypatch, stub, question, activity
+):
+    """The reason `distinct_names` is a declared list and not a rule.
 
-    "a long run" is not one of running's keywords, so under this repair it is
-    reported as not on record rather than answered with running's score. That is
-    the direction this project takes everywhere -- an honest gap over a borrowed
-    figure -- and it is the same judgement that makes "kite surfing" a gap. What
-    must never happen is the other outcome: a number that belongs to a different
-    activity, presented as the answer.
+    The general rule -- "a longer phrase containing a keyword is a different
+    activity" -- was implemented first and is wrong. Every question here names a
+    catalogue activity the system holds rows for and scores every day, and under
+    that rule every one of them answered "not on record". That is a FALSE
+    statement about stored data, which is worse than the substitution it was
+    meant to fix: a substitution at least reports a real number.
+
+    "kite surfing" and "a surfing lesson" cannot be told apart by shape, so the
+    catalogue declares which is which and an undeclared name keeps the ordinary
+    answer.
     """
     route, _rows, _asked = stub
-    result, response = ask(monkeypatch, route, "Is tomorrow a good day for a long run in Tel Aviv?")
+    result, response = ask(monkeypatch, route, question)
 
-    assert result.resolution.activities == []
-    assert result.resolution.unknown_activities == ["long_run"]
-    assert "long run: no suitability score on record." in response["answer"]
+    assert activity in result.resolution.activities, question
+    # The phrase itself is never reported as an activity of its own. (Several of
+    # these catalogue activities have no row in this stub's three-activity
+    # table, so "no suitability score on record" for the ACTIVITY is correct and
+    # expected here -- what must not appear is the phrase's own slug.)
+    assert result.resolution.unknown_activities == [], question
+    phrase_slug = question.split(" for ")[1].split(" in ")[0]
+    assert phrase_slug not in response["answer"], question
 
 
 def test_open_wording_keeps_its_ordinary_answer(monkeypatch, stub):
@@ -669,3 +722,68 @@ def test_open_wording_keeps_its_ordinary_answer(monkeypatch, stub):
     assert result.resolution.unknown_activities == []
     assert result.resolution.activities == []
     assert "not on record" not in response["answer"].lower()
+
+
+# ------------- what the code-rendered route may NOT swallow ----------------
+#
+# Routing an unscored activity into the code-rendered answer closes both live
+# demo failures, and it reaches two kinds of question it has no business
+# answering. Both were found by asking them rather than by reading the branch.
+
+
+def test_a_weather_question_keeps_its_forecast_even_beside_an_unscored_activity(monkeypatch, stub):
+    """`named_activity_answer` renders recommendations and gaps and never touches
+    `result.forecast`. A question that asks for BOTH therefore had its forecast
+    row fetched and silently discarded, and was answered only with "stargazing is
+    not on record" -- having been asked whether it was going to rain."""
+    for question in (
+        "What is the weather tomorrow in Tel Aviv, and is it good for stargazing?",
+        "Is it rainy tomorrow in Tel Aviv and good for stargazing?",
+        "Is tomorrow warm enough in Tel Aviv for stargazing?",
+    ):
+        route, _rows, _asked = stub
+        result = route.retrieve(question)
+        main = agent(monkeypatch, result)
+        monkeypatch.setattr(main.client, "chat_json", lambda *_a, **_k: {"answer": ""})
+        response = main.ask(main.AskIn(question=question))
+
+        assert result.forecast, question
+        assert result.resolution.weather_asked, question
+        # The forecast reaches the answer, one way or another.
+        assert "2026-10-06" in response["answer"], (question, response["answer"])
+        assert not response["answer"].startswith("I hold no suitability score"), question
+
+
+def test_the_two_blockers_are_still_answered_in_code(monkeypatch, stub):
+    """The guard on the guard. Neither exclusion above may let the fabrication
+    back in: neither question names the weather, and neither asks where."""
+    for question, noun in ((SKI, "ski"), (KITE_SURFING, "kite surfing")):
+        route, _rows, _asked = stub
+        result, response = ask(monkeypatch, route, question)
+
+        assert result.resolution.weather_asked is False, question
+        assert result.resolution.asks_where is False, question
+        assert result.recommendations == [], question
+        assert response["llm_called"] is False, question
+        assert f"{noun}: no suitability score on record" in response["answer"], question
+
+
+def test_a_where_question_is_not_answered_with_a_suitability_heading(monkeypatch, stub):
+    """ "Where can I go kite surfing?" asks for a place. Answering it with
+    "I hold no suitability score for what you asked about" answers a question
+    nobody asked, and throws away whatever places were retrieved."""
+    question = "Where can I go kite surfing in Tel Aviv?"
+    route, _rows, _asked = stub
+    result, response = ask(monkeypatch, route, question)
+
+    assert result.resolution.asks_where is True
+    assert not response["answer"].startswith("I hold no suitability score")
+    # It falls through to the route it took before, which for a `where` question
+    # with nothing retrieved is the empty-result answer. That answer does not
+    # name the activity, which is a pre-existing limit of that path rather than
+    # anything this change introduced -- "where can I go paragliding in Tel
+    # Aviv?" has always answered the same way. Asserted so the two stay in step.
+    assert response["answer"].startswith("I have no stored records matching that")
+    paragliding = "Where can I go paragliding in Tel Aviv?"
+    other = ask(monkeypatch, stub[0], paragliding)[1]["answer"]
+    assert other.split(":")[0] == response["answer"].split(":")[0]

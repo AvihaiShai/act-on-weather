@@ -240,7 +240,7 @@ GENERIC_CFG: dict[str, Any] = {
 
 # Whole words that name an activity done in or on water. Matched against the
 # slug's own words, so `kite_surfing` and `scuba_diving` are caught and
-# `surfboard_shop` is not a word of any of them.
+# `surf_shop` is excluded by NOT_WATER_WORDS below.
 #
 # This list exists because the catalogue's coast rules reach only the catalogue.
 # `requires_coast` and `score_ceiling` are properties of a row in
@@ -259,23 +259,52 @@ GENERIC_CFG: dict[str, Any] = {
 # here can raise one.
 SEA_WORDS: frozenset[str] = frozenset(
     """
-    sea ocean marine surf surfing surfboard windsurf windsurfing kitesurf
-    kitesurfing bodyboard bodyboarding dive diving scuba snorkel snorkelling
-    snorkeling freediving swim swimming bathe bathing kayak kayaking canoe
-    canoeing paddleboard paddleboarding paddleboard sup rowing sail sailing
-    yachting boating jetski jetskiing waterskiing wakeboarding rafting
-    beach shore coastal coast tide tidal waves
+    sea ocean offshore surf surfing windsurf windsurfing kitesurf kitesurfing
+    bodyboard bodyboarding dive diving scuba snorkel snorkelling snorkeling
+    freediving swim swimming kayak kayaking canoe canoeing paddleboard
+    paddleboarding sail sailing yachting jetski jetskiing waterskiing
+    wakeboarding rafting tide tidal swell
+    """.split()
+)
+
+# Words that take an activity back OUT of the list above. Every one of these was
+# a false positive found by reading the list out loud against real names:
+#
+#   sky diving      "diving" -- and it is the one activity here furthest from water
+#   indoor rowing   "rowing", on a machine
+#   pool swimming   "swimming", in a pool with no sea state to be unmeasured
+#   river rafting   "rafting", on fresh water with no coast involved
+#   marine museum   "marine", which is why `marine` is not in the list at all
+#   a surf shop     "surf", which is a shop
+#   diving lesson   "diving", which may be in a pool
+#
+# Each false positive is not a harmless over-cap. It REFUSES the row outright for
+# an inland city and then tells the traveller "London has no coast on record" as
+# the reason an indoor rowing machine cannot be scored -- a fabricated causal
+# claim, which is the one thing this project may not do. `bathe`/`bathing` and
+# `beach`/`shore`/`coast` were dropped from the list above for the same reason:
+# "sun bathing" is not swimming, and a beach day is deliberately not sea-gated
+# even in the catalogue.
+NOT_WATER_WORDS: frozenset[str] = frozenset(
+    """
+    sky indoor indoors pool gym river lake museum shop store lesson lessons
+    class classes simulator machine
     """.split()
 )
 
 
 def names_water(slug: str) -> bool:
-    """Whether an activity slug names something done in or on the water.
+    """Whether an activity slug names something done in or on open water.
 
     Read as whole words of the slug, which is what `schemas.slugify` produced
-    from what the user typed: `kite_surfing` -> {"kite", "surfing"}.
+    from what the user typed: `kite_surfing` -> {"kite", "surfing"}. A word in
+    `NOT_WATER_WORDS` anywhere in the slug settles it as not water, because the
+    cost of a false positive here is a refused row and an invented reason.
     """
-    return bool(SEA_WORDS & set(slug.split("_")))
+    words = set(slug.split("_"))
+    if words & NOT_WATER_WORDS:
+        return False
+    return bool(SEA_WORDS & words)
 
 
 # The generic measure for a typed activity that names water, in a city that has

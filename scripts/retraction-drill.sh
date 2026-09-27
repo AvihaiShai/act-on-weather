@@ -113,7 +113,15 @@ done
 # and only the contents probe below stood between the drill and the live
 # project's name. That probe does not cover a live project that has been taken
 # down, which is exactly the case the comment above says this list is for.
-RESERVED="aow aow-demo $LIVE_PROJECT $DEMO_PROJECT ${AOW_RESERVED_PROJECTS:-}"
+# Deduplicated, so the refusal message does not print 'aow aow-demo aow
+# aow-demo' back at an operator who is already being told no.
+RESERVED_CANDIDATES="aow aow-demo $LIVE_PROJECT $DEMO_PROJECT ${AOW_RESERVED_PROJECTS:-}"
+RESERVED=""
+# shellcheck disable=SC2086 # a deliberate word list
+for candidate in $RESERVED_CANDIDATES; do
+  case " $RESERVED " in *" $candidate "*) continue ;; esac
+  RESERVED="${RESERVED:+$RESERVED }$candidate"
+done
 for reserved in $RESERVED; do
   [ "$PROJECT" = "$reserved" ] || continue
   red "REFUSING: '$PROJECT' is a live project, not a drill target."
@@ -251,8 +259,13 @@ hr "Starting the disposable project '$PROJECT'"
 dcd config --quiet
 # No `down -v` here. A project that already held anything was refused above, so
 # there is nothing stale to clear and nothing of anybody else's to lose.
+# `--no-build --pull never` for the same reason scripts/ci-integration.sh uses
+# them: on a runner the images were built and SCANNED by an earlier job and
+# loaded from an artifact, and a silent rebuild here would test different bytes
+# than the ones that were scanned. On a dev machine `make stage` has already
+# built them. `--no-build` is legitimate on `up`; only `run` rejects it.
 # shellcheck disable=SC2086 # SERVICES is a deliberate word list
-dcd up -d $SERVICES
+dcd up -d --no-build --pull never $SERVICES
 note "services: $SERVICES"
 
 hr "The order that already worked: withdraw records this install holds"

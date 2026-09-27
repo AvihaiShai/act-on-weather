@@ -43,14 +43,13 @@
 -- What it does not do. It is forward-looking. A withdrawal already consumed
 -- against an absent row before this migration ran left no trace in the
 -- database, and its `message_id` is in `ingest_log`, so it cannot be recovered
--- here. It has to be re-issued, and both routes can do that -- but they key on
--- different things and the difference is worth knowing before relying on it.
+-- here. It has to be re-issued, and both routes can do that.
 -- `POST /records/.../retract` mints a fresh id every time (`Envelope.create`
--- with `retracted_at` = now()). The curated list keys on
--- `(entity, entity_id, reason, retracted_by)` only -- `ingestor/main.py`'s
--- `natural_key` -- so editing a line's REASON or AUTHOR re-issues it, and
--- editing only its `retracted_at` does not: that mints the same id, which the
--- outbox deduplicates as a replay.
+-- with `retracted_at` = now()). The curated list's id covers the entity, the
+-- id, the reason and the author (`ingestor/main.py`'s `natural_key`) AND the
+-- decision date, which `envelopes_from` appends through `stamp_of` -- so
+-- editing any one of those five re-issues the line, and re-accepting it
+-- unchanged mints the same id and is deduplicated by the outbox.
 --
 -- Idempotent, like every migration before it: CREATE TABLE IF NOT EXISTS is a
 -- no-op the second time, the comments and grants are rewritten
@@ -96,6 +95,14 @@ CREATE TABLE IF NOT EXISTS record_retractions (
   -- the consumer's upsert treats it that way.
   PRIMARY KEY (entity, entity_id)
 );
+
+-- `CREATE TABLE IF NOT EXISTS` is a no-op on an install that already ran an
+-- earlier version of this file, and an earlier version declared `recorded_at`
+-- `NOT NULL`. The backfill below now writes NULL there deliberately, so the
+-- constraint has to be dropped explicitly or that install fails on the first
+-- marked row. Same shape as `008_itinerary_as_of_optional.sql`: a catalog flag,
+-- no table rewrite, and a no-op when the column is already nullable.
+ALTER TABLE record_retractions ALTER COLUMN recorded_at DROP NOT NULL;
 
 -- No secondary index. The only read is by the full primary key, once per
 -- collected record written. Said out loud because the absence is a choice.
@@ -156,16 +163,24 @@ COMMENT ON COLUMN record_retractions.recorded_at IS
 -- how a record is REINSTATED, and it is written down in full below.
 INSERT INTO record_retractions
   (entity, entity_id, retracted_at, retraction_reason, retracted_by, recorded_at)
+-- `NULL::timestamptz`, not a bare `NULL`. A `UNION ALL` resolves each output
+-- column's type from its inputs alone, with no knowledge of the INSERT target,
+-- and a column whose inputs are all untyped `NULL` resolves to `text`. The
+-- INSERT would then have to coerce `text` into `timestamptz` in assignment
+-- context, for which there is no cast -- a parse-time ERROR, on every boot,
+-- including a fresh database with no marked rows at all. With ON_ERROR_STOP the
+-- whole migration aborts, `migrate` exits non-zero, and every service gated on
+-- `service_completed_successfully` refuses to start.
 SELECT 'events', id, retracted_at, retraction_reason,
-       COALESCE(retracted_by, 'operator'), NULL
+       COALESCE(retracted_by, 'operator'), NULL::timestamptz
   FROM events WHERE retracted_at IS NOT NULL AND retraction_reason IS NOT NULL
 UNION ALL
 SELECT 'places', id, retracted_at, retraction_reason,
-       COALESCE(retracted_by, 'operator'), NULL
+       COALESCE(retracted_by, 'operator'), NULL::timestamptz
   FROM places WHERE retracted_at IS NOT NULL AND retraction_reason IS NOT NULL
 UNION ALL
 SELECT 'facts',  id, retracted_at, retraction_reason,
-       COALESCE(retracted_by, 'operator'), NULL
+       COALESCE(retracted_by, 'operator'), NULL::timestamptz
   FROM facts  WHERE retracted_at IS NOT NULL AND retraction_reason IS NOT NULL
 ON CONFLICT (entity, entity_id) DO NOTHING;
 
@@ -208,6 +223,31 @@ ON CONFLICT (entity, entity_id) DO NOTHING;
 -- the migration owner, through the same reviewed file every other schema change
 -- goes through, and is deliberately not something the application can do.
 --
+-- AND IT IS STILL NOT ENOUGH FOR A CURATED WITHDRAWAL. `wipe_user_data` replays
+-- every envelope the INGESTOR accepted, and `SOURCE_KEYS` includes
+-- `record.retract`. The envelope for a curated line lives in the ingestor's
+-- outbox for the life of that volume and its `message_id` stays in
+-- `ingest_log`, so the next `POST /user-data/wipe` replays it, the
+-- `ON CONFLICT DO NOTHING` insert succeeds precisely because the reinstatement
+-- deleted the ledger row, and the record is withdrawn again. Removing the line
+-- from `data/retractions.jsonl` does not help: the wipe replays the outbox, not
+-- the file.
+--
+-- So, stated plainly rather than papered over:
+--
+--   * A withdrawal made through `POST /records/.../retract` can be reinstated
+--     with the two statements above and stays reinstated. The wipe excludes
+--     api-sourced envelopes (`source <> 'api'`).
+--   * A withdrawal that came from the curated list can be reinstated, and the
+--     next wipe on that install undoes it. Making that stick needs the
+--     ingestor's outbox volume replaced -- in practice, a fresh install from a
+--     corrected snapshot, which is what the README has always said reinstating
+--     means.
+--
+-- Nothing here is silent: both are the documented no-un-retract-route design
+-- working as intended, and the second is the price of a rebuild that replays
+-- every collected decision.
+--
 -- ---------------------------------------------------------------------------
 -- One consumer
 -- ---------------------------------------------------------------------------
@@ -228,9 +268,11 @@ ON CONFLICT (entity, entity_id) DO NOTHING;
 -- reproduced. Running more than one consumer needs a transaction-scoped
 -- advisory lock on (entity, entity_id) in both paths first.
 
--- The same shape every other table has: the reader reads, the one writer
--- writes, and no role gains DELETE, because a withdrawal is corrected rather
--- than removed like every other collected fact here. 001_init.sql already sets
+-- The reader reads and the one writer writes. No role gains DELETE on THIS
+-- table, because a withdrawal is corrected rather than removed -- not "like
+-- every other table here", which would be false: `events` (003), `itineraries`
+-- and `record_history` (004) all carry a writer DELETE for their own reasons.
+-- 001_init.sql already sets
 -- ALTER DEFAULT PRIVILEGES for both roles, so these are belt and braces --
 -- stated anyway, because that default only covers tables created by the role
 -- that set it, and a ledger nobody can read fails silently.

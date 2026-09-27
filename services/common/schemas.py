@@ -22,7 +22,20 @@ __all__ = [
     "validate",
     "slugify",
     "ACTIVITY_FILLER_WORDS",
+    "MIN_ACTIVITY_SLUG_CHARS",
 ]
+
+# The shortest slug that may be treated as an activity, on either route.
+#
+# It has to live beside `slugify` for the same reason the filler list does. The
+# write path used to enforce its floor with `Field(min_length=2)` on the text the
+# traveller typed, and the read path enforced its own on the slug -- which agreed
+# only while slugify preserved length. Once slugify started trimming filler they
+# stopped agreeing: `POST /recommendations` with "a x" passed `min_length=2`,
+# stored a row under the one-character slug `x`, and the read path then discarded
+# `x` as too short, so the row was unreachable by the question that asked for it.
+# That is the `a_picnic` defect again, one trim later.
+MIN_ACTIVITY_SLUG_CHARS = 2
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
