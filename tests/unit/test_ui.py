@@ -17,7 +17,7 @@ What this does not do is check that the fixture still matches the API. That is
 
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -703,6 +703,146 @@ def test_the_city_and_row_count_lines_still_render(monkeypatch):
     assert _detail(asked, "Records consulted:").startswith("Records consulted:")
 
 
+# The window the two repairs meet on: four days the staged snapshot has and four
+# past its horizon. Written out, like the dates in
+# `tests/unit/test_agent_activity_answers.py`, so it keeps meaning something after
+# the snapshot expires.
+PARTLY_COVERED_QUESTION = "Is 2026-10-05 to 2026-10-12 good for surfing in Tel Aviv?"
+_AGENT_TODAY = date(2026, 10, 5)
+_AGENT_HORIZON = date(2026, 10, 8)
+_AGENT_STORED = [date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7), _AGENT_HORIZON]
+_AGENT_CITY = {
+    "id": "tel_aviv",
+    "name": "Tel Aviv",
+    "country": "Israel",
+    "timezone": "Asia/Jerusalem",
+    "aliases": ["tel-aviv"],
+    "coastal": True,
+}
+
+
+def _real_agent_reply(monkeypatch, question: str) -> dict:
+    """`POST /agent/ask`'s answer, from the agent, not written out here.
+
+    This helper exists because the test below used to carry a hand-written answer
+    string and claim in its docstring that it was "the real shape
+    `services/agent/main.py` returns". It was not, and running the real handler
+    showed exactly how far off it was in two places: the gap sentence does not
+    stop at the date ("The stored forecast ends on 2026-10-08, so those days are
+    left out rather than guessed"), and a coastal activity's answer carries a
+    sea-state caveat the invented string had no idea about. A UI test asserting
+    that the panel and the answer agree is worth nothing if the answer is one the
+    agent never produces.
+
+    So the real handler runs. `router.queries` is replaced with canned rows -- no
+    database, no model, no clock -- and `main.ask` is called with the real
+    `Router` over them, which means the question text is parsed, the window is
+    resolved, the rows are clipped at the horizon and the answer and the `dates`
+    field are both built by the code that builds them in production. The
+    recommendation stub honours `start`/`end`, because a stub that ignored them
+    could not show a window being clipped, which is the whole point.
+    """
+    monkeypatch.setenv("POSTGRES_READER_PASSWORD", "unit-test")
+    from services.agent import dates as agent_dates
+    from services.agent import main as agent_main
+    from services.agent import router as agent_router
+
+    monkeypatch.setattr(agent_dates, "today_in", lambda _timezone: _AGENT_TODAY)
+    monkeypatch.setattr(agent_router.queries, "cities", lambda _conn: [_AGENT_CITY])
+    monkeypatch.setattr(
+        agent_router.queries,
+        "coverage",
+        lambda _conn: {
+            "cities": [_AGENT_CITY],
+            "weather_first_date": "2026-09-23",
+            "weather_last_date": _AGENT_HORIZON.isoformat(),
+            "weather_as_of": "2026-09-23",
+        },
+    )
+    for name in ("events", "facts", "places"):
+        monkeypatch.setattr(agent_router.queries, name, lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        agent_router.queries,
+        "expired_events",
+        lambda *_a, **_k: {"expired": 0, "last_checked": None},
+    )
+
+    def _in_window(day, start, end):
+        return (start is None or day >= start) and (end is None or day <= end)
+
+    monkeypatch.setattr(
+        agent_router.queries,
+        "forecast",
+        lambda _conn, _city=None, *, start=None, end=None: [
+            {
+                "forecast_date": day,
+                "provider": "open-meteo",
+                "temp_max_c": 24.0,
+                "temp_min_c": 15.0,
+                "precip_mm": 0.0,
+                "precip_prob": 0,
+                "wind_kmh": 11.0,
+                "sunshine_hours": 9.0,
+                "as_of": "2026-09-23",
+            }
+            for day in _AGENT_STORED
+            if _in_window(day, start, end)
+        ],
+    )
+    monkeypatch.setattr(
+        agent_router.queries,
+        "recommendations",
+        lambda _conn, _city=None, *, start=None, end=None, activity=None: [
+            {
+                "forecast_date": day,
+                "activity": "surfing",
+                "activity_label": "Surfing",
+                "score": 69,
+                "band": "fair",
+                "text": None,
+                "status": "ready",
+                "requested": False,
+                "reasons": [],
+            }
+            for day in _AGENT_STORED
+            if _in_window(day, start, end) and (activity is None or activity == "surfing")
+        ],
+    )
+    monkeypatch.setattr(agent_main, "pool", type("StubPool", (), {"conn": object()})())
+    monkeypatch.setattr(agent_main, "Router", lambda conn: agent_router.Router(conn))
+    return agent_main.ask(agent_main.AskIn(question=question))
+
+
+def test_the_agent_really_produces_the_answer_this_panel_is_checked_against(monkeypatch):
+    """The premise of the test below, asserted before it is relied on.
+
+    If the agent stops clipping the window, stops appending the gap, or stops
+    reporting the requested window in `dates`, this fails here -- where the
+    message is about the agent -- rather than turning the UI test into a check
+    that a hand-written string renders.
+    """
+    reply = _real_agent_reply(monkeypatch, PARTLY_COVERED_QUESTION)
+
+    assert reply["dates"] == "2026-10-05 to 2026-10-12"
+    assert reply["llm_called"] is False
+    assert reply["city"] == "tel_aviv"
+    # Four days of rows, and the four it has none for named rather than dropped.
+    assert "- 2026-10-05: Surfing is fair (69/100)." in reply["answer"]
+    assert "- 2026-10-08: Surfing is fair (69/100)." in reply["answer"]
+    assert "2026-10-09 to 2026-10-12" in reply["answer"]
+    assert "2026-10-09: " not in reply["answer"]
+    # The two ways the real wording differed from the string that used to be
+    # written out below, which is why this helper exists. The gap sentence does
+    # not end after the date -- it says what it did instead of guessing -- and a
+    # coastal activity's answer carries a sea-state caveat the invented version
+    # had no idea about.
+    assert (
+        "The stored forecast ends on 2026-10-08, so those days are left out rather "
+        "than guessed." in reply["answer"]
+    )
+    assert "nothing in the data measures the waves" in reply["answer"]
+
+
 def test_the_details_panel_and_the_answer_agree_on_a_partly_covered_window(monkeypatch):
     """The two repairs, checked against each other rather than one at a time.
 
@@ -715,26 +855,13 @@ def test_the_details_panel_and_the_answer_agree_on_a_partly_covered_window(monke
     leaves a reviewer comparing a date range against an answer that does not
     cover it.
 
-    The payload below is the real shape `services/agent/main.py` returns for
-    that question -- the code-rendered named-activity answer plus
-    `grounding.gap_block` -- so this asserts the pair a reviewer actually sees.
+    The payload comes from `services/agent/main.ask` itself -- see
+    `_real_agent_reply` -- so every key the panel reads is the agent's own, and
+    this asserts the pair a reviewer actually sees rather than a pair invented
+    here.
     """
-    answer = (
-        "Stored suitability for the activities you asked about in Tel Aviv:\n"
-        "- 2026-10-05: Surfing is fair (69/100).\n"
-        "- 2026-10-06: Surfing is fair (69/100).\n"
-        "- 2026-10-07: Surfing is fair (69/100).\n"
-        "- 2026-10-08: Surfing is fair (69/100).\n\n"
-        "Not on record: 2026-10-09 to 2026-10-12. No weather is stored for those "
-        "dates. The stored forecast ends on 2026-10-08."
-    )
-    asked = _ask(
-        monkeypatch,
-        answer=answer,
-        city="tel_aviv",
-        dates="2026-10-05 to 2026-10-12",
-        llm_called=False,
-    )
+    reply = _real_agent_reply(monkeypatch, PARTLY_COVERED_QUESTION)
+    asked = _ask(monkeypatch, **reply)
 
     # The panel says the window, as a window.
     assert _detail(asked, "Dates:") == "Dates: 2026-10-05 to 2026-10-12"
@@ -745,7 +872,9 @@ def test_the_details_panel_and_the_answer_agree_on_a_partly_covered_window(monke
     # rows for, and the four it does not.
     assert "- 2026-10-05: Surfing is fair (69/100)." in rendered
     assert "2026-10-09 to 2026-10-12" in rendered
-    assert "The stored forecast ends on 2026-10-08." in rendered
+    assert "The stored forecast ends on 2026-10-08" in rendered
+    # Nothing on the way to the screen dropped the caveat that came with them.
+    assert "nothing in the data measures the waves" in rendered
 
 
 def test_an_unscored_activity_answer_renders_without_a_number(monkeypatch):
