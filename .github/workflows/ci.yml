@@ -320,6 +320,72 @@ jobs:
           print("every workflow action is pinned to a 40-character commit SHA")
           PY
 
+      # The model mirror is configured in exactly one place,
+      # compose.tools.yml, whose comment carries the measurement that decided
+      # which namespace to use. A release workflow that repeats the URL as a
+      # literal can drift from it silently, and did: commit d98b882 moved
+      # compose.tools.yml and ci.yml to the ggml-org mirror and left
+      # release.yml pointing at Qwen/, recorded there as publishing only
+      # Q8_0. Because the
+      # repository variable MODEL_BASE_URL was set the whole time, the bad
+      # literal was never reached and every release run stayed green -- a
+      # latent default only a fresh clone or a cleared variable would have
+      # found. So the agreement is checked here rather than trusted.
+      - name: Model mirror defaults agree
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          compose = Path("compose.tools.yml").read_text()
+          # The authoritative default. If this stops matching -- the key
+          # renamed, the default dropped -- raise rather than carry on with
+          # nothing to compare against: a check that silently finds no
+          # baseline passes every diff, which is the failure mode this
+          # repository keeps finding in its own proofs.
+          canonical = re.search(
+              r"MODEL_BASE_URL:\s*\$\{MODEL_BASE_URL:-([^}]+)\}", compose
+          )
+          if canonical is None:
+              raise SystemExit(
+                  "::error::compose.tools.yml no longer declares a "
+                  "${MODEL_BASE_URL:-...} default; nothing to reconcile against"
+              )
+          canonical_url = canonical.group(1).strip()
+          print("compose.tools.yml default: " + canonical_url)
+
+          # Both suffixes, for the same reason the action-pinning check above
+          # globs both: GitHub runs *.yaml as readily as *.yml.
+          workflows = sorted(
+              set(Path(".github/workflows").glob("*.yml"))
+              | set(Path(".github/workflows").glob("*.yaml"))
+          )
+          if not workflows:
+              raise SystemExit("::error::no workflow files found to check")
+
+          bad = []
+          found = 0
+          for path in workflows:
+              for number, line in enumerate(path.read_text().splitlines(), 1):
+                  # Only a hardcoded mirror literal is in scope. A bare
+                  # `vars.MODEL_BASE_URL` carries no URL and cannot drift, so
+                  # it is deliberately not matched here.
+                  for url in re.findall(r"https://huggingface\.co/[^'\"\s]+", line):
+                      found += 1
+                      if url != canonical_url:
+                          bad.append(f"{path}:{number}: {url}")
+          if bad:
+              raise SystemExit(
+                  "::error::workflow model mirror disagrees with "
+                  f"compose.tools.yml ({canonical_url}): " + ", ".join(bad)
+              )
+          print(
+              f"{found} hardcoded model mirror reference(s) across "
+              f"{len(workflows)} workflow file(s), all agreeing with "
+              "compose.tools.yml"
+          )
+          PY
+
       - name: README counts match the committed snapshot
         run: python scripts/snapshot_manifest.py --check
 
@@ -719,11 +785,29 @@ jobs:
   # disruption, so a regression where the API quietly stops accepting writes
   # cannot make "all of them are gone" trivially true and pass proving
   # nothing. M11's guarantee is about accepted records, not process liveness.
+  #
+  # Also runs on every push to main, unlike model-grounding. Measured on run
+  # 36256406183: this job took 119s (16:44:38Z-16:46:37Z) entirely inside
+  # build-and-scan's window (16:44:38Z-16:48:55Z), so it adds no wall clock to
+  # a push -- that run finished in 506s against 524s for the push run on the
+  # same commit without it. It also adds no external dependency the always-run
+  # jobs do not already have: PyPI for the image build below, and pinned
+  # digests for everything it starts. model-grounding was deliberately NOT
+  # given the same treatment: it needs the 1.2 GB model, so a cache eviction
+  # puts a third-party download on the routine path, and ci.yml passes
+  # MODEL_BASE_URL with no fallback, so a cleared repository variable would
+  # redden main for a reason unrelated to the commit. That one stays where a
+  # maintainer is watching.
+  #
+  # Neither job can be a required status check either way: both are skipped on
+  # an unlabelled pull request, and a skipped check is not a success under
+  # branch protection. This gives post-merge detection on main, not a gate.
   restore-drill:
     runs-on: ubuntu-latest
     needs: [lint, unit, guard]
     if: >
       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       startsWith(github.ref, 'refs/heads/release/') ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'release-candidate'))

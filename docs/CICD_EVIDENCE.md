@@ -83,11 +83,11 @@ All timings from real GitHub-hosted runners, not estimates.
 |---|---|---|---|
 | `lint` | ruff check + format | every PR | green in `main` run `36057664448` |
 | `unit` | 1168 passed, 2 skipped, `--network none` | every PR | run `36057664448` |
-| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; README counts match the snapshot | every PR and push | main guard run `36057664448` scanned 2.08 MB of committed content |
+| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; no workflow literal disagrees with `compose.tools.yml`'s model-mirror default; README counts match the snapshot | every PR and push | main guard run `36057664448` scanned 2.08 MB of committed content |
 | `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
 | `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | run `36057664448`: 155 same-origin, 0 external requests |
 | `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | run `36055211121`: **82s**, 8/8 grounded; upgraded cache action ran on a cache miss |
-| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate | run `36256406183`, backup `started_at` 2026-09-26T16:45:31Z, commit `bbee42c` — the current commit: measured RPO 15s, at-risk window 19s, **two RTO figures kept apart** (`RTO_SECONDS=20` self-reported by `restore-state.sh`, 22s in the drill's summary including its per-id `psql` assertions) and **two wall clocks kept apart** (92s drill body, 104s CI job step). See the row below the table, and §9 of [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) for the artefact sizes. A GitHub-hosted runner, so not comparable with the development-machine runs in that same §9 |
+| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate **and every push to `main`** (2026-09-27) | run `36256406183`, backup `started_at` 2026-09-26T16:45:31Z, commit `bbee42c` — the current commit: measured RPO 15s, at-risk window 19s, **two RTO figures kept apart** (`RTO_SECONDS=20` self-reported by `restore-state.sh`, 22s in the drill's summary including its per-id `psql` assertions) and **two wall clocks kept apart** (92s drill body, 104s CI job step). See the row below the table, and §9 of [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) for the artefact sizes. A GitHub-hosted runner, so not comparable with the development-machine runs in that same §9 |
 | `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `5bb498f` (run `36057664448`) |
 
 **`restore-drill`: the run history, and why four numbers are not two.** The
@@ -119,11 +119,24 @@ Both rows are GitHub-hosted runners and neither is comparable with the
 development-machine drills in [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md)
 §9.
 
-**Why `model-grounding` and `restore-drill` are release-candidate rather than per-PR:**
+**Why `model-grounding` and `restore-drill` are not per-PR:**
 not cost — 82s and 104s in run `36055211121` (job-step wall clocks) are cheap next to `build-and-scan`. Blast radius. The restore
 drill destroys volumes, and a stateful full-stack drill is the wrong default for every
-dependabot bump. One "expensive or stateful" tier, not two conventions. They run on
+dependabot bump. One "expensive or stateful" tier, not two conventions. Both run on
 `workflow_dispatch`, a `release-candidate` label, or a `release/*` branch.
+
+**`restore-drill` also runs on every push to `main`, and `model-grounding` does not.**
+Changed 2026-09-27, and the asymmetry is the point. Measured on run `36256406183`:
+`restore-drill` took 119s (16:44:38Z—16:46:37Z) wholly inside `build-and-scan`'s
+window (16:44:38Z—16:48:55Z), so it adds no wall clock — that run finished in 506s
+against 524s for the push run on the same commit without it — and it introduces no
+external dependency the always-run jobs do not already have. `model-grounding` was left
+alone: it needs the 1.2 GB model, so a cache eviction puts a third-party download on the
+routine path, and `ci.yml` passes `MODEL_BASE_URL` with no fallback, so a cleared
+repository variable would redden `main` for a reason unrelated to the commit. That one
+stays where a maintainer is watching. **Neither can become a required status check**,
+because both are skipped on an unlabelled pull request and a skipped check is not a
+success under branch protection; this buys post-merge detection on `main`, not a gate.
 
 ---
 
@@ -156,7 +169,15 @@ An authenticated operator read on 2026-09-25 independently queried
 `enforce_admins.enabled: true` and four required contexts: `lint`, `unit`,
 `guard`, `build-and-scan` (their GitHub App ID is `15368`). Checks are
 `strict: false`; stale reviews are dismissed and the required approval count
-is zero. This closes the live settings inspection for that date. Historical
+is zero. This closes the live settings inspection for that date.
+
+**Superseded for the context list on 2026-09-27**, by a `PATCH` to
+`branches/main/protection/required_status_checks` that added a fifth context,
+`ui-gate`, so the required set and the set of jobs that always report now
+agree. The read above stands as the 2026-09-25 state; section 5 carries the
+2026-09-27 state and the before/after responses. Nothing else in the
+protection object was sent or changed, and a field-by-field comparison of the
+two full reads outside `required_status_checks` is identical. Historical
 promotion records still correctly report their own HTTP 403 reads as
 `verified: false`; the manual read is not embedded in those records and the
 workflow still cannot verify protection with its default token.
@@ -314,9 +335,46 @@ remote: - Changes must be made through a pull request.
 remote: - 4 of 4 required status checks are expected.
 ```
 
-Required contexts: `lint`, `unit`, `guard`, `build-and-scan` — deliberately only the four
-that **always** report. A required context that can be skipped deadlocks merges, which is
-why the conditional RC jobs are not required.
+That transcript is from the four-context era and is kept as it was recorded; the count in
+it is not re-asserted as current.
+
+**Current required contexts, read from the API on 2026-09-27 after the change below:**
+`lint`, `unit`, `guard`, `build-and-scan`, `ui-gate` — the five jobs in `ci.yml` that
+carry no `if:` and therefore always report. A required context that can be skipped
+deadlocks merges, which is why the conditional jobs are not required: `publish-images`
+runs only on push to main, and `model-grounding` and `restore-drill` are skipped on an
+unlabelled pull request. This was measured rather than assumed — on PR #65's head
+`97fa8d9` the check runs are `lint`, `unit`, `guard`, `build-and-scan` and `ui-gate`
+`success` with `publish-images`, `model-grounding` and `restore-drill` `skipped`.
+
+`ui-gate` was the gap: the browser gate that records every request the page issues and
+asserts zero off-origin traffic — the strongest anti-egress control in the repository —
+ran on every pull request but could not block a merge. The change was a `PATCH` to the
+`required_status_checks` sub-resource only, so the rest of the protection object was
+untouched:
+
+```
+gh api --method PATCH   repos/AvihaiShai/act-on-weather/branches/main/protection/required_status_checks   --input - <<'JSON'
+{"strict": false,
+ "checks": [{"context": "lint", "app_id": 15368},
+            {"context": "unit", "app_id": 15368},
+            {"context": "guard", "app_id": 15368},
+            {"context": "build-and-scan", "app_id": 15368},
+            {"context": "ui-gate", "app_id": 15368}]}
+JSON
+```
+
+Before, `contexts` was `["lint","unit","guard","build-and-scan"]`; after, it is
+`["lint","unit","guard","build-and-scan","ui-gate"]`. Unchanged and re-read to confirm it:
+`strict: false`, `enforce_admins.enabled: true`, `dismiss_stale_reviews: true`,
+`required_approving_review_count: 0`, `allow_force_pushes: false`,
+`allow_deletions: false`, `required_linear_history: false`, `lock_branch: false`, and no
+repository rulesets (`GET /rulesets` returns `[]`).
+
+**`required_approving_review_count` stays 0 deliberately.** This repository has one
+author, and GitHub does not count a pull request author's own approval, so requiring one
+approval would block every merge rather than review anything. It is a single-maintainer
+limitation to state out loud, not a setting to raise.
 
 Two caveats stated rather than hidden:
 
