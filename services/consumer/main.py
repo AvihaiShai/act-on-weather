@@ -361,11 +361,53 @@ EVENT_COLS = [
 
 
 def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationRequest) -> None:
-    """A user asked about an activity that has no rule of its own (M2).
+    """A user asked for one activity by name (M2).
 
-    It is scored against general outdoor comfort from the weather already
-    stored, and inserted `pending` so the enricher words it like any other.
+    Three outcomes. An activity the catalogue carries is scored by its own
+    thresholds; anything else is scored against general outdoor comfort; and an
+    activity needing a coast, asked for a city that has none, is refused rather
+    than scored. Whatever is stored goes in `pending`, so the enricher words it
+    like any other row, except a refusal, which is terminal.
     """
+    cfg = ACTIVITIES.get(p.activity)
+    if cfg is not None and cfg.get("requires_coast") and not COASTAL.get(p.city_id, False):
+        # The catalogue says this activity needs a coast and this city has none
+        # on record, so there is nothing here to score it from. Storing no row
+        # is not a new policy: it is the one the rest of the system already
+        # states. `rules.activities_for_city` drops the activity instead of
+        # scoring it, so the default path has never created such a row, and the
+        # reader is built around that absence -- `router` collects an activity
+        # with no row into `unscored_activities`, and the answer then says "no
+        # suitability score on record; <city> has no coast on record", which is
+        # a better answer than any number could be.
+        #
+        # What this replaces is worse than a missing row. Because this branch
+        # shared an `else` with genuinely unknown activities, a request for
+        # surfing in London was scored by `rules.GENERIC_CFG`, which carries no
+        # `score_ceiling` -- so a pleasant day on land stored London surfing as
+        # `good`, uncapped, contradicting both the 69 cap the four sea
+        # activities carry and the sentence the reader is shown. Capping was
+        # not an option either: `beach_day` needs a coast and has no ceiling of
+        # its own, so there is no number to cap it to and inventing one is not
+        # open to us.
+        #
+        # Writing a `failed` row instead of nothing was tried and is wrong:
+        # `queries.recommendations` filters on neither status nor a null score,
+        # so the row would come back as a scored one, `unscored_activities`
+        # would go empty, and the answer would read "Surfing is None
+        # (None/100)." in place of the coast sentence.
+        #
+        # This is decided before the forecast is read, because the reason does
+        # not depend on the weather: there is no coast either way. Any row an
+        # earlier build already stored here is stale data, and belongs to the
+        # rebuild-and-rescore path, not to this one.
+        log.info(
+            "refused %s for %s: the activity needs a coast and the city has none on record",
+            p.activity,
+            p.city_id,
+        )
+        return
+
     row = cur.execute(
         "SELECT temp_max_c, temp_min_c, precip_mm, precip_prob, wind_kmh, uv_index,"
         "       sunshine_hours, as_of"
@@ -387,9 +429,11 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
     # If the user named an activity the catalogue already knows, score it with
     # its own thresholds rather than the generic outdoor-comfort fallback --
     # and, if it is deferred for this day, this promotes it back to 'pending'
-    # so the model words the thing that was actually asked about.
-    cfg = ACTIVITIES.get(p.activity)
-    if cfg is not None and (not cfg.get("requires_coast") or COASTAL.get(p.city_id, False)):
+    # so the model words the thing that was actually asked about. The coast
+    # case has already returned above, so `cfg is None` here means one thing
+    # only: an activity the catalogue does not carry, which is exactly what the
+    # generic fallback is for.
+    if cfg is not None:
         result = rules.score_activity(p.activity, cfg, row)
     else:
         result = rules.score_requested(p.activity_label, row)
@@ -401,6 +445,11 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
         ON CONFLICT (city_id, forecast_date, activity) DO UPDATE SET
             requested = true, score = EXCLUDED.score, band = EXCLUDED.band,
             reasons = EXCLUDED.reasons, weather_as_of = EXCLUDED.weather_as_of,
+            -- The row is being scored again right now, so it carries the
+            -- version of the engine that scored it. Leaving the old value here
+            -- stamped a freshly computed score with a stale rule_version, which
+            -- is the one thing a version-triggered rescore would have to trust.
+            rule_version = EXCLUDED.rule_version,
             status = 'pending', text = NULL, last_error = NULL, invalid_attempts = 0
         """,
         (
