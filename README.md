@@ -509,7 +509,7 @@ evidence-capture tool.
 --check`. As the script itself puts it, passing it does not promise CI is green;
 failing it promises CI is not.
 
-`.github/workflows/ci.yml` defines eight jobs:
+`.github/workflows/ci.yml` defines nine jobs:
 
 | job | when | what |
 |---|---|---|
@@ -518,6 +518,7 @@ failing it promises CI is not.
 | `guard` | every run | the claim checks below |
 | `build-and-scan` | every run | builds the service and UI images, runs three blocking Trivy scans, then `scripts/ci-integration.sh` against a real broker and database |
 | `ui-gate` | every run | a Playwright browser gate: the pages render, a "Weather as of" chip carries a timestamp, and the browser makes **zero off-origin requests** |
+| `retraction-drill` | every run | `scripts/retraction-drill.sh` on its own disposable Compose project: both arrival orders of a withdrawal and its record, a rebuild, and a corrected withdrawal surviving a second rebuild |
 | `publish-images` | push to `main` | pushes the images built and scanned above to GHCR |
 | `model-grounding` | release candidates only — `workflow_dispatch`, a `release/*` branch, or the `release-candidate` label | the real model against hand-written rows |
 | `restore-drill` | release candidates only, same condition | a restore after destroying every volume |

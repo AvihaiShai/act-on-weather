@@ -701,3 +701,70 @@ def test_the_city_and_row_count_lines_still_render(monkeypatch):
 
     assert _detail(asked, "City:") == "City: rome"
     assert _detail(asked, "Records consulted:").startswith("Records consulted:")
+
+
+def test_the_details_panel_and_the_answer_agree_on_a_partly_covered_window(monkeypatch):
+    """The two repairs, checked against each other rather than one at a time.
+
+    They meet on the same screen and they used to disagree on it. `respond` puts
+    the REQUESTED window in `dates`, so a named-activity question running past
+    the stored forecast reported all eight days in the panel while the answer
+    above it listed only the four it had rows for and said nothing about the
+    rest. The agent side now appends the gap; the UI side now renders the window
+    as a window instead of as a list of characters. Either fix alone still
+    leaves a reviewer comparing a date range against an answer that does not
+    cover it.
+
+    The payload below is the real shape `services/agent/main.py` returns for
+    that question -- the code-rendered named-activity answer plus
+    `grounding.gap_block` -- so this asserts the pair a reviewer actually sees.
+    """
+    answer = (
+        "Stored suitability for the activities you asked about in Tel Aviv:\n"
+        "- 2026-10-05: Surfing is fair (69/100).\n"
+        "- 2026-10-06: Surfing is fair (69/100).\n"
+        "- 2026-10-07: Surfing is fair (69/100).\n"
+        "- 2026-10-08: Surfing is fair (69/100).\n\n"
+        "Not on record: 2026-10-09 to 2026-10-12. No weather is stored for those "
+        "dates. The stored forecast ends on 2026-10-08."
+    )
+    asked = _ask(
+        monkeypatch,
+        answer=answer,
+        city="tel_aviv",
+        dates="2026-10-05 to 2026-10-12",
+        llm_called=False,
+    )
+
+    # The panel says the window, as a window.
+    assert _detail(asked, "Dates:") == "Dates: 2026-10-05 to 2026-10-12"
+    rendered = "\n".join(str(m.value) for m in asked.markdown)
+    assert "2, 0, 2, 6" not in rendered
+
+    # And the answer on screen accounts for every day of it: the four it has
+    # rows for, and the four it does not.
+    assert "- 2026-10-05: Surfing is fair (69/100)." in rendered
+    assert "2026-10-09 to 2026-10-12" in rendered
+    assert "The stored forecast ends on 2026-10-08." in rendered
+
+
+def test_an_unscored_activity_answer_renders_without_a_number(monkeypatch):
+    """The other new answer shape reaching this panel: a question whose only
+    named activity has no score is answered in code, so `llm_called` is False
+    and the body is a list of gaps. It must render as prose, and the panel must
+    not claim the model wrote it."""
+    asked = _ask(
+        monkeypatch,
+        answer=(
+            "I hold no suitability score for what you asked about in Reykjavik:\n"
+            "- ski: no suitability score on record."
+        ),
+        city="reykjavik",
+        dates="2026-09-28",
+        llm_called=False,
+    )
+
+    rendered = "\n".join(str(m.value) for m in asked.markdown)
+    assert "ski: no suitability score on record." in rendered
+    assert "/100" not in rendered
+    assert _detail(asked, "Dates:") == "Dates: 2026-09-28"
