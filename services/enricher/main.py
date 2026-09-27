@@ -14,6 +14,20 @@ It reads pending rows straight from Postgres with a SELECT-only role, and
 publishes its result back into `aow.events` for the consumer to store -- so the
 recommendation travels through the queue like every other record (M4), and
 there is no second delivery branch that could silently drop half a fan-out.
+
+One thing it checks about the wording, and one only. Three of the eighteen
+catalogue activities are named after an event kind -- "An open-air music
+festival", "An open-air farmers' market", "A stand-up comedy show" -- and this
+service holds no event data whatsoever: one score, one band, the reasons, one
+day's measurements. So it cannot tell anyone that something is on, and a model
+handed "Activity: An open-air music festival" wrote exactly that. It reached the
+trip planner unchecked, because the planner repeats this text verbatim and the
+agent's grounding invariant runs on neither. `schedule_claims` is the narrow
+half of that invariant that needs no `Brief`, so it runs here.
+
+It is not the whole of `grounding.violations`: that needs the retrieved rows to
+check against, and this service has none. What is enforced is the one claim that
+is unsupportable from a suitability row no matter what the row says.
 """
 
 from __future__ import annotations
@@ -24,6 +38,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from ..agent.grounding import schedule_claims
 from ..common import config, metrics
 from ..common.db import Pool
 from ..common.envelope import Envelope
@@ -43,7 +58,11 @@ SYSTEM = (
     "verdict band and the reasons. Your job is only to phrase them. "
     "Rules: agree with the band -- never call a 'poor' day good or a 'good' day bad; "
     "use only the numbers you are given and invent none; do not mention scores, "
-    "bands, rules or yourself; two sentences at most; plain English."
+    "bands, rules or yourself; two sentences at most; plain English. "
+    "The activity is something the traveller could choose to do, never something "
+    "that is arranged to happen: even when its name sounds like an event, do not "
+    "say it is scheduled, taking place or being held, and do not invite anyone to "
+    "attend it. Nothing here tells you whether any such thing is actually on."
 )
 
 SCHEMA = {
@@ -104,6 +123,14 @@ def build_prompt(row: dict[str, Any]) -> str:
 
 
 def validate_text(text: Any) -> str:
+    """Shape, length, and the one claim a suitability row can never support.
+
+    A rejection here raises `LlmInvalidOutput`, which is the path the caller
+    already has for a model that answered badly: the attempt is counted, the row
+    stays `pending` until `ENRICH_MAX_INVALID_ATTEMPTS` is spent, and the score
+    is never touched. So the worst case is an unworded row showing its rule-engine
+    reasons instead of a sentence -- not a wrong sentence, and not a lost score.
+    """
     if not isinstance(text, str):
         raise LlmInvalidOutput("recommendation is not a string")
     text = " ".join(text.split())
@@ -111,6 +138,12 @@ def validate_text(text: Any) -> str:
         raise LlmInvalidOutput(f"recommendation too short: {text!r}")
     if len(text) > 600:
         text = text[:600].rsplit(" ", 1)[0] + "..."
+    scheduled = schedule_claims(text)
+    if scheduled:
+        raise LlmInvalidOutput(
+            f"recommendation presents the activity as a scheduled event "
+            f"({scheduled[0]!r}): {text!r}"
+        )
     return text
 
 
