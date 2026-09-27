@@ -785,8 +785,7 @@ def test_reinstating_a_record_is_documented_as_both_halves_in_one_transaction():
     prose = (REPO / "services" / "api" / "main.py").read_text(encoding="utf-8")
     assert "reinstat" in prose.lower()
     assert "record_retractions" in prose, (
-        "api/main.py describes reinstatement without naming the ledger entry "
-        "that would undo it"
+        "api/main.py describes reinstatement without naming the ledger entry " "that would undo it"
     )
 
 
