@@ -254,13 +254,28 @@ jobs:
       # produces a bundle for does not). The exact command `make stage-fetch`
       # runs for the model half: same pinned python:3.12-slim image, same
       # script, same models.lock, run as an operator would run it, not
-      # reimplemented against the runner's own ambient Python. MODEL_BASE_URL
-      # defaults to the same public URL compose.tools.yml falls back to; set
-      # the repository variable MODEL_BASE_URL to stage from an internal
-      # mirror instead.
+      # reimplemented against the runner's own ambient Python. Set the
+      # repository variable MODEL_BASE_URL to stage from an internal mirror
+      # instead.
+      #
+      # ggml-org, and it must stay identical to compose.tools.yml's default.
+      # This literal used to read `Qwen/Qwen3-1.7B-GGUF`. Commit d98b882 moved
+      # compose.tools.yml and ci.yml off that namespace on 2026-09-24, on the
+      # ground that it publishes only Q8_0 and not the Q4_K_M this project
+      # pins, and left this line behind -- so removing the repository variable
+      # would have pointed a release at a mirror without the pinned weights.
+      # That Q8_0 reading is recorded in compose.tools.yml's own note and in
+      # d98b882's message; the HTTP response itself was never captured, so
+      # those are its source rather than a transcript.
+      #
+      # It never fired: the repository variable has been set since
+      # 2026-09-24T16:29Z, so every green release run proves nothing about
+      # this line, which is what made it worth fixing rather than watching.
+      # The drift is now a blocking `guard` step ("Model mirror defaults
+      # agree"), because two copies of one URL is exactly how it happened.
       - name: Fetch the model weights and verify against models.lock
         env:
-          MODEL_BASE_URL: ${{ vars.MODEL_BASE_URL || 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main' }}
+          MODEL_BASE_URL: ${{ vars.MODEL_BASE_URL || 'https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main' }}
         run: |
           mkdir -p models
           docker compose -f compose.tools.yml run --rm stage
