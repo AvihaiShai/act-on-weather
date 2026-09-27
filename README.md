@@ -791,8 +791,18 @@ tunnel has every route.
   [the bargain described above](#the-data-on-board-and-when-it-goes-stale) and
   is visible in every as-of stamp.
 * **A collected record can be corrected, but not withdrawn.** Records here are
-  revised, never deleted — the writer holds no DELETE grant that reaches a
-  non-sample event or place row, which is what keeps `record_history` honest.
+  revised, never deleted. What enforces that differs per table, and the single
+  sentence that used to stand here credited the grants with all of it: **the
+  writer does hold a direct, table-wide DELETE on `events`**, granted by
+  migration 003 and deliberately left out of migration 005's revoke, because
+  `enforce_event_mode()` needs it to purge sample rows on startup. What confines
+  that delete to samples is its own `WHERE is_sample AND retracted_at IS NULL`
+  predicate in `services/consumer/main.py`, which is application code. For
+  `places` and `facts` the revoke is real and there is no table grant, but the
+  writer can still execute the `SECURITY DEFINER` wipe function, so the
+  protection there is the indirection rather than the absence of a route. Read
+  from `information_schema.table_privileges` on a live database, not from the
+  migration text.
   The cost of that choice is the reverse case: if a listing is removed from
   `data/events.seed.jsonl` after it was already collected — a venue cancels, or
   `scripts/event-recheck.sh` cannot confirm it — the row stops being shipped to

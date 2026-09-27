@@ -105,7 +105,15 @@ done
 # are refused by name rather than by contents, because a live project that
 # happens to be down still owns its name: creating volumes under it and then
 # deleting them would leave the real stack on fresh volumes with nothing said.
-RESERVED="$LIVE_PROJECT $DEMO_PROJECT ${AOW_RESERVED_PROJECTS:-}"
+#
+# `aow` and `aow-demo` are listed as literals as well as through the variables.
+# `LIVE_PROJECT` and `DEMO_PROJECT` read `AOW_PROJECT` and `AOW_DEMO_PROJECT`,
+# which several scripts here export as a matter of course -- so in a shell where
+# `AOW_PROJECT=aow-something-else` was already set, `aow` was not reserved at all
+# and only the contents probe below stood between the drill and the live
+# project's name. That probe does not cover a live project that has been taken
+# down, which is exactly the case the comment above says this list is for.
+RESERVED="aow aow-demo $LIVE_PROJECT $DEMO_PROJECT ${AOW_RESERVED_PROJECTS:-}"
 for reserved in $RESERVED; do
   [ "$PROJECT" = "$reserved" ] || continue
   red "REFUSING: '$PROJECT' is a live project, not a drill target."
@@ -231,6 +239,13 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
+# Ctrl-C too, not just a normal exit. Without these, interrupting a drill left
+# the project standing with its volumes -- safe, because the next run refuses
+# it, but the header above promises "a cleanup trap that destroys everything it
+# made" and an operator who interrupts is the likeliest person to believe it.
+# `exit` re-enters the EXIT trap, so the teardown itself is not duplicated.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 hr "Starting the disposable project '$PROJECT'"
 dcd config --quiet

@@ -1,10 +1,33 @@
 -- Retraction: withdrawing a collected record from the published output.
 --
 -- The gap this closes. Records here are revised, never deleted (see
--- TECHNICAL_DECISIONS.md and 003_demo_events.sql), and the writer holds no
--- DELETE grant that reaches an event, a place or a fact. That rule keeps
--- `record_history` honest, and it has one cost: until now there was no way
--- out for a record that turned out to be wrong *after* it was collected. A
+-- TECHNICAL_DECISIONS.md and 003_demo_events.sql). The sentence that used to
+-- stand here -- "the writer holds no DELETE grant that reaches an event, a
+-- place or a fact" -- was false for events and misleading for the other two,
+-- and it was checked against the live grants rather than argued about:
+--
+--   * `events`: the writer holds a direct, table-wide DELETE. `003:27` grants
+--     it and `005:4` revokes DELETE on `weather_daily`, `recommendations`,
+--     `places` and `facts` WITHOUT naming `events`, which is what leaves the
+--     003 grant live. It is deliberate and it is load-bearing:
+--     `enforce_event_mode()` in `services/consumer/main.py` runs
+--     `DELETE FROM events WHERE is_sample AND retracted_at IS NULL` as the
+--     writer, and adding `events` to the 005 revoke would break the
+--     demo-sample purge. What restricts that delete to sample rows is the
+--     predicate in application code, not the grant.
+--   * `places` and `facts`: no table grant, but the writer holds EXECUTE on
+--     `wipe_business_rows()`, which is `SECURITY DEFINER` and deletes them as
+--     the owner. The protection is the indirection, which `005`'s own header
+--     states was the intent -- not the absence of a route.
+--
+-- What actually keeps `record_history` honest is that no supported path
+-- deletes a collected record: the one DELETE the writer can aim is confined to
+-- sample rows by its own WHERE clause, and the wipe deletes everything and
+-- replays it rather than removing one row.
+--
+-- The no-delete rule has one cost, and it is the reason for this file: until
+-- now there was no way out for a record that turned out to be wrong *after* it
+-- was collected. A
 -- venue cancels a concert; a recheck cannot confirm a listing; a place closes.
 -- Removing the row from `data/events.seed.jsonl` stopped it reaching a new
 -- install and did nothing at all to an install that already had it, because a

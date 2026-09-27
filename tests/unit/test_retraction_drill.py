@@ -190,10 +190,19 @@ def test_the_live_projects_are_refused_when_they_hold_something(tmp_path, projec
 
 def test_the_demo_project_is_named_in_the_refusal():
     """`aow-demo` was the hole the first version had: it protected AOW_PROJECT and
-    nothing else. Asserted against the source so the default cannot quietly go."""
+    nothing else. Asserted against the source so the default cannot quietly go.
+
+    Both spellings are required, and they do different jobs. The variables carry
+    an operator's override; the two literals are what keeps the live names
+    reserved in a shell where `AOW_PROJECT` already points somewhere else, which
+    is an ordinary state in this repository. The behaviour is pinned separately
+    by `test_the_live_names_are_reserved_even_when_the_variables_point_elsewhere`
+    -- this one only guards the defaults.
+    """
     source = (REPO / DRILL).read_text(encoding="utf-8")
     assert 'DEMO_PROJECT="${AOW_DEMO_PROJECT:-aow-demo}"' in source
-    assert 'RESERVED="$LIVE_PROJECT $DEMO_PROJECT' in source
+    assert 'LIVE_PROJECT="${AOW_PROJECT:-aow}"' in source
+    assert 'RESERVED="aow aow-demo $LIVE_PROJECT $DEMO_PROJECT' in source
 
 
 def test_a_further_reserved_name_can_be_added_without_editing_the_script(tmp_path):
@@ -338,3 +347,82 @@ def test_nothing_is_torn_down_on_the_way_in():
 
     cleanup = source.split("cleanup() {", 1)[1].split("\ntrap ", 1)[0]
     assert "down -v --remove-orphans" in cleanup, "cleanup no longer removes what it created"
+
+
+# ----------------------------------- the ordering property, behaviourally ----
+
+
+def test_the_first_compose_command_on_a_free_project_is_never_destructive(tmp_path):
+    """The behavioural half of the ordering proof above, and the half that was
+    missing.
+
+    `test_the_preflight_runs_before_the_trap_and_before_any_down` compares
+    character offsets of five exact strings. That is brittle in the direction
+    that matters: `source.index("down -v --remove-orphans >/dev/null")` resolves
+    to the FIRST occurrence of one exact spelling, so an early teardown written
+    any other way -- `down --volumes`, `down -v --remove-orphans || true`, the
+    same words without the redirect -- leaves the index pointing at the cleanup
+    occurrence and the comparison still passes. It also reads only the text
+    after `hr "Starting`, so a teardown added in the credentials block is
+    invisible to it.
+
+    This asserts the property itself instead: run the real script against a
+    project the stub reports as free, and require that every Compose command it
+    issues before it is stopped is a read-only one. No spelling is named.
+    """
+    _result, calls = run_drill(
+        tmp_path, "--preflight-only", project="aow-drill-fresh", existing="aow-something-else"
+    )
+
+    compose = [line for line in calls.splitlines() if line.startswith("compose")]
+    destructive = [
+        line
+        for line in compose
+        if any(word in f" {line} " for word in (" down ", " rm ", " up ", " kill ", " stop "))
+    ]
+    assert not destructive, f"a destructive Compose command ran during the preflight: {destructive}"
+
+
+def test_the_live_names_are_reserved_even_when_the_variables_point_elsewhere(tmp_path):
+    """`aow` and `aow-demo` were reserved only through `AOW_PROJECT` and
+    `AOW_DEMO_PROJECT`. Several scripts in this repository export `AOW_PROJECT`
+    as a matter of course, and in a shell where it named something else the live
+    project's own name was not reserved at all -- leaving only the contents
+    probe, which by design does not cover a live project that has been taken
+    down. That is precisely the case the reserved list exists for."""
+    for project in ("aow", "aow-demo"):
+        result, calls = run_drill(
+            tmp_path,
+            project=project,
+            existing="",
+            extra_env={
+                "AOW_PROJECT": "aow-something-else",
+                "AOW_DEMO_PROJECT": "aow-demo-something-else",
+            },
+        )
+
+        assert result.returncode == REFUSED, (project, result.stdout + result.stderr)
+        assert "not a drill target" in result.stdout + result.stderr, project
+        assert_touched_nothing(calls)
+
+
+def test_an_interrupt_still_tears_the_drill_project_down():
+    """Source-level: the EXIT trap alone does not fire on Ctrl-C in the middle
+    of a `docker compose up`, so an interrupted drill left a project standing
+    with its volumes. Safe -- the next run refuses it -- but the script's header
+    promises a trap that destroys everything it made, and an operator who
+    interrupts is the likeliest person to rely on that.
+
+    `exit` re-enters the EXIT trap, so the teardown is written once.
+    """
+    source = (REPO / DRILL).read_text(encoding="utf-8")
+    commands = _commands(source)
+
+    assert "trap cleanup EXIT" in commands
+    assert "trap 'exit 130' INT" in commands
+    assert "trap 'exit 143' TERM" in commands
+    # Installed after the preflight, like the EXIT trap, or an interrupt during
+    # a refusal would tear down a project the drill had established was somebody
+    # else's.
+    cleared = source.index('if [ "$PREFLIGHT_ONLY" -eq 1 ]')
+    assert cleared < source.index("trap 'exit 130' INT")
