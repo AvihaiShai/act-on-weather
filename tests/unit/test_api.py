@@ -67,6 +67,62 @@ def test_valid_body_is_still_accepted():
     assert response.json()["message_id"]
 
 
+# ------------------------------- the activity slug floor, on the write path ----
+#
+# `POST /recommendations` gained a second 422 when the read path's floor was made
+# a shared constant, and the route is public, so the contract change belongs in
+# this file rather than only in the slug round-trip tests. There are three
+# distinct refusals on one field and they are told apart here, because the
+# interesting one is reachable only through a gap between the other two:
+# `RecommendationRequestIn.activity` carries `min_length=2` on the text the
+# traveller TYPED, and the floor below applies to the slug that text normalises
+# to. Any name that is filler plus one character satisfies the first and fails the
+# second.
+
+
+@pytest.mark.parametrize("activity", ["a x", "go x", "the 7", "  an  q  "])
+def test_a_name_that_normalises_to_one_character_is_refused(activity):
+    """The new 422. `slugify` trims leading and trailing filler, so "a x" is
+    stored as `x` -- a key the agent's own floor then discards as too short, which
+    made the row unreachable by the very question that asked for it. Refusing it
+    at the door is what keeps the two floors from disagreeing."""
+    response = client.post(
+        "/recommendations",
+        json={"city": "rome", "forecast_date": "2026-09-24", "activity": activity},
+    )
+    assert response.status_code == 422, response.text
+    body = response.json()
+    # An HTTPException, so `detail` is a flat string -- not pydantic's list. The
+    # message names the slug and the floor, because "invalid activity" sends the
+    # caller back to the field they typed rather than to what became of it.
+    assert "after normalisation" in body["detail"], body
+    assert "at least 2 are needed" in body["detail"], body
+
+
+def test_a_name_that_is_nothing_but_filler_is_refused_differently():
+    """The bound on the case above, and the reason both messages exist. Nothing
+    survives the trim at all, so there is no slug to report a length for, and
+    `slugify` raises before the floor is reached."""
+    response = client.post(
+        "/recommendations",
+        json={"city": "rome", "forecast_date": "2026-09-24", "activity": "a go"},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "activity is empty after normalisation"
+
+
+def test_a_two_character_name_is_still_accepted():
+    """The floor is two, not three, and it is measured on the slug. A reviewer
+    probing the edge gets a 202 here -- a write path stricter than the read path
+    would refuse an activity the system is perfectly able to score."""
+    response = client.post(
+        "/recommendations",
+        json={"city": "rome", "forecast_date": "2026-09-24", "activity": "a 5k"},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["activity"] == "5k"
+
+
 def test_record_patch_body_stays_open():
     """M12's edit path is the deliberate exception.
 

@@ -294,6 +294,40 @@ def test_a_stored_day_the_activity_has_no_score_on_is_named(monkeypatch, stub):
     ), answer
 
 
+def test_the_same_dated_gap_reaches_a_where_and_when_answer(monkeypatch, stub):
+    """The second call site, which had none of its own.
+
+    `unscored_date_lines` is called from `named_activity_answer` and from
+    `where_answer`, and only the first was covered. The where path was reachable
+    but never exercised with a partly scored window: `tests/unit/test_where_questions.py`
+    stubs `queries.forecast` to `[]`, so `covered_days` there is always empty and
+    the function returns `[]` whatever the rows say. This stub returns real
+    forecast rows, so the day really is covered and really has no score.
+
+    It is the same sentence for the same reason: `where_answer`'s score block is
+    headed with the REQUESTED window, so a day inside it with no row has to be
+    named or the list reads as though it covered all of them.
+    """
+    route, rows, _asked = stub
+    rows.extend(
+        verdict_row(day, "kite_surfing", "Kite surfing", 42, "poor", requested=True)
+        for day in STORED[:2]
+    )
+    question = "Where and when can I go kite surfing in Tel Aviv on 2026-10-05 to 2026-10-08?"
+    result, response = ask(monkeypatch, route, question)
+
+    # The premise: this really is the `where` route, not the named-activity one.
+    assert result.resolution.asks_where is True
+    assert result.resolution.asks_when is True
+    assert result.resolution.activities == ["kite_surfing"]
+
+    answer = response["answer"]
+    assert "- 2026-10-05: Kite surfing is poor (42/100)." in answer
+    assert (
+        "- Kite surfing: no suitability score is stored for 2026-10-07 to 2026-10-08." in answer
+    ), answer
+
+
 # ------------------------- H6: a short noun may not borrow a score -------
 
 
@@ -386,6 +420,66 @@ def test_a_previously_requested_short_activity_answers_from_its_own_row(monkeypa
     # Not the catalogue row that used to supply the number.
     assert "100/100" not in answer
     assert "beach" not in answer.lower()
+
+
+# `ski` was the noun the live demo failed on, so it is the one the section above
+# is written around. It is not the only noun the floor let through: lowering it
+# from 4 to 2 changed the answer for every three-letter activity-shaped noun, and
+# only `ski` had a test. These are the rest of them, asked the same way.
+#
+# All of them are nouns the catalogue does NOT hold, and the answer is the same
+# stated gap `ski` gets. That is the decision, not an accident: `spa` and `gym`
+# were considered for `NOT_AN_ACTIVITY` and deliberately left out. That list is
+# for words which are not an activity at all -- open wording ("something fun") and
+# meals ("coffee") -- where naming a gap would be answering a question nobody
+# asked. A spa and a gym are activities; this catalogue simply scores neither. Put
+# them in the list and the noun is dropped instead of reported, which empties
+# `Resolution.activities`, removes the activity filter from the retrieval, hands
+# the model one row per catalogue activity and arms no grounding check. That is
+# the H6 failure above, reintroduced by a word list.
+SHORT_NOUNS = ["spa", "gym", "bbq", "pub", "zoo"]
+
+
+@pytest.mark.parametrize("noun", SHORT_NOUNS)
+def test_every_short_unknown_noun_is_reported_rather_than_discarded(stub, noun):
+    """Reykjavik, not Rome: `typed_activities` needs a resolved city, and the
+    stub's city list is Reykjavik and Tel Aviv."""
+    route, _rows, _asked = stub
+    result = route.retrieve(f"Is tomorrow a good day for a {noun} in Reykjavik?")
+
+    assert result.resolution.unknown_activities == [noun], noun
+    # It did not become a catalogue activity on the way, and it was not dropped.
+    assert result.resolution.activities == [], noun
+    assert noun in result.unscored_activities, noun
+
+
+@pytest.mark.parametrize("noun", SHORT_NOUNS)
+def test_every_short_unknown_noun_is_answered_in_code_with_its_gap(monkeypatch, stub, noun):
+    """The half that matters to a reviewer asking the question out loud: the model
+    is not called, and the answer says the score is missing rather than giving
+    one."""
+    route, _rows, _asked = stub
+    _result, response = ask(
+        monkeypatch, route, f"Is tomorrow a good day for a {noun} in Reykjavik?"
+    )
+
+    assert response["llm_called"] is False, noun
+    assert f"{noun}: no suitability score on record" in response["answer"], (noun, response)
+    assert "/100" not in response["answer"], (noun, response)
+
+
+def test_a_short_noun_the_catalogue_does_hold_still_resolves_to_it(stub):
+    """The bound on all of the above, and the reason the floor is a floor and not
+    a rejection list. `jog` is three characters and IS a catalogue keyword
+    (data/activities.yml, `running`), so it must answer from running's own row --
+    it never reaches `typed_activities` at all. At the old floor of 4 this one was
+    unaffected, because the keyword loop runs first; asserted so that a future
+    change to the floor cannot quietly start routing it through the gap path."""
+    route, _rows, _asked = stub
+    result = route.retrieve("Is tomorrow a good day for a jog in Reykjavik?")
+
+    assert result.resolution.activities == ["running"]
+    assert result.resolution.unknown_activities == []
 
 
 # --------- H7: a stored custom name beats a keyword inside that name ----
@@ -722,6 +816,24 @@ def test_open_wording_keeps_its_ordinary_answer(monkeypatch, stub):
     assert result.resolution.unknown_activities == []
     assert result.resolution.activities == []
     assert "not on record" not in response["answer"].lower()
+
+
+# `tea` was added to `NOT_AN_ACTIVITY` in the same commit that lowered the floor,
+# and the floor is why: at 4 the word was discarded before the list was consulted,
+# at 2 it reaches it. It is the one word in that set with no test, so the three
+# asserted here are `tea`, the `coffee` it was added beside, and one whose length
+# means the floor was never what suppressed it -- otherwise this test would pass
+# on the strength of the floor alone and say nothing about the list.
+@pytest.mark.parametrize("noun", ["tea", "coffee", "dinner"])
+def test_a_meal_is_not_reported_as_an_activity_with_no_score(monkeypatch, stub, noun):
+    """The bound on the section above. A short noun is reported as a gap because
+    it is a plausible activity nobody scored; a drink is not an activity at all,
+    and "tea: no suitability score on record" answers a question nobody asked."""
+    route, _rows, _asked = stub
+    result, response = ask(monkeypatch, route, f"Is tomorrow a good day for {noun} in Tel Aviv?")
+
+    assert result.resolution.unknown_activities == [], noun
+    assert noun not in response["answer"].lower(), (noun, response["answer"])
 
 
 # ------------- what the code-rendered route may NOT swallow ----------------
