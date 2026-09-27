@@ -35,6 +35,13 @@ RK_PATCH = "record.patch"
 # recommendations. Like every other write it travels the queue, so the
 # consumer stays the only role that touches the database.
 RK_REENRICH = "recommendation.reenrich"
+# Withdraw a collected record from the published output. A record that turns
+# out to be wrong after it was collected -- a cancelled concert, a listing a
+# recheck cannot confirm -- is removed from a snapshot by deleting its line,
+# and deleting a line produces no message, so an install that already holds
+# the row would keep serving it forever. This is the message that reaches it.
+# See migration 009 and `apply_retraction` in the consumer.
+RK_RETRACT = "record.retract"
 
 ROUTING_KEYS = frozenset(
     {
@@ -49,6 +56,7 @@ ROUTING_KEYS = frozenset(
         RK_USER_DATA_WIPE,
         RK_PATCH,
         RK_REENRICH,
+        RK_RETRACT,
     }
 )
 

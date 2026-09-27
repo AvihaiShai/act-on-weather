@@ -125,15 +125,38 @@ def test_wipe_replays_committed_source_and_clears_user_tables(monkeypatch, tmp_p
     monkeypatch.setattr(consumer, "upsert_weather", lambda cur, p: restored.append(p) or True)
     monkeypatch.setattr(consumer, "score_defaults", lambda cur, p: restored.append("scored"))
 
+    # A withdrawn event this install already holds. The rebuild deletes every
+    # collected row and replays it from the outbox, so unless the mark is
+    # carried across, the wipe quietly republishes a record somebody withdrew
+    # -- the F9 defect arriving by another route (migration 009).
+    withdrawn = {
+        "id": "gulbenkian:cancelled-concert",
+        "retracted_at": datetime(2026, 9, 27, tzinfo=UTC),
+        "retraction_reason": "the venue cancelled it",
+        "retracted_by": "operator",
+    }
+
     class Cursor:
         def __init__(self):
             self.statements = []
+            self.params = []
+            self.rowcount = 1
 
         def execute(self, sql, params=None):
-            self.statements.append(" ".join(sql.split()))
+            self.last = " ".join(sql.split())
+            self.statements.append(self.last)
+            self.params.append(params)
             return self
 
         def fetchall(self):
+            # Answers the query it was actually asked, rather than one canned
+            # row for everything: the wipe now runs two different SELECTs.
+            if "retracted_at IS NOT NULL" in self.last:
+                return (
+                    [withdrawn]
+                    if self.last.startswith("SELECT id") and " events" in self.last
+                    else []
+                )
             return [{"message_id": envelope.message_id}]
 
     cursor = Cursor()
@@ -143,6 +166,22 @@ def test_wipe_replays_committed_source_and_clears_user_tables(monkeypatch, tmp_p
     assert restored[0].temp_max_c == 25.0
     assert "SELECT wipe_business_rows()" in cursor.statements
     assert cursor.statements[-1] == "DELETE FROM record_history"
+
+    # The marks are read before anything is deleted, and re-applied afterwards.
+    read_at = next(i for i, s in enumerate(cursor.statements) if "retracted_at IS NOT NULL" in s)
+    deleted_at = cursor.statements.index("SELECT wipe_business_rows()")
+    assert read_at < deleted_at, "the retraction marks must be captured before the delete"
+
+    reapplied = [
+        params
+        for statement, params in zip(cursor.statements, cursor.params, strict=True)
+        if statement.startswith("UPDATE events SET retracted_at") and params
+    ]
+    assert reapplied, "the wipe did not re-apply the retraction it captured"
+    assert reapplied[-1]["id"] == withdrawn["id"]
+    assert reapplied[-1]["at"] == withdrawn["retracted_at"]
+    assert reapplied[-1]["reason"] == withdrawn["retraction_reason"]
+    assert reapplied[-1]["by"] == withdrawn["retracted_by"]
 
 
 def test_wipe_aborts_before_delete_if_a_collected_envelope_is_missing(monkeypatch, tmp_path):
@@ -161,6 +200,8 @@ def test_wipe_aborts_before_delete_if_a_collected_envelope_is_missing(monkeypatc
             return self
 
         def fetchall(self):
+            # The abort happens before the retraction marks are read, so this
+            # only ever answers the ingest_log query.
             return [{"message_id": "missing-source-id"}]
 
     with pytest.raises(RuntimeError, match="collected envelopes are missing"):

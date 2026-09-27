@@ -25,7 +25,10 @@ source "$(dirname "$0")/lib.sh"
 FAILED=0
 
 ENTITY=facts
-ROW_ID=$(psql_q "SELECT id FROM $ENTITY ORDER BY id LIMIT 1")
+# Withdrawn rows are skipped: correcting one would print a record the
+# published output no longer carries, and the drill would pass while showing
+# a reader something no answer can reach (migration 009).
+ROW_ID=$(psql_q "SELECT id FROM $ENTITY WHERE retracted_at IS NULL ORDER BY id LIMIT 1")
 [ -n "$ROW_ID" ] || { echo "no $ENTITY rows to edit"; exit 1; }
 ENCODED=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$ROW_ID")
 

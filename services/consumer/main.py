@@ -176,7 +176,11 @@ def enforce_event_mode(conn: psycopg.Connection) -> int:
         log.warning("DEMO MODE: generated sample events are permitted in this database")
         return 0
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM events WHERE is_sample")
+        # `AND retracted_at IS NULL` so a withdrawn sample is kept rather
+        # than deleted and re-minted un-retracted on the next demo boot:
+        # the re-accept uses a fresh per-process salt, so its envelope is
+        # new and the original retraction is not replayed against it.
+        cur.execute("DELETE FROM events WHERE is_sample AND retracted_at IS NULL")
         removed = cur.rowcount
     conn.commit()
     if removed:
@@ -598,11 +602,65 @@ def delete_itinerary(cur: psycopg.Cursor, p: schemas.ItineraryDelete) -> None:
 HANDLERS[config.RK_ITINERARY_DELETE] = delete_itinerary
 
 
+RETRACTABLE = {"events", "places", "facts"}
+
+
+def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
+    """Withdraw one collected record from the published output (migration 009).
+
+    An UPDATE, not a DELETE: the writer holds no DELETE grant on these tables
+    and is not being given one. The row keeps its source, its as-of and its
+    history, and the `_bump`/`_hist` triggers file the withdrawal as an
+    ordinary revision, so `record_history` shows exactly when it happened.
+
+    The decision date is never moved. `COALESCE` keeps the first
+    `retracted_at` this row was given, so replaying the queue -- or a wipe --
+    cannot restamp a withdrawal with the date of the replay. The reason and
+    the author *can* be corrected, because getting the wording of a withdrawal
+    right afterwards is a normal thing to need and the alternative is an
+    operator editing the database by hand.
+
+    A retraction naming a record this install has never held is not an error.
+    The list is curated centrally and an install only has what it ingested; a
+    retraction for a row in a city this deployment does not carry should do
+    nothing rather than dead-letter the message. It is logged at warning
+    because the other way to reach it is a typo in the curated list, and that
+    should not be invisible.
+    """
+    if p.entity not in RETRACTABLE:
+        raise Poison(f"cannot retract {p.entity}: only {sorted(RETRACTABLE)} are collected records")
+    cur.execute(
+        f"UPDATE {p.entity} SET retracted_at = COALESCE(retracted_at, %(at)s),"
+        " retraction_reason = %(reason)s, retracted_by = %(by)s"
+        " WHERE id = %(id)s AND (retracted_at IS NULL"
+        "   OR retraction_reason IS DISTINCT FROM %(reason)s"
+        "   OR retracted_by IS DISTINCT FROM %(by)s)",
+        {"at": p.retracted_at, "reason": p.reason, "by": p.retracted_by, "id": p.entity_id},
+    )
+    if cur.rowcount:
+        log.info("retracted %s %s: %s", p.entity, p.entity_id, p.reason)
+    else:
+        log.warning(
+            "retraction for %s %s changed nothing: no such row, or already "
+            "withdrawn for the same reason",
+            p.entity,
+            p.entity_id,
+        )
+
+
+HANDLERS[config.RK_RETRACT] = apply_retraction
+
+
 SOURCE_KEYS = (
     config.RK_WEATHER,
     config.RK_PLACE,
     config.RK_FACT,
     config.RK_EVENT,
+    # A retraction is collected state, not user state: it must survive the
+    # rebuild that `user_data.wipe` performs, or a wipe would silently
+    # republish every record an operator has withdrawn. Replayed in a second
+    # pass below, after the records themselves.
+    config.RK_RETRACT,
 )
 
 
@@ -615,9 +673,12 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
     or envelope aborts the transaction rather than producing a partial wipe.
     """
     with Outbox("/source-outbox/outbox.sqlite3", readonly=True) as source_box:
+        # Placeholders generated from the tuple rather than written out: the
+        # literal `(?, ?, ?, ?)` this replaces silently went wrong the moment
+        # a fifth source key was added.
         source_rows = source_box.conn.execute(
             "SELECT message_id, routing_key, body FROM outbox"
-            " WHERE routing_key IN (?, ?, ?, ?) ORDER BY seq",
+            f" WHERE routing_key IN ({', '.join('?' * len(SOURCE_KEYS))}) ORDER BY seq",
             SOURCE_KEYS,
         ).fetchall()
 
@@ -644,17 +705,62 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
             (envelope.routing_key, schemas.validate(envelope.routing_key, envelope.payload))
         )
 
+    # Retractions are carried across the rebuild rather than re-derived from
+    # it. Replaying the curated list restores every withdrawal that shipped
+    # with the repository, but not one an operator made against this install
+    # alone -- and a wipe that quietly republished a record somebody withdrew
+    # would be the same F9 defect this mechanism exists to close, arriving by
+    # a different route. Captured before the delete, re-applied after the
+    # replay, so the origin of a retraction stops mattering.
+    held = {
+        entity: cur.execute(
+            f"SELECT id, retracted_at, retraction_reason, retracted_by FROM {entity}"
+            " WHERE retracted_at IS NOT NULL"
+        ).fetchall()
+        for entity in ("events", "places", "facts")
+    }
+
     cur.execute("SELECT wipe_business_rows()")
 
-    for routing_key, payload in replay:
+    # Two passes, records then retractions. A retraction is an UPDATE of a row
+    # that must already be there, so replaying it in outbox order would depend
+    # on the accept order of two different files. Splitting the pass makes the
+    # rebuild order-independent by construction instead of by convention.
+    records = [(rk, p) for rk, p in replay if rk != config.RK_RETRACT]
+    retractions = [(rk, p) for rk, p in replay if rk == config.RK_RETRACT]
+
+    for routing_key, payload in records:
         if routing_key == config.RK_WEATHER:
             if upsert_weather(cur, payload):
                 score_defaults(cur, payload)
         else:
             HANDLERS[routing_key](cur, payload)
 
+    for routing_key, payload in retractions:
+        HANDLERS[routing_key](cur, payload)
+
+    restored = 0
+    for entity, rows in held.items():
+        for row in rows:
+            cur.execute(
+                f"UPDATE {entity} SET retracted_at = %(at)s, retraction_reason = %(reason)s,"
+                " retracted_by = %(by)s"
+                " WHERE id = %(id)s AND retracted_at IS NULL",
+                {
+                    "at": row["retracted_at"],
+                    "reason": row["retraction_reason"],
+                    "by": row["retracted_by"],
+                    "id": row["id"],
+                },
+            )
+            restored += cur.rowcount
+
     cur.execute("DELETE FROM record_history")
-    log.info("wiped user data; restored %d collected messages", len(replay))
+    log.info(
+        "wiped user data; restored %d collected messages and %d retractions",
+        len(replay),
+        restored,
+    )
 
 
 HANDLERS[config.RK_USER_DATA_WIPE] = wipe_user_data
