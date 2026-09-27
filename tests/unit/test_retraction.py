@@ -7,13 +7,16 @@ removing its line from the snapshot produces no message, so an install that
 already stored the row kept serving it. A dress rehearsal found two listings
 the project's own recheck had verified as cancelled still being served.
 
-The end-to-end proof is `tests/integration/retraction.py`, which needs a real
-database. What is checkable here is everything that does not: the payload
-contract, the routing, the SQL the consumer builds, the wipe's behaviour, and
--- the one most likely to rot -- that every published read filters retracted
-rows. That last one is a source assertion rather than a database one on
-purpose: a new read added without the filter is exactly how this defect would
-come back, and no unit test with a mocked cursor would notice.
+The end-to-end proof is `tests/integration/retraction.py` for the arrival order
+where the record is already here, and the three `retraction_*` fixtures that
+`scripts/retraction-drill.sh` drives for the order where it is not. Both need a
+real database. What is checkable here is everything that does not: the payload
+contract, the routing, the SQL the consumer builds, the ledger that makes a
+withdrawal outlive its delivery, the wipe's behaviour, and -- the one most likely
+to rot -- that every published read filters retracted rows. That last one is a
+source assertion rather than a database one on purpose: a new read added without
+the filter is exactly how this defect would come back, and no unit test with a
+mocked cursor would notice.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from services.consumer import main as consumer
 REPO = Path(__file__).resolve().parents[2]
 QUERIES = (REPO / "services" / "common" / "queries.py").read_text(encoding="utf-8")
 MIGRATION = REPO / "db" / "migrations" / "009_record_retraction.sql"
+LEDGER = REPO / "db" / "migrations" / "010_retraction_ledger.sql"
 
 
 class Cursor:
@@ -109,7 +113,7 @@ def test_the_handler_marks_rather_than_deletes():
 
     consumer.apply_retraction(cursor, retraction())
 
-    [(sql, params)] = cursor.writes
+    _ledger, (sql, params) = cursor.writes
     assert sql.startswith("UPDATE events SET retracted_at")
     assert "DELETE" not in sql.upper()
     assert params["id"] == "theo2:x"
@@ -124,7 +128,7 @@ def test_an_already_retracted_row_is_not_restamped():
 
     consumer.apply_retraction(cursor, retraction())
 
-    [(sql, _params)] = cursor.writes
+    _ledger, (sql, _params) = cursor.writes
     assert "retracted_at IS NULL" in sql
 
 
@@ -134,7 +138,173 @@ def test_a_retraction_for_an_unknown_record_is_not_a_poison_message():
 
     consumer.apply_retraction(cursor, retraction())  # must not raise
 
+    # The ledger write and the UPDATE that marked nothing. Two, not one: the
+    # decision has to be written down even when there is nothing here to mark.
+    assert len(cursor.writes) == 2
+
+
+# ------------------------------------------------- the ledger (migration 010) ----
+
+# The defect these guard. A `record.retract` can arrive before the record it
+# names -- the curated list is applied against whatever this install happens to
+# have ingested, `POST /records/.../retract` publishes from the API's own outbox
+# with no ordering relationship to the ingestor's, and a record that
+# dead-letters is stored only when an operator redrives it. The handler's UPDATE
+# then matches nothing and the transaction commits anyway, carrying the
+# envelope's message_id into `ingest_log`. That is terminal: the id is
+# deterministic, the outbox row is marked published, and every redelivery is
+# short-circuited as a duplicate before the handler is reached. The record then
+# arrived later and was published with nothing left to withdraw it.
+
+
+def test_the_decision_is_written_down_before_it_is_applied():
+    """The ledger is the durable half. It is written first and unconditionally,
+    so the withdrawal outlives the one delivery that carried it."""
+    cursor = Cursor()
+
+    consumer.apply_retraction(cursor, retraction())
+
+    (ledger_sql, ledger_params), (row_sql, _) = cursor.writes
+    assert ledger_sql.startswith("INSERT INTO record_retractions")
+    assert row_sql.startswith("UPDATE events")
+    assert ledger_params == {
+        "entity": "events",
+        "id": "theo2:x",
+        "at": datetime(2026, 9, 27, 12, 0, tzinfo=UTC),
+        "reason": "the venue cancelled it",
+        "by": "operator",
+    }
+
+
+def test_the_ledger_records_the_entity_so_a_row_need_not_exist():
+    """The whole point: the ledger can hold a withdrawal for a table this
+    install has no matching row in at all, so `entity` is stored, not derived."""
+    cursor = Cursor(rowcount=0)
+
+    consumer.apply_retraction(cursor, retraction("places", "osm:closed-cafe"))
+
+    (_sql, params), _row = cursor.writes
+    assert params["entity"] == "places"
+    assert params["id"] == "osm:closed-cafe"
+
+
+def test_the_ledger_does_not_move_the_decision_date_either():
+    """Same rule as the row's `COALESCE(retracted_at, ...)`: a replay must not
+    restamp a withdrawal with the clock of the replay. Enforced by leaving
+    `retracted_at` out of the conflict clause, and the reason and the author
+    stay correctable."""
+    cursor = Cursor()
+
+    consumer.apply_retraction(cursor, retraction())
+
+    (sql, _params), _row = cursor.writes
+    conflict = sql.split("ON CONFLICT")[1]
+    restamps = "retracted_at = EXCLUDED" in conflict
+    assert not restamps, (
+        "the ledger would restamp the decision date on every replay of the "
+        "curated list, which is the one thing a withdrawal must not do"
+    )
+    assert "retraction_reason = EXCLUDED.retraction_reason" in conflict
+    assert "retracted_by = EXCLUDED.retracted_by" in conflict
+
+
+@pytest.mark.parametrize(
+    ("table", "columns"),
+    [
+        ("events", "EVENT_COLS"),
+        ("places", "PLACE_COLS"),
+        ("facts", "FACT_COLS"),
+    ],
+)
+def test_a_record_arriving_after_its_withdrawal_is_marked_on_arrival(table, columns):
+    """The other arrival order. `upsert_by_id` consults the ledger for every
+    collected record it writes, so the two halves no longer have to meet in
+    time."""
+    cursor = Cursor()
+    payload = dict.fromkeys(getattr(consumer, columns), None) | {"id": "row-1"}
+
+    consumer.upsert_by_id(cursor, table, getattr(consumer, columns), payload)
+
+    (insert_sql, _), (mark_sql, mark_params) = cursor.writes
+    assert insert_sql.startswith(f"INSERT INTO {table}")
+    assert mark_sql.startswith(f"UPDATE {table} SET retraction_reason")
+    assert "FROM record_retractions r" in mark_sql
+    assert mark_params == {"entity": table, "id": "row-1"}
+
+
+def test_the_arrival_mark_does_not_touch_a_row_already_withdrawn():
+    """A correction of the wording can be in flight; the row's own handler is
+    what settles that, not this."""
+    cursor = Cursor()
+
+    consumer.apply_recorded_retraction(cursor, "events", "row-1")
+
+    [(sql, _params)] = cursor.writes
+    assert "events.retracted_at IS NULL" in sql
+    assert "DELETE" not in sql.upper()
+
+
+def test_a_replay_the_as_of_guard_rejected_does_not_consult_the_ledger():
+    """`rowcount == 0` means the upsert wrote nothing, so nothing was newly
+    published and there is nothing to withdraw. Saves a statement on the
+    common case and keeps the mark tied to an actual write."""
+    cursor = Cursor(rowcount=0)
+    payload = dict.fromkeys(consumer.FACT_COLS, None) | {"id": "row-1"}
+
+    consumer.upsert_by_id(cursor, "facts", consumer.FACT_COLS, payload)
+
     assert len(cursor.writes) == 1
+
+
+def test_a_table_with_no_retraction_column_is_left_alone():
+    """`upsert_by_id` is only ever called for the three collected tables today.
+    The guard is what keeps that from becoming a broken statement if it is not
+    -- `weather_daily` has no `retracted_at` (migration 009)."""
+    cursor = Cursor()
+
+    consumer.apply_recorded_retraction(cursor, "weather_daily", "rome/2026-09-24")
+
+    assert cursor.writes == []
+
+
+def test_upsert_by_id_is_the_only_way_a_collected_row_comes_into_existence():
+    """What makes the hook complete by construction rather than by memory.
+
+    The mark is applied in `upsert_by_id` and nowhere else, which is only
+    sufficient while that is the one INSERT into these three tables. The
+    consumer is the single writer, so this is checkable here: a second INSERT
+    added anywhere under `services/` has to apply the ledger too, and this is
+    where it is said so.
+    """
+    strays = []
+    for path in (REPO / "services").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for table in COLLECTED_TABLES:
+            if f"INSERT INTO {table}" in text:
+                strays.append(f"{path.relative_to(REPO)}: INSERT INTO {table}")
+    assert not strays, (
+        "a collected table is inserted into outside upsert_by_id, so a record "
+        "withdrawn before it arrived would be published un-retracted: " + ", ".join(strays)
+    )
+    source = (REPO / "services" / "consumer" / "main.py").read_text(encoding="utf-8")
+    body = source.split("def upsert_by_id")[1].split("\ndef ")[0]
+    assert "apply_recorded_retraction" in body, (
+        "upsert_by_id no longer applies the ledger, so a record that arrives "
+        "after its withdrawal is published un-retracted"
+    )
+
+
+def test_the_ledger_is_not_emptied_by_a_rebuild():
+    """A wipe replays every collected record. A ledger the wipe emptied would
+    republish everything an operator had withdrawn -- the same defect by a
+    third route -- so `wipe_business_rows()` must never name it."""
+    for path in sorted((REPO / "db" / "migrations").glob("*.sql")):
+        sql = path.read_text(encoding="utf-8")
+        if "wipe_business_rows" not in sql:
+            continue
+        body = sql.split("wipe_business_rows", 1)[1]
+        assert "DELETE FROM public.record_retractions" not in body, path.name
+        assert "DELETE FROM record_retractions" not in body, path.name
 
 
 def test_an_unretractable_entity_is_poison_not_a_silent_no_op(monkeypatch):
@@ -309,3 +479,66 @@ def test_the_migration_is_idempotent_and_grants_nothing():
         "this migration must not widen any role's privileges"
     )
     assert "BEGIN;" in sql and "COMMIT;" in sql
+
+
+# ------------------------------------------------ the ledger migration (010) ----
+
+
+def _statements(sql: str) -> str:
+    """The file without its prose. Every migration here explains itself at
+    length, so a substring search over the whole text matches its own
+    rationale."""
+    return "\n".join(
+        line.strip()
+        for line in sql.splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    )
+
+
+def test_the_ledger_migration_creates_the_table_one_row_per_record():
+    sql = _statements(LEDGER.read_text(encoding="utf-8"))
+    assert "CREATE TABLE IF NOT EXISTS record_retractions" in sql
+    assert "PRIMARY KEY (entity, entity_id)" in sql, (
+        "without this a second withdrawal of the same record is a second row "
+        "rather than a correction of the first"
+    )
+    for column in ("retracted_at", "retraction_reason", "retracted_by", "recorded_at"):
+        assert column in sql, column
+    assert "CHECK (entity IN ('events', 'places', 'facts'))" in sql
+
+
+def test_the_ledger_migration_is_idempotent_and_re_runnable():
+    """There is no migrations table: every file in the list runs on every boot."""
+    sql = LEDGER.read_text(encoding="utf-8")
+    body = _statements(sql)
+    assert "CREATE TABLE IF NOT EXISTS" in body
+    backfill_is_reentrant = "ON CONFLICT (entity, entity_id) DO NOTHING" in body
+    assert backfill_is_reentrant, "the backfill must be a no-op on the second boot"
+    assert r"\set ON_ERROR_STOP on" in sql
+    assert "BEGIN;" in sql and "COMMIT;" in sql
+
+
+def test_the_ledger_migration_grants_no_delete_and_no_new_role():
+    """A withdrawal is corrected, never removed, like every other collected
+    fact here -- and the reader stays read-only."""
+    body = _statements(LEDGER.read_text(encoding="utf-8"))
+    grants = [
+        " ".join(line.split()) for line in body.splitlines() if line.upper().startswith("GRANT")
+    ]
+    assert grants, "a table nobody can read fails silently"
+    assert not [line for line in grants if "DELETE" in line.upper()]
+    assert "GRANT SELECT ON record_retractions TO aow_reader;" in grants
+    assert "GRANT SELECT, INSERT, UPDATE ON record_retractions TO aow_writer;" in grants
+    assert "CREATE ROLE" not in body
+
+
+def test_the_backfill_invents_no_reason():
+    """An install upgrading to 010 already carries marks on rows, and every one
+    is a decision with a date, a reason and an author. A row with no stated
+    reason is skipped rather than given one."""
+    body = _statements(LEDGER.read_text(encoding="utf-8"))
+    backfill = body.split("INSERT INTO record_retractions", 1)[1]
+    for table in COLLECTED_TABLES:
+        assert f"FROM {table} WHERE retracted_at IS NOT NULL AND retraction_reason IS NOT NULL" in (
+            " ".join(backfill.split())
+        ), table

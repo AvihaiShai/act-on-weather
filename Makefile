@@ -55,7 +55,7 @@ DEMO           = -f compose.yml $(BUNDLE) -f compose.demo.yml
         test verify demo \
         grounding offline no-data-loss update reenrich questions refresh \
         refresh-check snapshot samples manifest redrive dlq clean \
-        monitor monitor-down backup restore backup-restore
+        monitor monitor-down backup restore backup-restore retraction-drill
 
 help:
 	@echo "First run (needs the internet, once):"
@@ -85,6 +85,8 @@ help:
 	@echo "  make questions      M7/M8 -- agent breadth, including what it refuses"
 	@echo "  make grounding      M7 -- adversarial grounding against the local model"
 	@echo "  make backup-restore B3  -- back up, destroy the volumes, restore, verify"
+	@echo "  make retraction-drill F9  -- a withdrawal holds whichever order it and"
+	@echo "                      its record arrive in (its own disposable project)"
 	@echo "  make demo           all of the above, in order"
 	@echo ""
 	@echo "Connected maintenance:"
@@ -219,6 +221,12 @@ questions:     ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS
 # and destroys its volumes, which takes about two minutes and would be a
 # surprising thing for `make demo` to do to a reviewer.
 backup-restore: ; $(COMPOSE) $(TOOLS) $(TOOLS_BUNDLE) run --rm $(OFFLINE_RUN_ARGS) demos backup-restore
+
+# Also deliberately not part of `make demo`, and for a sharper reason than the
+# one above. This drill withdraws records, and there is no un-retract route; it
+# then wipes and rebuilds every collected row. So it insists on a disposable
+# project of its own and refuses to run against the live one -- see the script.
+retraction-drill: ; bash scripts/retraction-drill.sh
 
 # One container. demos/run.sh keeps the order -- prove the system works and
 # answers before breaking it, so a failure in a drill is unambiguous.

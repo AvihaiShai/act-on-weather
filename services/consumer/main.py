@@ -280,6 +280,60 @@ def score_defaults(cur: psycopg.Cursor, p: schemas.WeatherDaily) -> None:
         )
 
 
+# The three collected tables. Everything else is either derived (a
+# recommendation), replaced day by day (weather) or the user's own (an
+# itinerary), and migration 009 gave a `retracted_at` column to these three
+# alone. Declared here rather than beside `apply_retraction` below because
+# `upsert_by_id` is the first thing that needs it.
+RETRACTABLE = {"events", "places", "facts"}
+
+
+def apply_recorded_retraction(cur: psycopg.Cursor, table: str, row_id: str) -> None:
+    """Mark a row that was withdrawn before this install held it (migration 010).
+
+    A `record.retract` can arrive before the record it names, and often does:
+    the curated list is applied on every boot against whatever the install has
+    ingested, `POST /records/.../retract` publishes from the API's own outbox
+    with no ordering relationship to the ingestor's, and a record that
+    dead-letters is stored only after an operator redrives it. Before the
+    ledger, such a withdrawal was spent the moment it committed -- its
+    `message_id` was in `ingest_log`, so no redelivery could ever reach the
+    handler again -- and the record appeared later, published, with nothing
+    left to withdraw it.
+
+    So the mark is derived from the ledger instead of only from the message.
+    Called from `upsert_by_id`, which is the one and only INSERT into `events`,
+    `places` and `facts` in this repository: put here rather than at the three
+    handler call sites so that the property holds by construction and not by
+    somebody remembering.
+
+    `retracted_at IS NULL` keeps this from touching a row that already carries
+    a withdrawal -- the ledger and the row can disagree on the wording while a
+    correction is in flight, and the row's own handler is what settles that.
+    """
+    if table not in RETRACTABLE:
+        return
+    # `retraction_reason` leads the SET list so this statement does not read as
+    # `UPDATE <table> SET retracted_at ...` like the other two writers of these
+    # columns. They are told apart by their text in more than one test, and a
+    # third statement that opens identically is a trap for the next reader.
+    cur.execute(
+        f"UPDATE {table} SET retraction_reason = r.retraction_reason,"
+        "   retracted_by = r.retracted_by, retracted_at = r.retracted_at"
+        " FROM record_retractions r"
+        " WHERE r.entity = %(entity)s AND r.entity_id = %(id)s"
+        f"   AND {table}.id = %(id)s AND {table}.retracted_at IS NULL",
+        {"entity": table, "id": row_id},
+    )
+    if cur.rowcount:
+        log.warning(
+            "%s %s was withdrawn before this install held it; applying the "
+            "recorded retraction on arrival",
+            table,
+            row_id,
+        )
+
+
 def upsert_by_id(
     cur: psycopg.Cursor,
     table: str,
@@ -313,6 +367,13 @@ def upsert_by_id(
         f" WHERE {guard}",
         payload,
     )
+    # A record that has just come into existence, or just been replaced by a
+    # newer version, may already have been withdrawn -- by a `record.retract`
+    # that arrived before it. Only reached when the statement above actually
+    # wrote: a replay the as-of guard rejected changed nothing, so there is
+    # nothing newly published to withdraw.
+    if cur.rowcount:
+        apply_recorded_retraction(cur, table, payload["id"])
 
 
 PLACE_COLS = [
@@ -651,9 +712,6 @@ def delete_itinerary(cur: psycopg.Cursor, p: schemas.ItineraryDelete) -> None:
 HANDLERS[config.RK_ITINERARY_DELETE] = delete_itinerary
 
 
-RETRACTABLE = {"events", "places", "facts"}
-
-
 def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
     """Withdraw one collected record from the published output (migration 009).
 
@@ -675,9 +733,36 @@ def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
     nothing rather than dead-letter the message. It is logged at warning
     because the other way to reach it is a typo in the curated list, and that
     should not be invisible.
+
+    But "does nothing" used to mean "is lost". The decision is now written to
+    `record_retractions` first, and unconditionally, so it outlives this
+    delivery: `message_id` goes into `ingest_log` in the same transaction and
+    no redelivery will ever reach this handler again, which made an early
+    retraction a silent republish once its target finally arrived. The ledger
+    is the durable half of the mechanism and the mark on the row is derived
+    from it -- see migration 010 and `apply_recorded_retraction`.
     """
     if p.entity not in RETRACTABLE:
         raise Poison(f"cannot retract {p.entity}: only {sorted(RETRACTABLE)} are collected records")
+    # The ledger first, because it is the half that has to survive. Its
+    # conflict clause mirrors the row's exactly: `retracted_at` is absent from
+    # the SET list, so the first decision date stands however often this is
+    # replayed, and the reason and the author can still be corrected.
+    cur.execute(
+        "INSERT INTO record_retractions"
+        " (entity, entity_id, retracted_at, retraction_reason, retracted_by)"
+        " VALUES (%(entity)s, %(id)s, %(at)s, %(reason)s, %(by)s)"
+        " ON CONFLICT (entity, entity_id) DO UPDATE SET"
+        "   retraction_reason = EXCLUDED.retraction_reason,"
+        "   retracted_by = EXCLUDED.retracted_by",
+        {
+            "entity": p.entity,
+            "id": p.entity_id,
+            "at": p.retracted_at,
+            "reason": p.reason,
+            "by": p.retracted_by,
+        },
+    )
     cur.execute(
         f"UPDATE {p.entity} SET retracted_at = COALESCE(retracted_at, %(at)s),"
         " retraction_reason = %(reason)s, retracted_by = %(by)s"
@@ -690,8 +775,9 @@ def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
         log.info("retracted %s %s: %s", p.entity, p.entity_id, p.reason)
     else:
         log.warning(
-            "retraction for %s %s changed nothing: no such row, or already "
-            "withdrawn for the same reason",
+            "retraction for %s %s marked no row: no such row here, or already "
+            "withdrawn for the same reason. The decision is recorded and will "
+            "be applied if the record arrives",
             p.entity,
             p.entity_id,
         )
@@ -761,6 +847,14 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
     # would be the same F9 defect this mechanism exists to close, arriving by
     # a different route. Captured before the delete, re-applied after the
     # replay, so the origin of a retraction stops mattering.
+    #
+    # Since migration 010 the ledger covers this too, and covers it earlier:
+    # pass 1 re-marks each row from `record_retractions` as it re-inserts it.
+    # This is kept anyway, and is not redundant. The ledger requires a reason,
+    # so a row marked in the database by hand without one is neither backfilled
+    # into it nor re-marked from it, and this is the only thing that carries
+    # such a row across. It does mean the count logged below is now what the
+    # ledger had not already covered, which is the honest reading of "restored".
     held = {
         entity: cur.execute(
             f"SELECT id, retracted_at, retraction_reason, retracted_by FROM {entity}"

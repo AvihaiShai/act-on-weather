@@ -800,7 +800,21 @@ tunnel has every route.
   the stated reason (migration 009). A withdrawn record leaves every read, every
   answer and every count in `/coverage`, and it stays out across a rebuild —
   `POST /user-data/wipe` carries the marks over rather than replaying the record
-  back into view. The row itself is kept, with its source, its as-of and its
+  back into view.
+
+  **Arrival order does not matter.** The decision is written to its own table,
+  `record_retractions`, before it is applied to anything (migration 010), so a
+  withdrawal that reaches this install before the record it names is not lost:
+  the record is marked as it arrives. That order is ordinary rather than exotic —
+  the curated list is applied against whatever this install has actually
+  ingested, the API's withdrawal travels on a different outbox from the
+  ingestor's with no ordering relationship between them, and a record that
+  dead-letters is stored only once an operator redrives it. It is
+  forward-looking: a withdrawal that was already spent this way before migration
+  010 left no trace in the database and has to be re-issued, which works, because
+  changing the reason, the author or the decision date mints a new message.
+
+  The row itself is kept, with its source, its as-of and its
   history, because "withdrawn on the 27th, the venue cancelled it" is a stronger
   statement than a row that silently vanished. There is deliberately **no
   un-retract route**: reinstating something means putting the corrected listing
