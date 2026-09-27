@@ -203,3 +203,62 @@ def test_no_catalogue_activity_key_is_reshaped_by_the_trim():
 
     for key in catalogue:
         assert schemas.slugify(key.replace("_", " ")) == key, key
+
+
+# --------------------------------- rows written before the trim existed ----
+#
+# The catalogue's own keys are safe, which is what the test above establishes.
+# Rows a USER asked for are not: the slug is frozen at write time -- `slugify` is
+# called in `services/api/main.py` and never in the consumer or in
+# `services/common/queries.py` -- so an install that scored "a picnic" under the
+# old rule holds a row keyed `a_picnic` for as long as the volume lives, and
+# nothing re-keys it.
+#
+# This is a stated limitation, not a fix, and the two tests below are what makes
+# it demonstrated rather than asserted. The README carries it in the
+# known-limitations section with the operator remedy. A migration was considered
+# and rejected: the only uniqueness on `recommendations` is
+# `PRIMARY KEY (city_id, forecast_date, activity)` (db/migrations/001_init.sql),
+# so `UPDATE ... SET activity = <trimmed>` collides wherever the same city and day
+# already hold the trimmed key -- an install that scored both "a picnic" and
+# "picnic" for Lisbon on one date. Resolving that collision means discarding one
+# of two rows a user asked for, and a migration that runs on every boot is the
+# worst place to make that choice silently.
+
+
+def test_a_row_stored_under_the_old_key_is_not_found_by_the_question():
+    """The limitation, demonstrated. Not a defect being pinned as correct: this
+    is what an upgraded install looks like, written down so nobody has to
+    rediscover it from a confused answer."""
+    assert schemas.slugify("a picnic") == "picnic"
+    # What the OLD write path stored, reproduced without depending on it: it
+    # slugified the form field verbatim, with no trim.
+    old_key = "_".join("a picnic".split())
+
+    assert old_key == "a_picnic"
+    assert old_key != schemas.slugify("a picnic")
+
+
+def test_the_old_key_is_reported_as_a_gap_rather_than_answered_wrongly(route):
+    """The half that decides whether this limitation is acceptable, and it is the
+    reason a migration is not owed. The question does not find the row -- but it
+    does not borrow another activity's number either: it says the score is not on
+    record, under the key it looked for. A stale row makes the agent less
+    informed, never wrong.
+
+    The row itself is not lost. It stays visible on `GET /scores` and
+    `GET /activities`, it is pickable by its label in the UI's Suitability view,
+    and `POST /reenrich` still targets it by key -- so the operator remedy is to
+    request the activity once more through the form, which writes it under the
+    trimmed key.
+    """
+    routing, stored = route
+    stored.extend(_row(day, "a_picnic", "a picnic") for day in STORED)
+
+    result = routing.retrieve("Is tomorrow a good day for a picnic in Lisbon?")
+
+    # Looked up under the new key, found nothing, and said so.
+    assert result.resolution.unknown_activities == ["picnic"]
+    assert result.resolution.activities == []
+    # And the stale row was not served under a name nobody asked for.
+    assert result.recommendations == []

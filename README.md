@@ -749,6 +749,26 @@ tunnel has every route.
   being called at all; one that also asks about the weather or about *where*
   keeps its forecast and its places. Surfacing the generic label in the UI
   remains [future work](#production-path).
+* **A requested activity stored before the filler trim keeps its old key, and
+  the agent will not find it.** The activity slug is frozen when the row is
+  written — `services/api/main.py` calls `schemas.slugify` and the consumer
+  stores the result unchanged — so an install that scored "a picnic" under the
+  earlier rule holds a row keyed `a_picnic`, while a question about it now
+  resolves `picnic`. There is no migration and none is planned. The only
+  uniqueness on `recommendations` is `PRIMARY KEY (city_id, forecast_date,
+  activity)`, so re-keying collides wherever the same city-day already holds the
+  trimmed key, and resolving that means discarding one of two rows a user asked
+  for — not a choice a migration that runs on every boot should make silently.
+  **What this costs is bounded, and it is checked**
+  (`tests/unit/test_activity_slug_roundtrip.py`): the question reports the
+  activity as not on record under the key it looked for, rather than answering
+  with another activity's number, so a stale row makes the agent less informed
+  and never wrong. The row is not lost either — it stays on `GET /scores` and
+  `GET /activities`, it is pickable by its label in the UI's Suitability view,
+  and `POST /reenrich` still targets it by key. The remedy is one action:
+  request the activity again through the form, which stores it under the trimmed
+  key. A fresh install is unaffected, and no catalogue key is reshaped by the
+  trim.
 * **The grounding guard is a set of specific checks, not a general proof.**
   `services/agent/grounding.py` validates the model's prose against the typed
   facts and throws away wording that fails, falling back to a deterministic
