@@ -267,6 +267,27 @@ def dated_gap_brief(result: Retrieval, brief: grounding.Brief) -> grounding.Brie
     )
 
 
+def unscored_line(result: Retrieval, activity: str) -> str:
+    """The one line an activity with no stored score gets, wherever it is
+    rendered. Two callers had their own copy of it and only one of them would
+    have gained the sentence below.
+
+    The coast half answers "why not", which is the more useful half. It is read
+    from the catalogue when the catalogue holds the activity, and from the
+    activity's own name when it does not -- the same two-sided test the write
+    path uses to decide whether to store a row at all
+    (`services/consumer/main.py`, `needs_coast`). Without the second side,
+    "scuba diving in London" was told only that no score was on record, while
+    "surfing in London" was told the reason.
+    """
+    cfg = _activity_meta().get(activity) or {}
+    needs_coast = cfg.get("requires_coast") if cfg else rules.names_water(activity)
+    reason = ""
+    if needs_coast and not result.resolution.city.get("coastal"):
+        reason = f"; {result.resolution.city['name']} has no coast on record"
+    return f"- {activity.replace('_', ' ')}: no suitability score on record{reason}."
+
+
 def unscored_date_lines(result: Retrieval) -> list[str]:
     """One line per named activity that has some stored scores but not all.
 
@@ -348,14 +369,7 @@ def where_answer(result: Retrieval) -> str:
         lines.append(score_caveat(result))
         blocks.append("\n".join(lines))
 
-    unscored = []
-    for activity in result.unscored_activities:
-        reason = ""
-        if (meta.get(activity) or {}).get("requires_coast") and not result.resolution.city.get(
-            "coastal"
-        ):
-            reason = f"; {city} has no coast on record"
-        unscored.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+    unscored = [unscored_line(result, activity) for activity in result.unscored_activities]
     if unscored:
         blocks.append("\n".join(unscored))
 
@@ -456,12 +470,7 @@ def named_activity_answer(result: Retrieval) -> str:
             f"{row['band']} ({row['score']}/100)."
         )
     for activity in result.unscored_activities:
-        reason = ""
-        if _activity_meta().get(activity, {}).get(
-            "requires_coast"
-        ) and not result.resolution.city.get("coastal"):
-            reason = f"; {city} has no coast on record"
-        lines.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+        lines.append(unscored_line(result, activity))
     lines.extend(unscored_date_lines(result))
     # Only when there is actually a score to qualify. An inland city has no
     # coastal row at all, and its answer is already the stronger statement --

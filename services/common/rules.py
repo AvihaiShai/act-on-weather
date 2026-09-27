@@ -238,9 +238,67 @@ GENERIC_CFG: dict[str, Any] = {
     "max_wind_kmh": 30,
 }
 
+# Whole words that name an activity done in or on water. Matched against the
+# slug's own words, so `kite_surfing` and `scuba_diving` are caught and
+# `surfboard_shop` is not a word of any of them.
+#
+# This list exists because the catalogue's coast rules reach only the catalogue.
+# `requires_coast` and `score_ceiling` are properties of a row in
+# data/activities.yml, and a typed activity has no row there: "scuba diving"
+# asked for London went straight to `GENERIC_CFG`, which carries no ceiling, so
+# a pleasant day on land stored scuba diving in London as `good`, 100/100, with
+# no coast anywhere in the city's record. The four catalogue sea activities are
+# capped at 69 for exactly the reason that number does not describe -- nothing
+# stored measures waves, swell or water temperature -- and an inland city cannot
+# even be asked the question.
+#
+# It is a word list and it is not complete; that is the honest shape of the
+# problem, since the set of things people do in water is open. What matters is
+# the direction it fails in: a word not on the list is scored generically, as
+# before, and a word on it can only ever LOWER a score or refuse a row. Nothing
+# here can raise one.
+SEA_WORDS: frozenset[str] = frozenset(
+    """
+    sea ocean marine surf surfing surfboard windsurf windsurfing kitesurf
+    kitesurfing bodyboard bodyboarding dive diving scuba snorkel snorkelling
+    snorkeling freediving swim swimming bathe bathing kayak kayaking canoe
+    canoeing paddleboard paddleboarding paddleboard sup rowing sail sailing
+    yachting boating jetski jetskiing waterskiing wakeboarding rafting
+    beach shore coastal coast tide tidal waves
+    """.split()
+)
 
-def score_requested(activity_label: str, weather: dict[str, Any]) -> Score:
-    result = score_activity(activity_label, GENERIC_CFG, weather)
+
+def names_water(slug: str) -> bool:
+    """Whether an activity slug names something done in or on the water.
+
+    Read as whole words of the slug, which is what `schemas.slugify` produced
+    from what the user typed: `kite_surfing` -> {"kite", "surfing"}.
+    """
+    return bool(SEA_WORDS & set(slug.split("_")))
+
+
+# The generic measure for a typed activity that names water, in a city that has
+# a coast. Same land rules -- there are no others to apply -- plus the ceiling
+# and the flag that makes `_apply_ceiling` say which ceiling it is and why. 69
+# is the catalogue's own number for the same situation, not a new one.
+GENERIC_SEA_CFG: dict[str, Any] = {
+    **GENERIC_CFG,
+    "score_ceiling": 69,
+    "sea_state_unmeasured": True,
+}
+
+
+def score_requested(activity_label: str, weather: dict[str, Any], *, sea: bool = False) -> Score:
+    """Score an activity the catalogue does not carry.
+
+    `sea` is set by the caller when the slug names water (`names_water`), and it
+    swaps in the capped configuration. The caller decides rather than this
+    function, because the same test also governs whether a row is stored at all
+    for an inland city -- and that decision is taken before the forecast is even
+    read, since no weather can supply a coast.
+    """
+    result = score_activity(activity_label, GENERIC_SEA_CFG if sea else GENERIC_CFG, weather)
     result.reasons.append(
         "scored against general outdoor comfort, not a rule tuned for this activity"
     )

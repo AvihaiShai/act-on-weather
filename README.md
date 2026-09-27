@@ -691,7 +691,14 @@ tunnel has every route.
   temperature. The score is capped at **69**, one point below the `good` band, so
   none of them is ever reported as a confident recommendation, and the reason
   travels in the row. No scoring rule may infer a sea state from a land
-  measurement. Open-Meteo's keyless marine endpoint was probed rather than
+  measurement. An activity you name yourself is held to the same cap when its
+  name says it happens in water — "scuba diving", "kite surfing", "sea kayaking"
+  — and is refused outright for a city with no coast on record, exactly as the
+  four catalogue activities are. That test is a word list
+  (`rules.SEA_WORDS`) rather than a property of a catalogue row, because a typed
+  activity has no catalogue row; it is deliberately not exhaustive, and a word it
+  does not know is scored generically as before. **It can only ever lower a score
+  or withhold a row, never raise one.** Open-Meteo's keyless marine endpoint was probed rather than
   assumed: it answers for all four coast points, but forecasts 10 days against the
   16 stored, and from a model cell 2.9–13.2 km from the named point, so staging it
   would narrow this gap rather than close it. The measured numbers are recorded in

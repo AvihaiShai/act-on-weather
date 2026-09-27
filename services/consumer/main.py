@@ -424,14 +424,32 @@ EVENT_COLS = [
 def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationRequest) -> None:
     """A user asked for one activity by name (M2).
 
-    Three outcomes. An activity the catalogue carries is scored by its own
-    thresholds; anything else is scored against general outdoor comfort; and an
-    activity needing a coast, asked for a city that has none, is refused rather
-    than scored. Whatever is stored goes in `pending`, so the enricher words it
-    like any other row, except a refusal, which is terminal.
+    Four outcomes. An activity the catalogue carries is scored by its own
+    thresholds. An activity that needs a coast, asked for a city that has none,
+    is refused rather than scored. An activity the catalogue does not carry but
+    whose name says it happens in water is scored generically under the sea
+    ceiling. Anything else is scored against general outdoor comfort.
+
+    Whether a coast is needed is read from the catalogue when the catalogue has
+    the activity and from the name when it does not -- see `needs_coast` below.
+    Whatever is stored goes in `pending`, so the enricher words it like any
+    other row, except a refusal, which is terminal.
     """
     cfg = ACTIVITIES.get(p.activity)
-    if cfg is not None and cfg.get("requires_coast") and not COASTAL.get(p.city_id, False):
+    # Whether this activity needs a coast, asked of the catalogue when the
+    # catalogue holds the activity and of the slug's own words when it does not.
+    #
+    # The second half is the correction. `requires_coast` is a property of a row
+    # in data/activities.yml, so this test used to be `cfg is not None and ...`
+    # and every activity the catalogue does NOT carry fell past it -- including
+    # the ones most obviously decided by the water. "scuba diving" asked for
+    # London reached `rules.GENERIC_CFG`, which carries no `score_ceiling`, and
+    # a pleasant day on land stored scuba diving in London as `good`, 100/100,
+    # for a city with no coast on record. That is the same integrity breach the
+    # catalogue branch below was written to close, reached by a name the
+    # catalogue happens not to list.
+    needs_coast = cfg.get("requires_coast") if cfg is not None else rules.names_water(p.activity)
+    if needs_coast and not COASTAL.get(p.city_id, False):
         # The catalogue says this activity needs a coast and this city has none
         # on record, so there is nothing here to score it from. Storing no row
         # is not a new policy: it is the one the rest of the system already
@@ -490,14 +508,18 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
     # If the user named an activity the catalogue already knows, score it with
     # its own thresholds rather than the generic outdoor-comfort fallback --
     # and, if it is deferred for this day, this promotes it back to 'pending'
-    # so the model words the thing that was actually asked about. The coast
-    # case has already returned above, so `cfg is None` here means one thing
-    # only: an activity the catalogue does not carry, which is exactly what the
-    # generic fallback is for.
+    # so the model words the thing that was actually asked about.
+    #
+    # The coast case has already returned above, so reaching here with
+    # `cfg is None` and `needs_coast` true means one thing: a typed water
+    # activity in a city that HAS a coast. It is scored against the same land
+    # rules as any other typed activity -- there are no others to apply -- under
+    # the ceiling the four catalogue sea activities carry, so it cannot climb
+    # into the `good` band on the strength of a forecast that measures no water.
     if cfg is not None:
         result = rules.score_activity(p.activity, cfg, row)
     else:
-        result = rules.score_requested(p.activity_label, row)
+        result = rules.score_requested(p.activity_label, row, sea=needs_coast)
     cur.execute(
         """
         INSERT INTO recommendations (city_id, forecast_date, activity, activity_label,
