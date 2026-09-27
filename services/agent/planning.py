@@ -21,8 +21,19 @@ request rebuilds the same plan.
 places list, but the day's chosen activity did not, so a beach day and a museum
 day in the same city were handed the same three rows.
 
-Nothing here words anything, which is why the sea-state caveat is not applied
-in this module. A day that recommends surfing, swimming, fishing or a boat ride
+Nothing here writes a sentence, but it does repeat one. `why` is the enricher's
+stored wording, and until this module checked it that wording reached the trip
+planner with no grounding pass anywhere on the route: a London day whose top
+activity was "An open-air music festival" was offered as "a good day to attend
+the open-air music festival" on a date with no event row behind it. So the one
+claim a suitability row can never support is re-checked here, against the same
+`grounding.schedule_claims` the enricher and the agent's validator use, and a
+sentence that makes it falls back to the rule engine's own reasons. That keeps
+the module pure in the sense that matters -- rows in, suggestions out, no
+database, no model, no clock -- while reading the one data file the check needs.
+
+Nothing here decides anything either, which is why the sea-state caveat is not
+applied in this module. A day that recommends surfing, swimming, fishing or a boat ride
 has to say that nothing in the stored data measures the water; that sentence is
 attached by `agent.main.build_itinerary`, next to the score it qualifies, from
 `common.coast.sea_state_caveat`. What this module contributes to the same
@@ -33,6 +44,8 @@ engine, so they cannot outrank a land activity that scored on evidence.
 from __future__ import annotations
 
 from typing import Any
+
+from .grounding import schedule_claims
 
 # Both are plain integers on the same 0-100 scale as the score, so the
 # trade-off is legible: a matching interest is worth about as much as one band
@@ -89,6 +102,21 @@ def venue_places(
     ]
 
 
+def grounded_why(row: dict[str, Any]) -> str:
+    """The day's explanation: the enricher's sentence, or the rule engine's
+    reasons where that sentence claims something is scheduled.
+
+    Falling back rather than dropping the text is deliberate. The reasons are
+    what the score was actually computed from, so the traveller still gets an
+    explanation, and it is one code wrote.
+    """
+    reasons = "; ".join(row.get("reasons") or [])
+    text = row.get("text")
+    if text and schedule_claims(text):
+        return reasons
+    return text or reasons
+
+
 def plan_day(
     ranked: list[dict[str, Any]],
     meta: dict[str, dict[str, Any]],
@@ -129,7 +157,7 @@ def plan_day(
             "score": row["score"],
             "band": row["band"],
             "matched_interests": matched,
-            "why": row.get("text") or "; ".join(row.get("reasons") or []),
+            "why": grounded_why(row),
             # 'deferred' means the rule engine scored it but the local model was
             # never asked to word it. The UI says so rather than showing a blank.
             "worded": row.get("status") == "ready",

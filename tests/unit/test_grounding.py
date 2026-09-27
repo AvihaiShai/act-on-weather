@@ -43,6 +43,24 @@ COVERAGE = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch):
+    """The clock this file's docstring promises, which it did not have.
+
+    `retrieval` resolves the window with the real `dates.parse`, so a question
+    saying "this week" took its dates from whenever the suite happened to run.
+    That is fine for the tests that only need *a* window, and wrong for the ones
+    that assert a specific date resolves: once the real date left the week of
+    DAY1, "a concert on September 26" stopped resolving at all and
+    `test_unambiguous_yearless_or_weekday_event_claim_is_checked` failed on a
+    calendar, not on a change to the code. DAY1 is a Thursday, so "this week"
+    covers DAY1 to 2026-09-30 and holds exactly one Saturday -- which is what
+    makes a year-less date and a weekday unambiguous, and is the whole premise
+    of that test.
+    """
+    monkeypatch.setattr(router.dates, "today_in", lambda _timezone: DAY1)
+
+
 def place(name, category, is_sample=False):
     return {
         "id": f"osm:{name.lower().replace(' ', '-')}",

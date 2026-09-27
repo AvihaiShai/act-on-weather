@@ -325,6 +325,30 @@ def score_caveat(result: Retrieval) -> str:
     return f"{base} {sea}" if sea else base
 
 
+def requested_caveat(rows: list[dict[str, Any]]) -> str | None:
+    """What a score for a typed activity is a score of, or None.
+
+    An activity the traveller asked for by name is scored against a general
+    outdoor-comfort measure rather than a rule written for it -- `GENERIC_CFG`
+    in `common.rules` -- and `score_requested` records that on the row as a
+    reason. Until this function existed the label reached no screen at all: the
+    API returns `reasons`, nothing rendered it, and a generic score was shown
+    beside eighteen tuned ones with nothing to tell them apart. Read off the
+    rows rather than composed here, for the same reason the as-of footer is: the
+    sentence has to be the one the rule engine actually attached.
+    """
+    said: list[str] = []
+    for row in rows:
+        if not row.get("requested"):
+            continue
+        for reason in row.get("reasons") or []:
+            if reason not in said:
+                said.append(str(reason))
+    if not said:
+        return None
+    return "You asked for this activity by name, so: " + "; ".join(said) + "."
+
+
 def named_activity_answer(result: Retrieval) -> str:
     """The answer to "is it good for surfing in Tel Aviv tomorrow?".
 
@@ -333,6 +357,14 @@ def named_activity_answer(result: Retrieval) -> str:
     `where_answer` said what a coastal score does not cover and this one said
     nothing, so the question that asks for a verdict most directly -- naming
     the activity outright -- was the one answered with a bare number.
+
+    It now also answers for an activity the catalogue does not hold but a
+    previous request already scored. The router resolves such a noun to its
+    stored rows (`Router.typed_activities`), so those rows -- and only those --
+    are what this reports, with `requested_caveat` saying what kind of score it
+    is. Before that, the noun resolved to nothing, the retrieval was never
+    narrowed, and the model was handed one row per catalogue activity to pick a
+    number from.
     """
     city = result.resolution.city["name"]
     lines = [f"Stored suitability for the activities you asked about in {city}:"]
@@ -352,12 +384,14 @@ def named_activity_answer(result: Retrieval) -> str:
     # coastal row at all, and its answer is already the stronger statement --
     # "London has no coast on record" -- so following it with a note about what
     # its scores do not measure would be qualifying scores that do not exist.
+    generic = requested_caveat(result.recommendations) if result.recommendations else None
     sea = sea_state_caveat(result, lead="They") if result.recommendations else ""
-    if sea:
-        # A blank line, because the UI renders this as markdown and a caveat on
-        # the line after a list item would be read as part of the list.
-        lines.append("")
-        lines.append(sea)
+    for caveat in (generic, sea):
+        if caveat:
+            # A blank line, because the UI renders this as markdown and a caveat
+            # on the line after a list item would be read as part of the list.
+            lines.append("")
+            lines.append(caveat)
     return "\n".join(lines)
 
 

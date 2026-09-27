@@ -166,6 +166,90 @@ DESCRIPTION_WORDS = (
     "worth a visit",
 )
 
+# Quality and suitability descriptors. A `places` row carries a name and a
+# category and nothing else -- no tier, no price band, no rating, no idea who a
+# venue suits. These are the words a traveller types, and the model echoes them
+# straight back onto the rows: asked the assignment's London question, it
+# answered "Fine dining is available at ... Bar Italia", a 24-hour Soho cafe,
+# from four rows that all say `restaurant` and no more. Echoing the question is
+# normally harmless -- the question is in `vocabulary()` on purpose -- which is
+# exactly why check 8 cannot see this one and it needs a check of its own.
+QUALITY_WORDS = (
+    "fine dining",
+    "fine-dining",
+    "upscale",
+    "high-end",
+    "gourmet",
+    "michelin",
+    "michelin-starred",
+    "luxury",
+    "luxurious",
+    "top-rated",
+    "highly rated",
+    "finest",
+    "premium",
+    "acclaimed",
+    "award-winning",
+    "family-friendly",
+    "romantic",
+)
+
+# Conditions this system does not ingest at all. It holds a land forecast --
+# temperature, rain, wind, sunshine -- and nothing about the water, the snow or
+# the air aloft. They are listed apart from `WEATHER_WORDS` because they are not
+# a paraphrase of a stored row: a sentence built on one of these is not quoting
+# the forecast loosely, it is describing a measurement that was never taken.
+# Read only by check 5, where the activity in question has no stored score
+# either, so the clause has nothing behind it in either direction.
+UNMEASURED_CONDITION_WORDS = (
+    "sea",
+    "sea state",
+    "water",
+    "swell",
+    "waves",
+    "tide",
+    "tides",
+    "current",
+    "currents",
+    "visibility",
+    "snow",
+    "snowfall",
+    "ice",
+    "thermals",
+    "updraft",
+    "updrafts",
+)
+
+# Predicates that say a particular thing has been arranged to happen -- a date,
+# a venue, a door time, a ticket. Deliberately much narrower than
+# `WORLD_SCHEDULE_WORDS` below, which holds "there is" and "is on": both of
+# those appear constantly in honest weather prose ("there is a 10% chance of
+# rain", "the temperature is on the mild side") and keying anything positive on
+# them would cost correct sentences their wording. Every phrase here has no
+# ordinary non-event reading.
+#
+# Shared with the enricher and the trip planner, which word a suitability row
+# and hold no event data at all, so for them any one of these is unsupportable.
+SCHEDULE_PREDICATES = (
+    "scheduled",
+    "taking place",
+    "take place",
+    "takes place",
+    "being held",
+    "is held",
+    "attend",
+    "attending",
+    "line-up",
+    "lineup",
+    "tickets",
+    "doors open",
+    "on stage",
+    "kick-off",
+    "kicks off",
+    "performing",
+    "showtime",
+)
+
 _NEGATION = re.compile(r"(?<!\w)(no|not|none|never|without|nor|nothing|lacks?)(?!\w)|n't")
 
 # Predicates that say something is, or is not, actually happening. The system
@@ -219,6 +303,57 @@ _GENERIC_EVENT_WORDS = ("event", "events", "listing", "listings")
 def _says(text: str, phrase: str) -> bool:
     """Whole-word match; `phrase` may contain spaces."""
     return re.search(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text) is not None
+
+
+def schedule_claims(text: str) -> list[str]:
+    """The scheduling predicates a piece of prose uses, in the order found.
+
+    Public because three surfaces need the same answer and only one of them has
+    a `Brief`: `violations` check 11 here, the enricher, which words one
+    suitability row and holds no event data at all, and the trip planner, which
+    repeats the enricher's stored sentence.
+
+    Why this and not check 1 for those two. Check 1 keys on the event-category
+    claim words in data/event_types.yml, and three of the eighteen catalogue
+    activities are named after an event kind -- "An open-air music festival",
+    "An open-air farmers' market", "A stand-up comedy show". A category-keyed
+    check applied to a single activity row would reject every honest wording of
+    those three rows, in every city, on every day. The predicate is what
+    separates "a good day for the open-air music festival" from "a good day to
+    attend the open-air music festival", so the predicate is what is checked.
+    """
+    lowered = text.lower()
+    return [phrase for phrase in SCHEDULE_PREDICATES if _says(lowered, phrase)]
+
+
+_LEADING_ARTICLE = re.compile(r"^(a|an|the)\s+", re.IGNORECASE)
+
+
+def activity_spellings(activity: str, label: str = "") -> set[str]:
+    """How an answer is likely to write one activity: its slug with spaces, and
+    its label with any leading article stripped.
+
+    The article has to go. Every catalogue label that needs one carries it -- "A
+    day at the beach", "An open-air music festival" -- and a sentence uses "the"
+    or none at all, so matching the stored spelling verbatim matches almost
+    nothing. Short spellings are dropped for the same reason `place_names` drops
+    them: a four-letter token matches ordinary prose.
+    """
+    spellings = {activity.replace("_", " "), _LEADING_ARTICLE.sub("", label or "")}
+    return {s.lower() for s in spellings if len(s) >= 5}
+
+
+@lru_cache(maxsize=1)
+def activity_names() -> dict[str, str]:
+    """Every name an answer is likely to give a catalogue activity -> its slug,
+    via `activity_spellings`. Read by check 10."""
+    from .router import activity_meta
+
+    names: dict[str, str] = {}
+    for key, cfg in activity_meta().items():
+        for spelling in activity_spellings(key, str((cfg or {}).get("label") or "")):
+            names.setdefault(spelling, key)
+    return names
 
 
 def _about_events(sentence: str, asked: bool = False) -> bool:
@@ -281,6 +416,17 @@ def _place_category_phrases() -> tuple[str, ...]:
 
 def _without_place_categories(sentence: str) -> str:
     for phrase in _place_category_phrases():
+        sentence = re.sub(rf"(?<!\w){re.escape(phrase)}(?!\w)", " ", sentence)
+    return sentence
+
+
+def _without_activity_names(sentence: str, names: frozenset[str] | set[str]) -> str:
+    """The same masking for the activity names a retrieval actually returned.
+
+    Longest first, so a label is removed before a shorter name can match inside
+    it.
+    """
+    for phrase in sorted(names, key=len, reverse=True):
         sentence = re.sub(rf"(?<!\w){re.escape(phrase)}(?!\w)", " ", sentence)
     return sentence
 
@@ -781,7 +927,21 @@ def _gaps(result: Retrieval, brief: Brief) -> list[Gap]:
             why = f"{brief.city} has no coast on record, so it is never scored there"
         else:
             why = f"no suitability score is stored for it in {brief.city}"
-        gaps.append(Gap(f"activity:{key}", f"{label}: not on record -- {why}."))
+        # An activity the catalogue does not hold is a different gap from a
+        # catalogue activity this city has no row for, and it has a remedy the
+        # traveller can act on: the build scores anything typed against a
+        # general outdoor-comfort measure, on request, through the write path.
+        # Naming that route is the same courtesy the unknown-city refusal pays
+        # ("I have weather and tourism data for: ..."). The ask route itself
+        # stays read-only -- this sentence says where to ask, it does not ask.
+        route = ""
+        if key not in meta:
+            route = (
+                " It is not one of the activities I score by default. You can have it"
+                ' scored against general outdoor comfort from the "Ask about a different'
+                ' activity" form, or with POST /recommendations.'
+            )
+        gaps.append(Gap(f"activity:{key}", f"{label}: not on record -- {why}.{route}"))
 
     return gaps
 
@@ -821,7 +981,20 @@ def prompt_block(brief: Brief) -> str:
         )
 
     if brief.verdicts:
-        lines.append("\nSuitability scores from the rule engine (these are the verdicts):")
+        # The negative matters as much as the header. One of the eighteen
+        # catalogue labels is literally "An open-air music festival", and a
+        # 1.7B model handed `2026-09-27 An open-air music festival: good
+        # (85/100)` writes prose asserting a festival is on -- which check 1
+        # then rejects, throwing away the whole answer. The PLACES block below
+        # has carried its negative from the start; this one did not, and the
+        # asymmetry is what made the assignment's own Rome question
+        # non-deterministic.
+        lines.append(
+            "\nSuitability scores from the rule engine (these are the verdicts). Each one "
+            "rates the stored weather for an activity the traveller could choose. None of "
+            "them is a thing that is scheduled, on offer or being held: never write about "
+            "one as though it were an event, and never invite anyone to attend one:"
+        )
         for row in brief.verdicts:
             text = f" -- {row.text}" if row.text else ""
             lines.append(f"  {row.day} {row.label}: {row.band} ({row.score}/100){text}")
@@ -832,7 +1005,10 @@ def prompt_block(brief: Brief) -> str:
             "one the system holds a name and a category and nothing else: no programme, "
             "no opening hours, no description, no idea whether anything is on there. "
             "Name them as places to consider; never say something is playing, showing "
-            "or being served at one, and never describe what one is like or known for:"
+            "or being served at one, and never describe what one is like or known for. "
+            "In particular, do not repeat the traveller's own description back onto one: "
+            "asked about fine dining, the rows say `restaurant` and nothing more, so the "
+            "honest sentence is that these are the restaurants on record:"
         )
         for row in brief.places:
             sample = " [sample data]" if row.is_sample else ""
@@ -955,12 +1131,17 @@ def render(brief: Brief) -> str:
 def violations(answer: str, brief: Brief) -> list[str]:
     """Sentences in `answer` that assert something no fact in `brief` carries.
 
-    Twelve checks, each written for a failure that was actually observed. They
-    are numbered 1-9; 3b, 4b and 6b are variants of the check they sit beside,
+    Checks, each written for a failure that was actually observed. They are
+    numbered 1-12; 3b, 4b and 6b are variants of the check they sit beside,
     lettered rather than renumbered so a log line written last month still
     names the same check. All of them work on the model's prose only -- the gap
     block and the as-of footer are appended afterwards and are code's own
     words.
+
+    10, 11 and 12 are the activity half. Until they were added, places and
+    events were checked by name and an activity was only checked for existing:
+    nothing compared an activity name in the sentence with the
+    `VerdictFact.activity` and `.label` the brief already carried.
 
     The checks are deliberately narrow. A false positive costs a good answer
     its wording; it never costs the traveller a correct answer, because
@@ -979,6 +1160,27 @@ def violations(answer: str, brief: Brief) -> list[str]:
     allowed_numbers = brief.allowed_numbers()
     place_names = {p.name.lower(): p for p in brief.places if len(p.name) >= 5}
     event_titles = {e.title.lower(): e for e in brief.events if len(e.title) >= 5}
+    # The same treatment for activities, which had none. Places and events have
+    # been checked by name since this file was written; a verdict was only ever
+    # checked for existing at all (check 4), so an answer could take one
+    # activity's score and put another activity's name on it -- which is what
+    # it did, returning "The suitability score for paragliding is good
+    # (100/100)" off a `beach_day` row.
+    #
+    # Two dictionaries, because the two directions are different failures.
+    # `scored_names` is what the rows do carry, and check 11 reads it.
+    # `absent_activities` is every catalogue name the retrieval did NOT return,
+    # and check 10 reads it. Keys already in `brief.unscored` are left out:
+    # check 5 owns those and has its own two messages for them.
+    scored_activities = {v.activity for v in brief.verdicts}
+    verdict_spellings = {
+        spelling for v in brief.verdicts for spelling in activity_spellings(v.activity, v.label)
+    }
+    absent_activities = {
+        name: key
+        for name, key in activity_names().items()
+        if key not in scored_activities and key not in set(brief.unscored)
+    }
     # Whether the question was about scheduled things, which is what lets check
     # 6b read a clause that says "nothing is on" without naming an event.
     asked_about_events = bool(brief.event_categories or brief.events)
@@ -1006,8 +1208,20 @@ def violations(answer: str, brief: Brief) -> list[str]:
             # about the forecast at all.
             on_record = any(_says(sentence, phrase) for phrase in RECORD_PHRASES)
             weather_said = any(_says(sentence, word) for word in WEATHER_WORDS)
-            # "a concert hall" is a category, not a concert.
-            scheduled = _without_place_categories(sentence)
+            # "a concert hall" is a category, not a concert -- and neither is
+            # an activity we retrieved a score for. Three of the eighteen
+            # catalogue labels are named after an event kind, and the worst of
+            # them, "An open-air music festival", used to make check 1 fire on
+            # any honest sentence that named it: it is a suitability row, so no
+            # festival event row exists, so the claim word looked unsupported.
+            # That is what made the assignment's own Rome question fall back in
+            # half its runs. Whole phrases only, exactly as the place masking
+            # works, so "there is a festival on Saturday" still names a festival
+            # and is still checked. What a clause may not do is say one of these
+            # is *on* -- that is check 11, keyed on the predicate.
+            scheduled = _without_activity_names(
+                _without_place_categories(sentence), verdict_spellings
+            )
             asserted = {
                 category
                 for category, words in claims.items()
@@ -1179,6 +1393,74 @@ def violations(answer: str, brief: Brief) -> list[str]:
                     found.append(f"gives a verdict on {key}, which has no stored score")
                 if any(_says(sentence, word) for word in WEATHER_WORDS):
                     found.append(f"reasons from the weather about {key}, which has no stored score")
+                # The same shape, for conditions the system never measured at
+                # all. "Visibility is fine for scuba diving" reaches none of the
+                # weather words and is a stronger invention than any of them: it
+                # is a reading of the water, taken from a land forecast, for an
+                # activity with no row.
+                for word in UNMEASURED_CONDITION_WORDS:
+                    if _says(sentence, word):
+                        found.append(
+                            f"describes the {word} for {key}, which has no stored score and "
+                            f"no measurement behind it"
+                        )
+                        break
+
+            # 10. An activity named in a verdict sentence that no retrieved
+            #     row scored. Keyed on the NAME, which is the thing no check
+            #     did before -- and deliberately not on the verdict word alone,
+            #     because `activities` is the router's fallback intent
+            #     (`router.py`), so a verdict-word-keyed tightening of check 4
+            #     would reject legitimate open wording such as "is tomorrow a
+            #     good day to be outside in Rome?". A name makes the difference:
+            #     open wording names no activity and cannot trip this.
+            #
+            #     Only when some verdict came back. The no-verdict case is
+            #     check 4's, and reporting it twice would put two findings in a
+            #     note that shows one.
+            if brief.verdicts and verdict and not negated and not on_record:
+                for name, key in absent_activities.items():
+                    if _says(sentence, name) and name not in supporting:
+                        found.append(f"gives a verdict on {key}, which no retrieved row scored")
+
+            # 11. A suitability score narrated as a scheduled event -- the
+            #     mirror of check 2, which does this for places, and the half of
+            #     repair R2 that a prompt sentence alone cannot guarantee. One
+            #     catalogue label is "An open-air music festival" and another is
+            #     "A stand-up comedy show", so the wording is one word away, and
+            #     the trip planner produced it: "a good day to attend the
+            #     open-air music festival" on a day with no event row at all.
+            #     A clause that names a stored event is left alone -- it is
+            #     talking about that row, and checks 3 and 3b own it.
+            said = schedule_claims(sentence) if not negated and not on_record else []
+            if said and not named_events:
+                for name in sorted(verdict_spellings):
+                    if _says(sentence, name):
+                        found.append(
+                            f"presents the activity {name!r} as something scheduled "
+                            f"({said[0]!r}); only an event row can say that"
+                        )
+
+            # 12. The traveller's own descriptor attached to a named place.
+            #     Asked about fine dining, the answer named four rows that carry
+            #     `category=restaurant` and nothing else -- one of them a
+            #     24-hour cafe -- as fine dining. The prompt already forbade it
+            #     and nothing enforced it. Check 6 could not: "is available at"
+            #     is not a description word, and `DESCRIPTION_WORDS` holds verbs
+            #     rather than the tiers a traveller types. A clause scoped to
+            #     the record passes, which is the phrasing the prompt now asks
+            #     for: "the restaurants on record are ...".
+            if named_places and not negated and not on_record:
+                for word in QUALITY_WORDS:
+                    if not _says(sentence, word):
+                        continue
+                    for place in named_places:
+                        if place.name.lower() in supporting:
+                            continue
+                        found.append(
+                            f"calls the place {place.name!r} {word!r}, which its row "
+                            f"does not say -- it carries only {place.category!r}"
+                        )
 
             # 6. A description of a place we hold only a name and a category
             #    for.

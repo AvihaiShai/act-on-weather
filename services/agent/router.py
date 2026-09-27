@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from ..common import config, queries
+from ..common.schemas import slugify
 from . import dates, grounding
 
 log = logging.getLogger("agent.router")
@@ -168,6 +169,110 @@ HISTORY_WORDS = ("history", "historical", "historic", "founded", "heritage", "pa
 EVENT_SCHEDULE_WORDS = ("on", "scheduled", "happening", "show", "shows", "playing")
 
 
+# ---------------------------------------------- a typed activity, by name ----
+#
+# The brief makes a typed activity the central case, not an edge one: "לגלוש,
+# לרוץ, לראות את השקיעה, להישאר בבית לשחק במחשב או כל דבר אחר" -- "or anything
+# else". The keyword loop above only recognises the 18 in data/activities.yml,
+# and an out-of-catalogue noun used to leave `Resolution.activities` empty --
+# which meant no activity filter, one row per catalogue activity handed to the
+# model, and the observed answer "The suitability score for paragliding is good
+# (100/100)" with `paragliding` appearing nowhere in the catalogue. The number
+# was another activity's.
+#
+# So the noun is extracted here, deterministically, and turned into the same
+# slug the write path uses (`schemas.slugify`, also `api/main.py`'s
+# POST /recommendations). Three outcomes, in `Router.resolve`:
+#
+#   in the catalogue  -> an ordinary named activity, as before
+#   has stored rows   -> a previously requested activity; retrieval narrows to
+#                        its own rows and the answer reports those
+#   no row at all     -> `Resolution.unknown_activities`, which feeds the
+#                        existing unscored gap channel: a stated gap, not a
+#                        refusal and not a fabricated score
+#
+# The extraction is deliberately lossy rather than clever. A false positive
+# costs one extra truthful "not on record" line and can never cost a score or
+# an answer; a false negative leaves the previous behaviour. That asymmetry is
+# why this is preferred to refusing an unknown noun the way an unknown city is
+# refused -- the city is known, the day is in coverage, and a generic
+# outdoor-comfort score for a typed activity is a capability this build has
+# (`common.rules.score_requested`) and states in ASSIGNMENT.md.
+#
+# Anchored leads only. The phrase that follows one of these is what the
+# question is about. Every lead is scanned independently and the results are
+# deduplicated, so overlapping leads are harmless -- "can i go bungee jumping"
+# yields the same one phrase through "can i go", "can i" and "go".
+ACTIVITY_LEADS: tuple[str, ...] = (
+    "good day for",
+    "good day to",
+    "good time for",
+    "good time to",
+    "good weather for",
+    "suitable for",
+    "good for",
+    "great for",
+    "ideal for",
+    "perfect for",
+    "worth doing",
+    "can i go",
+    "should i go",
+    "want to go",
+    "planning to go",
+    "can i",
+    "should i",
+    "go",
+)
+
+# Where a candidate phrase ends. Prepositions, determiners, timing words and
+# conjunctions: everything after one of these belongs to another part of the
+# sentence.
+CANDIDATE_STOP_WORDS: frozenset[str] = frozenset(
+    """
+    in on at near around by from with without to for of and or but
+    today tomorrow tonight yesterday this that next last week weekend
+    month day days morning afternoon evening night
+    if when while before after because so then than there here
+    is are was were be been will would could should does do did
+    my our your their his her its
+    """.split()
+)
+
+# Words a candidate may open with and that carry no meaning of their own. They
+# are skipped rather than stopping the phrase, so "go paragliding" and "a swim"
+# both reach their noun.
+CANDIDATE_FILLER_WORDS: frozenset[str] = frozenset(
+    """
+    a an the some any go going goes gone went do doing does be being been
+    have has had get getting got take taking try trying enjoy enjoying
+    my our your out
+    """.split()
+)
+
+# Candidates that are not an activity, whatever the lead in front of them, and
+# that the stop and filler lists do not already remove. The open-wording and
+# meal cases: "is it good for outdoors in Rome?" -> `outdoors`, "is tomorrow a
+# good day for something fun?" -> `something fun`, "is it a good day for coffee
+# in Rome?" -> `coffee`. Each of those would otherwise be reported as an
+# activity with no record, which is a worse answer than the ordinary one.
+#
+# Note that the most common open wording never reaches this list at all: "is
+# tomorrow a good day to be outside in Rome?" stops at `be`, which is a stop
+# word, so no candidate is formed. This is the backstop, not the front line.
+NOT_AN_ACTIVITY: frozenset[str] = frozenset(
+    """
+    outside outdoors indoors somewhere anywhere everywhere something anything
+    nothing everything it them us me one two things stuff fun
+    dinner lunch breakfast brunch supper drinks drink meal meals food coffee
+    holiday holidays trip travel travelling vacation sleep rest work
+    """.split()
+)
+
+# How many words a candidate may hold. Three covers "scuba diving", "bungee
+# jumping" and "hot air ballooning", and stops well short of a clause.
+MAX_CANDIDATE_WORDS = 3
+
+
 # Deliberately not a synonym list the model can extend: these are the only
 # categories the database actually holds.
 def load_interests(path) -> dict[str, list[str]]:
@@ -238,6 +343,43 @@ def load_activity_keywords(path) -> dict[str, list[str]]:
     }
 
 
+def _candidate_phrases(text: str) -> list[str]:
+    """Activity-shaped phrases a question names, one per anchored lead.
+
+    Reads only what follows one of `ACTIVITY_LEADS`, stops at the first stop
+    word, skips opening filler, and caps the result at `MAX_CANDIDATE_WORDS`.
+    No stemming, no synonyms and no part-of-speech guessing: "is tomorrow a
+    good day for paragliding in Rome?" yields ["paragliding"], and "is tomorrow
+    a good day to be outside in Rome?" yields nothing at all, because `be` is a
+    stop word. `tests/unit/test_typed_activities.py` asserts the whole list of
+    outcomes, so this judgement call can be reviewed as a list.
+
+    Returns phrases, not slugs. The caller normalises with `schemas.slugify` --
+    the same function the write path uses -- so one normalisation rule covers
+    both routes.
+    """
+    found: list[str] = []
+    for lead in ACTIVITY_LEADS:
+        for match in re.finditer(rf"(?<!\w){re.escape(lead)}(?!\w)", text):
+            words: list[str] = []
+            for word in re.findall(r"[a-z0-9'-]+", text[match.end() :]):
+                if word in CANDIDATE_STOP_WORDS:
+                    break
+                if not words and word in CANDIDATE_FILLER_WORDS:
+                    # Opening filler is skipped rather than ending the phrase,
+                    # so "go paragliding" and "a swim" both reach their noun.
+                    continue
+                words.append(word)
+                if len(words) == MAX_CANDIDATE_WORDS:
+                    break
+            while words and words[-1] in CANDIDATE_FILLER_WORDS:
+                words.pop()
+            phrase = " ".join(words)
+            if phrase and phrase not in found:
+                found.append(phrase)
+    return found
+
+
 @dataclass
 class Resolution:
     question: str
@@ -250,6 +392,13 @@ class Resolution:
     # Activity slugs the question actually named, e.g. {"surfing"} for
     # "can I surf in London?". Used to notice when the answer is missing.
     activities: list[str] = field(default_factory=list)
+    # Activity-shaped nouns the question named that the catalogue does not
+    # hold and that no stored row carries -- "paragliding", "scuba diving".
+    # Kept apart from `activities` because nothing downstream can look one of
+    # these up in data/activities.yml: they exist only to be reported as a gap.
+    # Carried into `Retrieval.unscored_activities`, which already drives the
+    # gap sentence, the prompt block and grounding check 5.
+    unknown_activities: list[str] = field(default_factory=list)
     # `events.category` values the question asked about, e.g. ["concert"] for
     # "which concerts are on this week?". Empty means no particular kind, which
     # is why the retrieval below filters only when this is non-empty: an open
@@ -335,6 +484,104 @@ class Router:
         self.interests = load_interests(config.DATA_DIR / "interests.yml")
         self.activity_keywords = load_activity_keywords(config.DATA_DIR / "activities.yml")
 
+    # -- a typed activity --------------------------------------------------
+    def _rejected_candidate(self, phrase: str, resolution: Resolution) -> bool:
+        """Whether an extracted phrase is something other than an activity.
+
+        Everything the router already recognises as a different kind of thing:
+        a city, an interest or one of its place categories, a scheduled-event
+        word, a weather word, an intent word, a location or timing word. Plus
+        `NOT_AN_ACTIVITY`, which holds the open-wording and meal cases the
+        first two do not cover.
+        """
+        words = phrase.split()
+        if any(word in NOT_AN_ACTIVITY for word in words):
+            return True
+        if resolution.city is not None:
+            names = [
+                resolution.city["id"],
+                str(resolution.city["name"]).lower(),
+                *(str(alias).lower() for alias in resolution.city.get("aliases") or []),
+            ]
+            if any(name in words or name == phrase for name in names):
+                return True
+        vocabulary = {
+            *(word for words_ in INTENT_WORDS.values() for word in words_),
+            *WHERE_WORDS,
+            *WHEN_WORDS,
+            *HISTORY_WORDS,
+            *EVENT_SCHEDULE_WORDS,
+            *grounding.WEATHER_WORDS,
+            *self.interests,
+            *(interest.replace("_", " ") for interest in self.interests),
+            *(category.replace("_", " ") for cats in self.interests.values() for category in cats),
+            *(
+                word
+                for cfg in grounding.event_types().values()
+                for word in (cfg.get("words") or ())
+            ),
+        }
+        return phrase in vocabulary
+
+    def typed_activities(self, resolution: Resolution) -> None:
+        """Resolve an activity the catalogue does not name, and record where it
+        landed. Three outcomes, and only the first two produce a verdict.
+
+        1. The slug IS a catalogue key -- a label the keyword list happens not
+           to carry. Treated as an ordinary named activity.
+        2. The slug has stored rows for this city and window. That is a
+           previously requested activity, scored generically through
+           `POST /recommendations` and stored like any other row
+           (`queries.recommendations` never filters on `requested`). Appending
+           it to `activities` is what makes the retrieval below narrow to those
+           rows, so the answer reports that activity's own score instead of
+           another activity's.
+        3. No row at all -- `unknown_activities`, and a stated gap.
+
+        The probe is read-only and fail-soft. `/agent/ask` creates nothing: a
+        noun with no row is reported, never scored, never published and never
+        enqueued, so the one-writer rule is untouched. If the probe itself
+        cannot be answered the noun degrades to case 3, because a truthful gap
+        is the safe direction and a borrowed score is not.
+        """
+        for phrase in _candidate_phrases(resolution.question.lower()):
+            if self._rejected_candidate(phrase, resolution):
+                continue
+            try:
+                slug = slugify(phrase)
+            except ValueError:
+                continue
+            if len(slug) < 4 or slug in resolution.activities:
+                continue
+            if slug in self.activity_keywords:
+                resolution.activities.append(slug)
+                continue
+            if self._stored_rows(resolution, slug):
+                resolution.activities.append(slug)
+            elif slug not in resolution.unknown_activities:
+                resolution.unknown_activities.append(slug)
+
+    def _stored_rows(self, resolution: Resolution, slug: str) -> bool:
+        """Whether any recommendation row exists for this slug, city and asked
+        window. Narrower than the retrieval below, which re-derives its own
+        window from the coverage gate -- if the two disagree the row simply
+        does not come back and `retrieve` files the slug as unscored anyway."""
+        if resolution.city is None or resolution.window is None:
+            return False
+        try:
+            return bool(
+                queries.recommendations(
+                    self.conn,
+                    resolution.city["id"],
+                    start=resolution.window.start,
+                    end=resolution.window.end,
+                    activity=slug,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed probe must not invent a score
+            log.warning("cannot check stored rows for %r: %s", slug, exc)
+            return False
+
     # -- resolving ---------------------------------------------------------
     def resolve(self, question: str) -> Resolution:
         text = question.lower()
@@ -411,6 +658,23 @@ class Router:
             resolution.intents.append("activities")
         if not resolution.intents:
             resolution.intents = ["weather", "activities"]
+        # Only when the catalogue recognised nothing, and never for a question
+        # asking about a dated listing -- "what markets are on this week?" is
+        # answered from event rows and the clear above is deliberate.
+        #
+        # The gate on `activities` is what keeps the extraction from
+        # contradicting a correct match. Several catalogue keywords are phrases
+        # -- "a long walk" is one of hiking's -- and extracting from the same
+        # sentence would slugify it to `long_walk`, find no row, and print "long
+        # walk: not on record" directly under hiking's score. The cost of the
+        # gate is a question that names both a catalogue activity and an unknown
+        # one ("paragliding and hiking"): it is answered about hiking and says
+        # nothing about paragliding. That is an incomplete answer, never a wrong
+        # one -- a resolved activity is rendered by `named_activity_answer` in
+        # code and the model is not called at all, so there is no wording in
+        # which a score could be borrowed.
+        if not resolution.activities and not scheduled_events and resolution.city is not None:
+            self.typed_activities(resolution)
         return resolution
 
     def _facts(self, city_id: str, text: str, limit: int = 3) -> list[dict[str, Any]]:
@@ -579,6 +843,14 @@ class Router:
         if wants_weather:
             scored = {row["activity"] for row in result.recommendations}
             result.unscored_activities = [a for a in resolution.activities if a not in scored]
+        # A noun the catalogue does not hold is reported whether or not scores
+        # were looked up. Unlike a catalogue activity, there is no row of any
+        # kind behind it, so "not on record" is true on the `where` route too --
+        # and saying nothing there is what let the model offer a park as a
+        # paragliding spot.
+        for activity in resolution.unknown_activities:
+            if activity not in result.unscored_activities:
+                result.unscored_activities.append(activity)
 
         return result
 
