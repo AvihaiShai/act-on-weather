@@ -17,6 +17,29 @@ to rot -- that every published read filters retracted rows. That last one is a
 source assertion rather than a database one on purpose: a new read added without
 the filter is exactly how this defect would come back, and no unit test with a
 mocked cursor would notice.
+
+**How to read a name in this file.** Three kinds of test live here and they are
+worth very different amounts, so the names say which is which rather than leaving
+a reviewer to find out by opening one:
+
+  * `..._sql_...` or `..._source_...` -- a TEXT assertion over a migration, over
+    `services/consumer/main.py`, or over the drill's own files. It proves the
+    statement is written the way it has to be written; it does not run anything.
+    They are here because the properties they cover are invisible to a mocked
+    cursor and, in several cases, invisible at runtime too: a drill that silently
+    stops exercising something passes.
+  * `..._is_documented_...` / `..._is_written_down` -- a PROSE assertion. It
+    proves an operator is told something, and nothing more.
+  * everything else -- a behavioural assertion against real code: the pydantic
+    model, `consumer.SOURCE_KEYS`, or `apply_retraction` driven through the
+    recording `Cursor` below, which is what the handler actually builds.
+
+That convention was added after the fact, and it changed four names that read
+like behaviour and were greps -- most of all
+`test_repeating_the_migration_is_safe_and_is_not_claimed_to_be_a_no_op`, which is
+a substring check. A reviewer who opens one of those expecting a behavioural test
+starts distrusting the ones that are real, and several of the real ones were
+mutation-checked.
 """
 
 from __future__ import annotations
@@ -337,7 +360,7 @@ def test_upsert_by_id_is_the_only_way_a_collected_row_comes_into_existence():
     )
 
 
-def test_the_ledger_is_not_emptied_by_a_rebuild():
+def test_no_migration_or_rebuild_source_empties_the_ledger():
     """A wipe replays every collected record. A ledger the wipe emptied would
     republish everything an operator had withdrawn -- the same defect by a
     third route -- so `wipe_business_rows()` must never name it."""
@@ -391,7 +414,7 @@ def test_a_rebuild_replays_retractions_with_the_records():
     assert config.RK_RETRACT in consumer.SOURCE_KEYS
 
 
-def test_a_rebuild_applies_records_before_retractions():
+def test_the_rebuild_source_applies_records_before_retractions():
     """A retraction is an UPDATE of a row that must already exist, so replaying
     in outbox order would make correctness depend on the accept order of two
     different files."""
@@ -402,7 +425,7 @@ def test_a_rebuild_applies_records_before_retractions():
     assert records_pass < retractions_pass
 
 
-def test_a_rebuild_carries_existing_retractions_across_the_delete():
+def test_the_rebuild_source_carries_existing_retractions_across_the_delete():
     """Replaying the curated list restores the withdrawals that shipped with
     the repository. It does not restore one an operator made against this
     install alone, so the marks are captured before the delete and re-applied
@@ -592,7 +615,7 @@ def test_the_ledger_migration_grants_no_delete_and_no_new_role():
     assert "CREATE ROLE" not in body
 
 
-def test_the_backfill_invents_no_reason():
+def test_the_backfill_sql_invents_no_reason():
     """An install upgrading to 010 already carries marks on rows, and every one
     is a decision with a date, a reason and an author. A row with no stated
     reason is skipped rather than given one."""
@@ -671,7 +694,7 @@ def test_the_ordinary_delivery_is_unchanged_by_the_replay_flag():
     assert row_sql.startswith("UPDATE events SET retracted_at = COALESCE")
 
 
-def test_the_wipe_replays_retractions_with_the_replay_flag_set():
+def test_the_wipe_source_replays_retractions_with_the_replay_flag_set():
     """The two halves above are worth nothing unless the wipe asks for them.
     Read from the source, because no unit test drives `wipe_user_data` end to
     end -- it opens a SQLite outbox and calls a SQL function."""
@@ -685,7 +708,68 @@ def test_the_wipe_replays_retractions_with_the_replay_flag_set():
     assert "HANDLERS[routing_key](cur, payload)" not in pass_two
 
 
-def test_the_backfill_records_no_arrival_time_it_cannot_know():
+def test_the_drill_source_supplies_a_withdrawal_for_the_rebuild_to_replay():
+    """The precondition the integration drill's last step rests on, read from the
+    three files that have to agree on it.
+
+    A text assertion, and it is here because the thing it protects is invisible
+    at runtime: a drill missing this passes. `wipe_user_data` replays what the
+    INGESTOR accepted and excludes the API's own (`source <> 'api'`); phase 1
+    withdraws through `POST /records/.../retract` and `data/retractions.jsonl` is
+    0 bytes. So while phase 2 accepted only the listing, the rebuild had no
+    retraction to replay, `apply_retraction(..., replay=True)` was never invoked
+    against a real database, and phase 3's step 5 -- the runtime proof for the one
+    behaviour change in this lane -- asserted a property it was not exercising.
+
+    Phase 2 now accepts a curated-style withdrawal as well, phase 3 refuses to
+    wipe until it is committed, and the drill script passes the wording both need.
+    Losing any one of the three makes the step vacuous again without failing.
+    """
+    phase2 = (REPO / "tests" / "integration" / "retraction_inject_event.py").read_text(
+        encoding="utf-8"
+    )
+    phase3 = (REPO / "tests" / "integration" / "retraction_arrival_order.py").read_text(
+        encoding="utf-8"
+    )
+    drill = (REPO / "scripts" / "retraction-drill.sh").read_text(encoding="utf-8")
+
+    # Phase 2 accepts a retraction into the ingestor's outbox, not just a listing.
+    assert "config.RK_RETRACT" in phase2, (
+        "phase 2 accepts no withdrawal, so the rebuild in phase 3 replays none and "
+        "its last step passes whether the replay branch exists or not"
+    )
+    # Labelled as the curated list is, which is what keeps it out of the
+    # `source <> 'api'` exclusion for the same reason a shipped withdrawal is.
+    assert 'source="retractions"' in phase2
+    # And it is a second `accept`, so the listing is still injected too.
+    assert phase2.count("box.accept(") == 2, phase2.count("box.accept(")
+
+    # Phase 2 hands its id on so phase 3 can name it rather than count.
+    assert "print(retraction.message_id)" in phase2
+
+    # Phase 3 checks the replay set positively rather than assuming it, and
+    # checks it for THIS record's envelope rather than for any envelope.
+    assert "def curated_retraction_committed()" in phase3
+    assert "source <> 'api'" in phase3
+    # Matched with a pattern rather than a literal: `ruff format` decides whether
+    # the call fits on one line, and an assertion that a formatter can break is
+    # not an assertion about the drill.
+    waited = re.search(r"wait_until\(\s*curated_retraction_committed\b", phase3)
+    assert waited, "phase 3 never waits for its own withdrawal to reach the replay set"
+    assert waited.start() < phase3.index(
+        'post("/user-data/wipe"'
+    ), "phase 3 wipes before confirming the rebuild has a withdrawal to replay"
+
+    # The drill script hands phase 2 the wording and phase 3 the id, or one of
+    # them raises KeyError on a missing environment variable.
+    phase2_exec = drill.split("Phase 2:", 1)[1].split("Phase 3:", 1)[0]
+    assert "-e AOW_DRILL_REASON" in phase2_exec, phase2_exec
+    assert "AOW_DRILL_CURATED_RETRACTION_ID=" in phase2_exec, phase2_exec
+    phase3_exec = drill.split("Phase 3:", 1)[1]
+    assert "-e AOW_DRILL_CURATED_RETRACTION_ID" in phase3_exec, phase3_exec
+
+
+def test_the_backfill_sql_records_no_arrival_time_it_cannot_know():
     """`recorded_at` is documented as when this install learned of a decision,
     and the gap to `retracted_at` as how long it was still being served. For a
     row already marked when 010 first ran, that moment was never recorded, and
@@ -729,7 +813,7 @@ def _top_level_commas(select_list: str) -> list[str]:
     return [part for part in parts if part.strip()]
 
 
-def test_the_backfill_column_list_and_its_select_cannot_drift_apart():
+def test_the_backfill_sql_column_list_and_its_select_cannot_drift_apart():
     """A column list and a SELECT list of different lengths is a runtime error
     in a migration, which is the worst place to find one."""
     body = _statements(LEDGER.read_text(encoding="utf-8"))
@@ -739,7 +823,7 @@ def test_the_backfill_column_list_and_its_select_cannot_drift_apart():
     assert len(columns) == len(_top_level_commas(first_select)), (columns, first_select)
 
 
-def test_repeating_the_migration_is_safe_and_is_not_claimed_to_be_a_no_op():
+def test_the_migration_sql_guards_its_backfill_and_documents_the_repeat_case():
     """010 runs on every boot. `ON CONFLICT DO NOTHING` means it adds nothing
     where the ledger already covers the marked rows -- but it is NOT an
     unconditional no-op, because it re-derives the ledger FROM the rows. An

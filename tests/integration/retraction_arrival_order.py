@@ -34,6 +34,19 @@ What this phase proves:
 Step 1 is the one that fails on the old code: the row appears, published, and
 every read serves it.
 
+Step 5 has a precondition that has to be checked rather than assumed, and for a
+while it was neither. ``wipe_user_data`` replays what the INGESTOR accepted and
+excludes the API's own envelopes (``source <> 'api'``). Phase 1 withdraws through
+the API and ``data/retractions.jsonl`` is 0 bytes, so with those two alone the
+rebuild had no retraction to replay at all: ``apply_retraction(..., replay=True)``
+was never invoked, and step 5's assertion held whether the replay branch existed
+or not. Phase 2 now accepts a curated-style ``record.retract`` into the ingestor's
+outbox for exactly this reason, prints its ``message_id``, and
+``curated_retraction_committed()`` below refuses to go on until that exact id is
+in ``ingest_log`` outside the API's source. With it in place, removing
+``replay=True`` from the rebuild reverts the corrected wording in both the ledger
+and the row, and step 5 fails -- which is the whole point of having it.
+
 Destructive: ``POST /user-data/wipe`` deletes every collected row and rebuilds
 them from the outbox, twice. It takes no backup.
 """
@@ -61,6 +74,11 @@ REASON = os.environ["AOW_DRILL_REASON"]
 # here. Required, not defaulted: without it this file cannot tell "the date never
 # moved" from "there was never a date", and the second is the old defect.
 DECIDED_AT = datetime.fromisoformat(os.environ["AOW_DRILL_RETRACTED_AT"])
+# Phase 2's last line: the curated-style `record.retract` it accepted into the
+# ingestor's outbox. Required, not defaulted, for the same reason as the date
+# above -- it is the entire precondition of step 5, and a default would let this
+# file go on passing against a drill that stopped supplying one.
+CURATED_RETRACTION_ID = os.environ["AOW_DRILL_CURATED_RETRACTION_ID"]
 
 
 def get(path: str):
@@ -116,6 +134,49 @@ def ledger_row(entity: str, entity_id: str):
             " FROM record_retractions WHERE entity = %s AND entity_id = %s",
             (entity, entity_id),
         ).fetchone()
+
+
+def replayable_retractions() -> int:
+    """How many withdrawals the next rebuild will actually replay.
+
+    The predicate step 5 rests on, read positively rather than assumed.
+    `wipe_user_data` builds its replay set from `ingest_log` with
+    `source <> 'api'`, so this counts exactly the retractions that will reach
+    `apply_retraction(..., replay=True)`. Zero means the rebuild revises nothing,
+    which is indistinguishable from a rebuild that revises nothing *correctly* --
+    and that is how step 5 came to assert a property it was not exercising.
+
+    Read through the reader role, like `ledger_row`: `ingest_log` is the
+    consumer's own state and has no published route.
+    """
+    with connect(config.reader_dsn(), autocommit=True) as observer:
+        row = observer.execute(
+            "SELECT count(*) AS n FROM ingest_log" " WHERE routing_key = %s AND source <> 'api'",
+            (config.RK_RETRACT,),
+        ).fetchone()
+    return row["n"]
+
+
+def curated_retraction_committed() -> bool:
+    """Whether phase 2's own withdrawal is in the rebuild's replay set.
+
+    Stronger than the count above and the reason both exist. A count proves that
+    *something* will be replayed; this proves the envelope naming THIS record is,
+    which is the only one whose replay could revert the correction step 5 makes.
+    Matched on `message_id` because that is the column `wipe_user_data` selects on
+    -- `ingest_log` carries no entity id, so there is nothing else to match.
+
+    The `source <> 'api'` clause is repeated here rather than trusted: the whole
+    defect is that an API envelope is excluded from the replay, so a check that
+    dropped the clause would pass on precisely the envelope that proves nothing.
+    """
+    with connect(config.reader_dsn(), autocommit=True) as observer:
+        row = observer.execute(
+            "SELECT message_id FROM ingest_log"
+            " WHERE message_id = %s AND routing_key = %s AND source <> 'api'",
+            (CURATED_RETRACTION_ID, config.RK_RETRACT),
+        ).fetchone()
+    return bool(row)
 
 
 def stored_event(entity_id: str):
@@ -196,6 +257,22 @@ print(f"absent from /events, from include_expired, and from the {CITY} counts")
 # deleted and replayed from the ingestor's outbox -- which now holds the injected
 # listing, so the rebuild genuinely re-creates the row rather than leaving it out.
 #
+# Both wipes below need the curated withdrawal phase 2 accepted to be committed
+# first, or the replay pass is empty and step 5 measures nothing. Waited for here
+# rather than at step 5, because `wipe_business_rows()` does not touch
+# `ingest_log` -- what is committed before the first wipe is what the second one
+# replays too.
+wait_until(
+    curated_retraction_committed,
+    f"phase 2's curated withdrawal {CURATED_RETRACTION_ID} to be committed, so the "
+    "rebuild has THIS record's withdrawal to replay. Run "
+    "tests/integration/retraction_inject_event.py in the ingestor first",
+)
+print(
+    f"the rebuild will replay {replayable_retractions()} withdrawal(s) the ingestor "
+    f"accepted, including {CURATED_RETRACTION_ID}"
+)
+#
 # The wipe is asynchronous, and "the record is absent" is also true while the
 # rebuild has simply not run yet, so waiting for absence would pass without
 # testing anything. `wipe_user_data` clears `record_history` as its last
@@ -245,6 +322,18 @@ assert after["retracted_at"] == DECIDED_AT, (
 # A rebuild restores state; it does not revise it. That is why the replay pass
 # writes the ledger only where it has no entry and marks the row FROM the
 # ledger. This step is what would catch that coming undone.
+#
+# The curated envelope the replay carries names this same record with the
+# PRE-correction wording, which is what gives the step something to revert.
+# Asserted again here, after the first wipe, and not only before it: this is the
+# step that depends on it, and `wipe_business_rows()` is a function this file does
+# not own. If a future version of it cleared `ingest_log`, the second rebuild
+# would replay nothing and this step would go quiet instead of failing.
+assert curated_retraction_committed(), (
+    f"{CURATED_RETRACTION_ID} is no longer in the rebuild's replay set, so nothing "
+    "can revert the correction below and this step proves nothing. See "
+    "curated_retraction_committed()."
+)
 CORRECTED = f"{REASON} (corrected during the drill)"
 post(
     f"/records/events/{EVENT_ID}/retract",

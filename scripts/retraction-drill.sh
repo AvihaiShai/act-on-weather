@@ -18,7 +18,10 @@
 #                                                 and stay out across a rebuild
 #   retraction_before_record.py    (api)          withdraw a record that is NOT here
 #   retraction_inject_event.py     (ingestor)     the record then arrives, through
-#                                                 the ingestor's own outbox
+#                                                 the ingestor's own outbox, and a
+#                                                 curated-style withdrawal with it,
+#                                                 so the rebuild below has one to
+#                                                 replay
 #   retraction_arrival_order.py    (api)          it is stored and published nowhere,
 #                                                 and stays that way across a rebuild
 #
@@ -281,14 +284,27 @@ AOW_DRILL_RETRACTED_AT="$(printf '%s\n' "$phase1" | tail -n 1)"
 export AOW_DRILL_RETRACTED_AT
 [ -n "$AOW_DRILL_RETRACTED_AT" ] || { red "phase 1 printed no decision date"; exit 1; }
 
-hr "Phase 2: the record arrives, through the ingestor's own outbox"
-dcd exec -T \
-  -e AOW_DRILL_CITY -e AOW_DRILL_EVENT_ID \
-  ingestor python - < tests/integration/retraction_inject_event.py
+hr "Phase 2: the record arrives, with a curated withdrawal, through the ingestor"
+# `AOW_DRILL_REASON` as well, and not only for the listing: phase 2 also accepts
+# a curated-style `record.retract` carrying the same wording, which is what gives
+# phase 3's rebuild a withdrawal to replay. Without it that rebuild replays
+# nothing and phase 3's last step is vacuous -- see the file's own docstring.
+phase2="$(dcd exec -T \
+  -e AOW_DRILL_CITY -e AOW_DRILL_EVENT_ID -e AOW_DRILL_REASON \
+  ingestor python - < tests/integration/retraction_inject_event.py)"
+printf '%s\n' "$phase2" | sed 's/^/   /'
+# The last line, and only the last line, is the curated withdrawal's message id.
+# Phase 3 asserts that exact id reached `ingest_log`, which is what proves the
+# rebuild has this record's withdrawal to replay rather than merely something.
+AOW_DRILL_CURATED_RETRACTION_ID="$(printf '%s\n' "$phase2" | tail -n 1)"
+export AOW_DRILL_CURATED_RETRACTION_ID
+[ -n "$AOW_DRILL_CURATED_RETRACTION_ID" ] || {
+  red "phase 2 printed no curated retraction id"; exit 1; }
 
 hr "Phase 3: it is stored, published nowhere, and survives a rebuild"
 dcd exec -T \
   -e AOW_DRILL_CITY -e AOW_DRILL_EVENT_ID -e AOW_DRILL_REASON -e AOW_DRILL_RETRACTED_AT \
+  -e AOW_DRILL_CURATED_RETRACTION_ID \
   api python - < tests/integration/retraction_arrival_order.py
 
 hr "Proved"
