@@ -28,6 +28,41 @@ WEEKDAYS = {
 
 ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 
+# "next three weeks" has to mean three weeks. Short counts get written as
+# words at least as often as digits, and a parser that reads only digits does
+# not fail loudly: it falls through to the assumed week and answers seven
+# days. That silent narrowing is the defect this table exists to stop.
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
+# Longest alternatives first, so "twelve" is never read as "two".
+_COUNT = r"(\d+|" + "|".join(sorted(NUMBER_WORDS, key=len, reverse=True)) + r")"
+DAYS_AHEAD = re.compile(rf"\b{_COUNT}\s+days\b")
+WEEKS_AHEAD = re.compile(rf"\b{_COUNT}\s+weeks\b")
+
+# The longest range a relative phrase is allowed to build. A month: past the
+# 16-day forecast horizon and past the furthest listing the event feed holds,
+# so nothing stored is out of reach, while "the next 9999 days" still cannot
+# hand the router a list of nine thousand days. Which of those days there is
+# actually data for is the coverage gate's answer to give, not this module's.
+MAX_RELATIVE_DAYS = 31
+
+# A range written out in full is resolved exactly as written -- that is the
+# point of writing it -- but bounded for the same reason.
+MAX_EXPLICIT_DAYS = 366
+
 
 @dataclass
 class DateRange:
@@ -51,6 +86,61 @@ def today_in(timezone: str) -> date:
         return datetime.now(UTC).date()
 
 
+def _iso_dates(text: str) -> list[date]:
+    """Every ISO date written in the text, invalid ones dropped.
+
+    The pattern matches well-formed strings that are not dates -- 2026-99-99 --
+    and `date()` raises on them. Dropping one rather than raising is what keeps
+    a typo out of the API's 500 handler: the question falls through to the
+    other patterns and the footer says what was assumed instead.
+    """
+    found = []
+    for year, month, day in ISO_DATE.findall(text):
+        try:
+            found.append(date(int(year), int(month), int(day)))
+        except ValueError:
+            continue
+    return found
+
+
+def _explicit(text: str) -> DateRange | None:
+    """A date, or a range of dates, the questioner wrote out in full.
+
+    Two dates mean both ends. "from 2026-10-05 to 2026-10-14" is ten days, and
+    reading only the first of them -- which is what this used to do -- answers
+    a different question from the one asked, without saying so.
+
+    The ends are sorted, because a range written backwards still names the
+    range it names, and because an inverted `DateRange` yields no days at all:
+    the router would report "I have no weather data" for ten days it holds.
+    """
+    found = _iso_dates(text)
+    if not found:
+        return None
+    start, end = min(found), max(found)
+    if (end - start).days + 1 > MAX_EXPLICIT_DAYS:
+        end = start + timedelta(days=MAX_EXPLICIT_DAYS - 1)
+    if start == end:
+        return DateRange(start, start, start.isoformat())
+    return DateRange(start, end, f"{start.isoformat()} to {end.isoformat()}")
+
+
+def _count(match: re.Match[str]) -> int:
+    word = match.group(1)
+    return int(word) if word.isdigit() else NUMBER_WORDS[word]
+
+
+def _ahead(today: date, span: int) -> DateRange:
+    """`span` days starting today, bounded by `MAX_RELATIVE_DAYS`.
+
+    The label names the number of days this resolved to rather than the phrase
+    that was typed, so a request the bound shortened cannot read back as though
+    it had been honoured in full.
+    """
+    used = max(1, min(MAX_RELATIVE_DAYS, span))
+    return DateRange(today, today + timedelta(days=used - 1), f"the next {used} days")
+
+
 def parse(question: str, timezone: str = "UTC") -> DateRange:
     """Pick the range the question is about. Defaults to the coming week.
 
@@ -60,10 +150,9 @@ def parse(question: str, timezone: str = "UTC") -> DateRange:
     text = question.lower()
     today = today_in(timezone)
 
-    explicit = ISO_DATE.search(text)
+    explicit = _explicit(text)
     if explicit:
-        day = date(int(explicit.group(1)), int(explicit.group(2)), int(explicit.group(3)))
-        return DateRange(day, day, day.isoformat())
+        return explicit
 
     if "day after tomorrow" in text:
         day = today + timedelta(days=2)
@@ -96,10 +185,14 @@ def parse(question: str, timezone: str = "UTC") -> DateRange:
             day = today + timedelta(days=ahead or 7 if ahead == 0 else ahead)
             return DateRange(day, day, name.capitalize())
 
-    for pattern, _days in ((r"\bnext (\d+) days\b", None), (r"\b(\d+) days\b", None)):
-        match = re.search(pattern, text)
-        if match:
-            count = max(1, min(16, int(match.group(1))))
-            return DateRange(today, today + timedelta(days=count - 1), f"the next {count} days")
+    # Weeks before days: "the next three weeks" names no number of days, and
+    # falling through to the default answered seven of them in silence.
+    weeks = WEEKS_AHEAD.search(text)
+    if weeks:
+        return _ahead(today, _count(weeks) * 7)
+
+    days = DAYS_AHEAD.search(text)
+    if days:
+        return _ahead(today, _count(days))
 
     return DateRange(today, today + timedelta(days=6), "the coming week (assumed)")
