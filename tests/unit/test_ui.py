@@ -607,3 +607,97 @@ def test_refresh_of_one_saved_day_is_caught_even_when_latest_stamp_is_unchanged(
     reopened = _reopen(monkeypatch, row, weather=weather)
 
     assert any("refreshed since this was saved" in e.value for e in reopened.info)
+
+
+# ------------------------------------------- the agent's "Answer details" ----
+
+# The shape `services/agent/main.py:respond` returns. `dates` is the part that
+# matters here: `str(DateRange)` or `None` -- one already-formatted string such
+# as "2026-09-28", or "2026-09-29 to 2026-10-01", and never a list of days.
+AGENT_ANSWER = {
+    "answer": "Tomorrow in Rome looks warm and dry.",
+    "as_of": "weather as of 2026-09-27 06:00 UTC",
+    "city": "rome",
+    "dates": "2026-09-28",
+    "intents": ["weather"],
+    "llm_called": True,
+    "rows_used": {
+        "forecast": 1,
+        "recommendations": 0,
+        "places": 0,
+        "events": 0,
+        "facts": 0,
+        "venues": 0,
+    },
+}
+
+
+def _ask(monkeypatch, **changes):
+    """Ask the agent one question and return the run that rendered the answer.
+
+    `/agent/ask` is a POST, so the fixture file does not cover it and the bare
+    acceptance `fake_request` returns by default would not render at all.
+    """
+    at = _run(monkeypatch, replies={"agent/ask": {**AGENT_ANSWER, **changes}})
+    at = _open_page(at, "ask-the-agent")
+    # The button is disabled until the box has text, exactly as in a browser,
+    # so the question has to be submitted in its own run first.
+    at = at.text_input(key="question").set_value("What is the weather tomorrow in Rome?").run()
+    asked = next(b for b in at.button if b.label == "Ask the agent").click().run()
+    assert not asked.exception, [e.value for e in asked.exception]
+    return asked
+
+
+def _detail(at: AppTest, label: str) -> str:
+    """The single "Answer details" line that starts with `label`."""
+    lines = [str(m.value) for m in at.markdown if str(m.value).startswith(label)]
+    assert len(lines) == 1, f"expected one {label!r} line, got {lines}"
+    return lines[0]
+
+
+def test_a_single_date_is_rendered_as_a_date(monkeypatch):
+    """The regression this section exists for.
+
+    `', '.join(map(str, answer['dates']))` iterated a *string*, so the panel a
+    reviewer opens to prove which day an answer covered read
+    "Dates: 2, 0, 2, 6, -, 0, 9, -, 2, 8".
+    """
+    asked = _ask(monkeypatch, dates="2026-09-28")
+
+    assert _detail(asked, "Dates:") == "Dates: 2026-09-28"
+
+
+def test_a_date_range_is_rendered_as_a_range(monkeypatch):
+    """The panel question 10 would be proved with, so it renders both bounds."""
+    asked = _ask(monkeypatch, dates="2026-09-29 to 2026-10-01")
+
+    assert _detail(asked, "Dates:") == "Dates: 2026-09-29 to 2026-10-01"
+
+
+@pytest.mark.parametrize("absent", [None, ""])
+def test_an_answer_with_no_dates_says_so_rather_than_raising(monkeypatch, absent):
+    """`dates` is typed `str | None`, and `map(str, None)` raises TypeError.
+
+    `Router.resolve` always sets a window today, so this is the field's declared
+    shape rather than a reachable answer -- but the panel is one `or` away from
+    handling it, and an expander that raises takes the whole page down.
+    """
+    asked = _ask(monkeypatch, dates=absent)
+
+    assert _detail(asked, "Dates:") == "Dates: not specified"
+
+
+def test_the_details_panel_never_splits_a_value_into_characters(monkeypatch):
+    """Independent of the label and the fallback wording, unlike the above."""
+    for dates in ("2026-09-28", "2026-09-29 to 2026-10-01"):
+        rendered = [str(m.value) for m in _ask(monkeypatch, dates=dates).markdown]
+
+        assert not any("2, 0, 2, 6" in line for line in rendered), rendered
+
+
+def test_the_city_and_row_count_lines_still_render(monkeypatch):
+    """The other two lines of the same panel, which the fix sits between."""
+    asked = _ask(monkeypatch)
+
+    assert _detail(asked, "City:") == "City: rome"
+    assert _detail(asked, "Records consulted:").startswith("Records consulted:")

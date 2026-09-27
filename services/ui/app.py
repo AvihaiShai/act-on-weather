@@ -559,7 +559,17 @@ def ask_for_activity(cov) -> None:
     with middle:
         day = st.date_input("Date", value=first, min_value=first, max_value=last)
     with right:
-        activity = st.text_input("Activity", placeholder="kite surfing, rock climbing, a picnic...")
+        # Every example here has to survive the round trip, or the form shows the
+        # opposite of what it claims. "kite surfing" contains the catalogue
+        # keyword `surfing`, so a question about it was answered from the
+        # catalogue surfing row -- coast-gated and score-capped -- and never
+        # reached the row this form stored. "a picnic" stored `a_picnic` while
+        # the read path resolves the same words to `picnic`, so that row was
+        # unreachable too. These three match no keyword in data/activities.yml
+        # and slugify identically on the write and the read path.
+        activity = st.text_input(
+            "Activity", placeholder="rock climbing, stargazing, hot air ballooning..."
+        )
 
     if st.button("Ask", type="primary", disabled=not activity):
         result = api_send(
@@ -606,7 +616,11 @@ def page_chat(cov) -> None:
         st.caption(answer["as_of"] or "no data behind this answer")
     with st.expander("Answer details"):
         st.write(f"City: {answer['city'] or 'not specified'}")
-        st.write(f"Dates: {', '.join(map(str, answer['dates'])) or 'not specified'}")
+        # `dates` is one already-formatted string -- "2026-09-28", or
+        # "2026-09-29 to 2026-10-01" for a range -- and never a list of days.
+        # Joining it walked the characters and printed "2, 0, 2, 6, -, 0, 9, ...";
+        # `None`, which the field is typed to allow, raised TypeError instead.
+        st.write(f"Dates: {answer.get('dates') or 'not specified'}")
         st.write(f"Records consulted: {answer['rows_used']}")
 
 
