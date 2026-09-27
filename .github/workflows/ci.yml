@@ -533,6 +533,17 @@ jobs:
       - name: Load the tested images
         run: docker load -i aow-ci-images.tar
 
+      # `postgres` and `rabbitmq` are pinned by digest and are NOT in the
+      # artifact above, which carries only the two images this workflow built.
+      # The drill runs `up --no-build --pull never` -- deliberately, so it can
+      # never substitute a freshly built image for the one that was scanned, and
+      # so it makes no network call on an operator's machine -- which means the
+      # base images have to be here already. `scripts/ci-integration.sh` solves
+      # the same problem the same way, with a `pull` of exactly these two.
+      # `.env.example` only has to satisfy interpolation; no secret is read.
+      - name: Pull the pinned base images
+        run: docker compose -f compose.yml --env-file .env.example pull postgres rabbitmq
+
       # A run-scoped project name, so two runs on the same runner pool can never
       # collide and the script's own "refuse a project that already exists"
       # guard never has a stale project to refuse. The overlay pins the loaded
