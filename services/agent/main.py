@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
@@ -163,7 +164,17 @@ def ask(body: AskIn) -> dict[str, Any]:
         # The small CPU model repeatedly turns seven "fair" daily scores into
         # a "good week". Render named verdicts from their stored rows so every
         # date, band and score survives without an invented overall verdict.
-        return respond(result, named_activity_answer(result), llm_called=False)
+        answer = named_activity_answer(result)
+        # And the gaps, for the same reason they are appended on the model path
+        # below. This route returned before that line, so a named activity asked
+        # across a window running past the stored forecast listed only the
+        # covered days and said nothing at all about the rest -- the one case
+        # where answering in code was less truthful than answering through the
+        # model. `gap_block` is empty for a fully covered window, so an ordinary
+        # in-coverage question is unchanged.
+        missing = grounding.gap_block(dated_gap_brief(result, brief), answer)
+        joined = f"{answer}\n\n{missing}" if missing else answer
+        return respond(result, joined, llm_called=False)
 
     try:
         parsed = client.chat_json(
@@ -227,6 +238,57 @@ def plain_answer(result: Retrieval) -> str:
     return grounding.render(grounding.build(result))
 
 
+def dated_gap_brief(result: Retrieval, brief: grounding.Brief) -> grounding.Brief:
+    """The brief the named-activity gap sentence is written from.
+
+    The same rows, minus any day the answer has just reported a score for. The
+    coverage gap is derived from the forecast rows alone, and a day can carry a
+    stored score whose forecast row is gone -- a day re-ingested short, or one
+    whose weather row was replaced. Left alone, the appended sentence then denies
+    weather for a date listed with a score three lines above it, which reads as a
+    contradiction rather than as a limit. A day with no score keeps its gap,
+    which is the whole point of appending one here.
+    """
+    dated = {str(row["forecast_date"]) for row in result.recommendations}
+    if not dated.intersection(result.uncovered_days):
+        return brief
+    return grounding.build(
+        replace(result, uncovered_days=[d for d in result.uncovered_days if d not in dated])
+    )
+
+
+def unscored_date_lines(result: Retrieval) -> list[str]:
+    """One line per named activity that has some stored scores but not all.
+
+    The gap this closes is a day, not an activity. `unscored_activities` covers
+    an activity with no row anywhere, and `grounding.gap_block` covers a day the
+    stored forecast never reached. Between them sits the day this city *does*
+    have weather for and this activity has no score on -- a typed activity
+    requested for one day of the week, or a day the enricher has not scored yet.
+    Both dated answers listed the rows they had and said nothing about the rest.
+
+    Measured against `covered_days`, which is derived from the forecast rows that
+    actually came back for this city, so a day named here is a day the answer
+    could otherwise have been expected to speak about.
+    """
+    covered = set(result.covered_days)
+    if not covered:
+        return []
+    lines: list[str] = []
+    for activity in result.resolution.activities:
+        rows = [row for row in result.recommendations if row["activity"] == activity]
+        if not rows:
+            # No row at all: already stated through `unscored_activities`.
+            continue
+        absent = sorted(covered - {str(row["forecast_date"]) for row in rows})
+        if absent:
+            lines.append(
+                f"- {rows[0]['activity_label']}: no suitability score is stored for "
+                f"{grounding.date_runs(absent)}."
+            )
+    return lines
+
+
 def where_answer(result: Retrieval) -> str:
     """The answer to "where can I surf in Tel Aviv?".
 
@@ -269,6 +331,9 @@ def where_answer(result: Retrieval) -> str:
                 f"- {row['forecast_date']}: {row['activity_label']} is "
                 f"{row['band']} ({row['score']}/100)."
             )
+        # The heading is the requested window, so a day inside it with no score
+        # has to be named here or the list reads as though it covered the lot.
+        lines.extend(unscored_date_lines(result))
         lines.append("")
         lines.append(score_caveat(result))
         blocks.append("\n".join(lines))
@@ -380,6 +445,7 @@ def named_activity_answer(result: Retrieval) -> str:
         ) and not result.resolution.city.get("coastal"):
             reason = f"; {city} has no coast on record"
         lines.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+    lines.extend(unscored_date_lines(result))
     # Only when there is actually a score to qualify. An inland city has no
     # coastal row at all, and its answer is already the stronger statement --
     # "London has no coast on record" -- so following it with a note about what

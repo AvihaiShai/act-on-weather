@@ -717,10 +717,18 @@ tunnel has every route.
   `reasons` that carry it. **The Streamlit UI renders neither, and the agent's
   answer does not state the generic label**, so today the caveat is visible only
   in the API response. Asking the agent about an activity that has never been
-  requested is a separate matter and is a known defect, not a generic score: the
-  activity is not recognised, so no generic row is created or read, and the
-  answer can carry another activity's number. Surfacing the label and fixing the
-  ask path are [future work](#production-path).
+  requested is a separate matter: the noun is extracted, slugified with the same
+  function the write path uses, and looked up, so an activity with no stored row
+  is reported as not on record rather than answered with another activity's
+  number, and one that *was* requested earlier answers from its own row. **One
+  case is still open**: a name that carries a catalogue keyword inside it as a
+  whole word and has no stored row of its own — "kite surfing" with nothing ever
+  requested for it — still resolves to the catalogue's `surfing` and reports that
+  score. Narrowing it would take discarding a catalogue match on the strength of
+  a phrase with no rows behind it, which would break the catalogue's own
+  multi-word keywords ("a long walk" is one of hiking's). Surfacing the generic
+  label in the UI and closing that last case are
+  [future work](#production-path).
 * **The grounding guard is a set of specific checks, not a general proof.**
   `services/agent/grounding.py` validates the model's prose against the typed
   facts and throws away wording that fails, falling back to a deterministic

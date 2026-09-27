@@ -827,7 +827,7 @@ def _stale_feed_sentence(result: Retrieval, category: str | None = None) -> str:
     )
 
 
-def _date_runs(days: list[str]) -> str:
+def date_runs(days: list[str]) -> str:
     """Consecutive dates as ranges, everything else listed.
 
     A single first-to-last span is wrong the moment the missing days are not
@@ -871,7 +871,7 @@ def _partial_coverage_sentence(result: Retrieval, city: str) -> str:
         why = "No forecast is stored at all"
 
     return (
-        f"No weather is stored for {_date_runs(missing)} in {city}. {why}, so those days "
+        f"No weather is stored for {date_runs(missing)} in {city}. {why}, so those days "
         f"are left out rather than guessed. Refresh the snapshot while connected to extend it."
     )
 

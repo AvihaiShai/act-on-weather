@@ -318,4 +318,4 @@ def test_the_city_is_not_covered_merely_because_another_city_is(ask):
 )
 def test_consecutive_dates_collapse_and_others_do_not(days, expected):
     """Including across a month boundary, which string comparison gets wrong."""
-    assert grounding._date_runs(days) == expected
+    assert grounding.date_runs(days) == expected

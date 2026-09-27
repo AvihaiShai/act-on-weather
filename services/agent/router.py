@@ -263,7 +263,7 @@ NOT_AN_ACTIVITY: frozenset[str] = frozenset(
     """
     outside outdoors indoors somewhere anywhere everywhere something anything
     nothing everything it them us me one two things stuff fun
-    dinner lunch breakfast brunch supper drinks drink meal meals food coffee
+    dinner lunch breakfast brunch supper drinks drink meal meals food coffee tea
     holiday holidays trip travel travelling vacation sleep rest work
     """.split()
 )
@@ -271,6 +271,22 @@ NOT_AN_ACTIVITY: frozenset[str] = frozenset(
 # How many words a candidate may hold. Three covers "scuba diving", "bungee
 # jumping" and "hot air ballooning", and stops well short of a clause.
 MAX_CANDIDATE_WORDS = 3
+
+# The shortest slug that may be treated as an activity, matching the floor the
+# write path already enforces -- `RecommendationRequestIn.activity` in
+# services/api/main.py carries `min_length=2`, so two characters is exactly what
+# a traveller is allowed to request a score for.
+#
+# It was 4, with no comment and no test. That silently discarded every
+# three-letter noun -- "ski", "gym", "spa", "bbq" -- and discarding is the one
+# outcome this extraction may not have: a dropped candidate leaves
+# `Resolution.activities` empty, which removes the activity filter from the
+# retrieval, hands the model one row per catalogue activity, and files the noun
+# in neither `activities` nor `unknown_activities` so no gap is stated and no
+# grounding check is armed. "Is tomorrow a good day to ski in Reykjavik?" was
+# answered from `beach_day`'s row. At 2 the noun reaches `unknown_activities`
+# instead, which is the existing, tested path for a noun with no score.
+MIN_ACTIVITY_SLUG_CHARS = 2
 
 
 # Deliberately not a synonym list the model can extend: these are the only
@@ -378,6 +394,19 @@ def _candidate_phrases(text: str) -> list[str]:
             if phrase and phrase not in found:
                 found.append(phrase)
     return found
+
+
+def _mask_phrase(text: str, phrase: str) -> str:
+    """Blank out one activity phrase, however its words were spaced.
+
+    `_candidate_phrases` rebuilds a phrase from `re.findall`, joined by single
+    spaces, so a literal replace misses "kite  surfing" in the question it came
+    from. The miss is not a harmless fallback: the keyword loop then resolves
+    the catalogue activity *alongside* the custom one, which leaves two
+    activities, drops the single-activity SQL filter and reports both scores.
+    """
+    pattern = r"(?<!\w)" + r"\W+".join(re.escape(word) for word in phrase.split()) + r"(?!\w)"
+    return re.sub(pattern, " ", text)
 
 
 @dataclass
@@ -523,6 +552,70 @@ class Router:
         }
         return phrase in vocabulary
 
+    def _shadows_a_keyword(self, phrase: str) -> bool:
+        """Whether a catalogue keyword sits inside this phrase as a whole word
+        without being the whole phrase.
+
+        `_mentions` is a whole-word match, which stops "eat" matching inside
+        "weather" but does nothing about a keyword that is a whole word of a
+        longer name: "surfing" is a whole word of "kite surfing". This is the
+        test for that shape, and only that shape -- a phrase that IS a keyword
+        returns False, so an ordinary catalogue question never reaches the probe
+        below.
+        """
+        return any(
+            word != phrase and _mentions(phrase, word)
+            for keywords in self.activity_keywords.values()
+            for word in keywords
+        )
+
+    def stored_custom_activities(self, resolution: Resolution) -> list[str]:
+        """Phrases naming a stored activity the catalogue would misread, resolved
+        to their own slug. Returns the phrases, for the caller to mask.
+
+        The collision is real and the UI ships it as its own placeholder: type
+        "kite surfing" and the write path stores `kite_surfing`
+        (`schemas.slugify`, the same function used here), while the read path saw
+        the whole word "surfing", resolved the question to the catalogue's
+        `surfing`, and answered with surfing's score under surfing's label. Two
+        different activities, one of them scored, and the answer named the wrong
+        one.
+
+        So the longer name is probed first, and only ever the longer name: a
+        phrase is considered here only when it contains a catalogue keyword it is
+        not, and it is accepted only when its own slug has stored rows for this
+        city and window. Both conditions matter. The first keeps an ordinary
+        "is it good for surfing?" out of the probe entirely. The second is what
+        stops this from breaking the phrase keywords -- hiking's "a long walk"
+        yields the candidate "long walk", which contains "walk", and has no row
+        of its own, so it is left to the keyword loop and still answers about
+        hiking. That trade is the one already recorded at the `typed_activities`
+        gate below, and it is why a name that overlaps a keyword and has NO
+        stored row keeps the old behaviour rather than gaining a gap.
+
+        Read-only, and fail-soft through `_stored_rows`: a probe that cannot be
+        answered resolves nothing, so the failure direction is the catalogue
+        answer this has always given rather than an invented one.
+        """
+        phrases: list[str] = []
+        for phrase in _candidate_phrases(resolution.question.lower()):
+            if not self._shadows_a_keyword(phrase):
+                continue
+            if self._rejected_candidate(phrase, resolution):
+                continue
+            try:
+                slug = slugify(phrase)
+            except ValueError:
+                continue
+            if len(slug) < MIN_ACTIVITY_SLUG_CHARS or slug in resolution.activities:
+                continue
+            if slug in self.activity_keywords:
+                continue
+            if self._stored_rows(resolution, slug):
+                resolution.activities.append(slug)
+                phrases.append(phrase)
+        return phrases
+
     def typed_activities(self, resolution: Resolution) -> None:
         """Resolve an activity the catalogue does not name, and record where it
         landed. Three outcomes, and only the first two produce a verdict.
@@ -551,7 +644,7 @@ class Router:
                 slug = slugify(phrase)
             except ValueError:
                 continue
-            if len(slug) < 4 or slug in resolution.activities:
+            if len(slug) < MIN_ACTIVITY_SLUG_CHARS or slug in resolution.activities:
                 continue
             if slug in self.activity_keywords:
                 resolution.activities.append(slug)
@@ -646,8 +739,21 @@ class Router:
         if scheduled_events and "events" not in resolution.intents:
             resolution.intents.append("events")
 
+        # A stored activity whose name carries a catalogue keyword inside it is
+        # resolved to its own rows first, and its phrase is then masked out of
+        # the text the keyword loop reads. Without the mask the loop still sees
+        # the whole word "surfing" in "kite surfing" and appends the catalogue
+        # activity alongside the one actually asked about, which drops the SQL
+        # activity filter (it binds only when exactly one activity resolved) and
+        # puts a second activity's score in the answer. Masking is confined to a
+        # phrase that resolved to stored rows, so nothing else moves.
+        keyword_text = text
+        if resolution.city is not None and not scheduled_events:
+            for phrase in self.stored_custom_activities(resolution):
+                keyword_text = _mask_phrase(keyword_text, phrase)
+
         for activity, keywords in self.activity_keywords.items():
-            if any(_mentions(text, word) for word in keywords):
+            if any(_mentions(keyword_text, word) for word in keywords):
                 resolution.activities.append(activity)
         # Naming an activity is asking whether to do it, whatever else the
         # sentence looks like. Without this, "can I surf tomorrow?" carries no
