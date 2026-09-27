@@ -183,7 +183,7 @@ def test_startup_purges_generated_events_when_demo_mode_is_off(monkeypatch):
     conn = FakeConn()
     removed = consumer.enforce_event_mode(conn)
     assert removed == 3
-    assert conn.cur.statements == ["DELETE FROM events WHERE is_sample"]
+    assert conn.cur.statements == ["DELETE FROM events WHERE is_sample AND retracted_at IS NULL"]
     assert conn.commits == 1
 
 

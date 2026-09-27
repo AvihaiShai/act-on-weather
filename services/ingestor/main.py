@@ -29,7 +29,7 @@ from typing import Any
 
 import yaml
 
-from ..common import config, metrics
+from ..common import config, metrics, schemas
 from ..common.envelope import Envelope
 from ..common.outbox import Outbox
 from ..common.rabbit import Publisher, PublishError
@@ -62,6 +62,15 @@ DEMO_SNAPSHOT_FILES = {
 # One per process, and used only for the file above. See envelopes_from.
 DEMO_EPOCH = uuid.uuid4().hex
 
+# The curated withdrawal list. Not part of the snapshot and deliberately not
+# in its manifest: it is not a collected entity, it carries no count that the
+# documentation quotes, and it is legitimately empty on a clean build. It
+# lives beside the seeds because it is the same kind of artifact -- a
+# hand-curated, reviewable list that ships with the repository and is applied
+# on every boot, so an install that already holds a withdrawn record gets the
+# withdrawal too. See migration 009.
+RETRACTIONS_FILE = config.DATA_DIR / "retractions.jsonl"
+
 
 def deterministic_id(routing_key: str, *parts: Any) -> str:
     return str(uuid.uuid5(NS, "|".join([routing_key, *[str(p) for p in parts]])))
@@ -75,7 +84,31 @@ def load_cities(path: Path) -> list[dict[str, Any]]:
 def natural_key(routing_key: str, payload: dict[str, Any]) -> tuple:
     if routing_key == config.RK_WEATHER:
         return (payload["city_id"], payload["forecast_date"])
+    if routing_key == config.RK_RETRACT:
+        # A withdrawal is identified by what it withdraws, plus the wording of
+        # the decision. The reason is in the key because correcting it in the
+        # curated list has to reach the database: without it the edited line
+        # mints the same message_id, the outbox deduplicates it as a replay,
+        # and the correction is silently dropped.
+        return (
+            payload["entity"],
+            payload["entity_id"],
+            payload["reason"],
+            payload.get("retracted_by", "operator"),
+        )
     return (payload["id"],)
+
+
+def stamp_of(payload: dict[str, Any]) -> Any:
+    """The timestamp that distinguishes one version of a record from the next.
+
+    For everything collected that is `as_of`, the moment the source produced
+    it. For a withdrawal there is no source reading, only the moment the
+    decision was taken, so `retracted_at` plays the same part: re-accepting
+    the same line mints the same id and the outbox deduplicates it, while a
+    corrected decision date is a genuinely new message.
+    """
+    return payload["as_of"] if "as_of" in payload else payload["retracted_at"]
 
 
 def envelopes_from(
@@ -99,7 +132,7 @@ def envelopes_from(
     however many times demo mode is toggled.
     """
     for payload in payloads:
-        parts = [*natural_key(routing_key, payload), payload["as_of"]]
+        parts = [*natural_key(routing_key, payload), stamp_of(payload)]
         # An event's `valid_until` is derived from the running recheck window
         # rather than collected (see `apply_freshness_policy`), so two accepts
         # of the same listing can legitimately differ while its `as_of` does
@@ -116,7 +149,7 @@ def envelopes_from(
             routing_key,
             payload,
             source=source,
-            observed_at=payload["as_of"],
+            observed_at=stamp_of(payload),
             city=payload.get("city_id"),
             message_id=deterministic_id(routing_key, *parts),
         )
@@ -172,7 +205,48 @@ def accept_snapshot(box: Outbox, snapshot_dir: Path) -> int:
         ids = box.accept_many(list(envelopes_from(routing_key, payloads, "snapshot", salt)))
         total += len(ids)
         log.info("accepted %d %s records from %s", len(ids), routing_key, path.name)
+    total += accept_retractions(box)
     return total
+
+
+def accept_retractions(box: Outbox) -> int:
+    """Accept the curated withdrawal list, after the records it refers to.
+
+    Accepted on every boot, not only the first: an install that already holds
+    a record which has since been withdrawn is exactly the case this exists
+    for, and it only learns about the withdrawal by being told again. The
+    outbox deduplicates on the deterministic message_id, so re-accepting an
+    unchanged list adds nothing.
+
+    A missing file is normal and silent -- an empty withdrawal list is the
+    healthy state, and saying so on every boot would train an operator to
+    ignore the log.
+    """
+    if not RETRACTIONS_FILE.exists():
+        return 0
+    payloads = []
+    for number, line in enumerate(RETRACTIONS_FILE.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+            # Validated here, against the same model the consumer will apply,
+            # so a malformed line fails on the file with its line number
+            # instead of raising a KeyError out of the envelope builder and
+            # crash-looping the container under `restart: unless-stopped`.
+            schemas.validate(config.RK_RETRACT, payload)
+            payloads.append(payload)
+        except (json.JSONDecodeError, ValueError) as exc:
+            # Refuse the whole file rather than silently withdraw a subset: a
+            # half-applied retraction list republishes records somebody
+            # decided were wrong.
+            raise ValueError(f"{RETRACTIONS_FILE.name} line {number} is invalid: {exc}") from exc
+    if not payloads:
+        return 0
+    ids = box.accept_many(list(envelopes_from(config.RK_RETRACT, payloads, "retractions")))
+    log.info("accepted %d retractions from %s", len(ids), RETRACTIONS_FILE.name)
+    return len(ids)
 
 
 def accept_live_weather(

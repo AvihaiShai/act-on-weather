@@ -111,16 +111,20 @@ so its output cannot satisfy the bundle's digest lock.
    the same command `make stage-fetch` runs) and lets `sha256sum -c
    models.lock` fail the job if it does not match.
 
-   **This gate needs the repository variable `MODEL_BASE_URL` set**, to a
-   mirror that actually carries the pinned Q4_K_M weights. The workflow's own
-   fallback points at `huggingface.co/Qwen/Qwen3-1.7B-GGUF`, which publishes
-   only Q8_0 -- `compose.tools.yml` records that measurement and defaults to
-   the `ggml-org` mirror for exactly this reason. With the variable unset this
-   step therefore fails on an HTTP 404 rather than on a checksum mismatch,
-   which is a confusing way to discover a configuration gap. It is safe either
-   way: `stage_model.py` verifies the hash after download, so a wrong mirror
-   can never stage the wrong weights. `ci.yml` passes the same variable with no
-   fallback at all.
+   The repository variable `MODEL_BASE_URL` selects the mirror. **Corrected on
+   2026-09-27:** the workflow's own fallback used to point at
+   `huggingface.co/Qwen/Qwen3-1.7B-GGUF`, recorded in `compose.tools.yml` as
+   publishing only Q8_0 and not the pinned Q4_K_M, so with the variable unset
+   this step failed on an HTTP 404 -- a latent defect the green release history
+   could not show, because the variable has been set since 2026-09-24. Both
+   places now name the `ggml-org` mirror, and `guard`'s "Model mirror defaults
+   agree" step fails the build if a workflow literal ever diverges from
+   `compose.tools.yml`'s default again. Set the variable to stage from an
+   internal mirror instead. It is safe either way: `stage_model.py` verifies
+   the hash after download, so a wrong mirror can never stage the wrong
+   weights, only fail. `ci.yml` passes the same variable with no fallback at
+   all, because it runs `stage_model.py` directly rather than through
+   `compose.tools.yml` and so has no default to fall back to.
 8. Builds the bundle: `bash scripts/package-offline.sh release/images.lock`,
    unmodified. After `docker save`, the package script fills any omitted
    services/UI config or layer blobs directly from GHCR by digest and hashes

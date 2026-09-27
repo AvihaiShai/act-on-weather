@@ -176,7 +176,11 @@ def enforce_event_mode(conn: psycopg.Connection) -> int:
         log.warning("DEMO MODE: generated sample events are permitted in this database")
         return 0
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM events WHERE is_sample")
+        # `AND retracted_at IS NULL` so a withdrawn sample is kept rather
+        # than deleted and re-minted un-retracted on the next demo boot:
+        # the re-accept uses a fresh per-process salt, so its envelope is
+        # new and the original retraction is not replayed against it.
+        cur.execute("DELETE FROM events WHERE is_sample AND retracted_at IS NULL")
         removed = cur.rowcount
     conn.commit()
     if removed:
@@ -357,11 +361,53 @@ EVENT_COLS = [
 
 
 def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationRequest) -> None:
-    """A user asked about an activity that has no rule of its own (M2).
+    """A user asked for one activity by name (M2).
 
-    It is scored against general outdoor comfort from the weather already
-    stored, and inserted `pending` so the enricher words it like any other.
+    Three outcomes. An activity the catalogue carries is scored by its own
+    thresholds; anything else is scored against general outdoor comfort; and an
+    activity needing a coast, asked for a city that has none, is refused rather
+    than scored. Whatever is stored goes in `pending`, so the enricher words it
+    like any other row, except a refusal, which is terminal.
     """
+    cfg = ACTIVITIES.get(p.activity)
+    if cfg is not None and cfg.get("requires_coast") and not COASTAL.get(p.city_id, False):
+        # The catalogue says this activity needs a coast and this city has none
+        # on record, so there is nothing here to score it from. Storing no row
+        # is not a new policy: it is the one the rest of the system already
+        # states. `rules.activities_for_city` drops the activity instead of
+        # scoring it, so the default path has never created such a row, and the
+        # reader is built around that absence -- `router` collects an activity
+        # with no row into `unscored_activities`, and the answer then says "no
+        # suitability score on record; <city> has no coast on record", which is
+        # a better answer than any number could be.
+        #
+        # What this replaces is worse than a missing row. Because this branch
+        # shared an `else` with genuinely unknown activities, a request for
+        # surfing in London was scored by `rules.GENERIC_CFG`, which carries no
+        # `score_ceiling` -- so a pleasant day on land stored London surfing as
+        # `good`, uncapped, contradicting both the 69 cap the four sea
+        # activities carry and the sentence the reader is shown. Capping was
+        # not an option either: `beach_day` needs a coast and has no ceiling of
+        # its own, so there is no number to cap it to and inventing one is not
+        # open to us.
+        #
+        # Writing a `failed` row instead of nothing was tried and is wrong:
+        # `queries.recommendations` filters on neither status nor a null score,
+        # so the row would come back as a scored one, `unscored_activities`
+        # would go empty, and the answer would read "Surfing is None
+        # (None/100)." in place of the coast sentence.
+        #
+        # This is decided before the forecast is read, because the reason does
+        # not depend on the weather: there is no coast either way. Any row an
+        # earlier build already stored here is stale data, and belongs to the
+        # rebuild-and-rescore path, not to this one.
+        log.info(
+            "refused %s for %s: the activity needs a coast and the city has none on record",
+            p.activity,
+            p.city_id,
+        )
+        return
+
     row = cur.execute(
         "SELECT temp_max_c, temp_min_c, precip_mm, precip_prob, wind_kmh, uv_index,"
         "       sunshine_hours, as_of"
@@ -383,9 +429,11 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
     # If the user named an activity the catalogue already knows, score it with
     # its own thresholds rather than the generic outdoor-comfort fallback --
     # and, if it is deferred for this day, this promotes it back to 'pending'
-    # so the model words the thing that was actually asked about.
-    cfg = ACTIVITIES.get(p.activity)
-    if cfg is not None and (not cfg.get("requires_coast") or COASTAL.get(p.city_id, False)):
+    # so the model words the thing that was actually asked about. The coast
+    # case has already returned above, so `cfg is None` here means one thing
+    # only: an activity the catalogue does not carry, which is exactly what the
+    # generic fallback is for.
+    if cfg is not None:
         result = rules.score_activity(p.activity, cfg, row)
     else:
         result = rules.score_requested(p.activity_label, row)
@@ -397,6 +445,11 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
         ON CONFLICT (city_id, forecast_date, activity) DO UPDATE SET
             requested = true, score = EXCLUDED.score, band = EXCLUDED.band,
             reasons = EXCLUDED.reasons, weather_as_of = EXCLUDED.weather_as_of,
+            -- The row is being scored again right now, so it carries the
+            -- version of the engine that scored it. Leaving the old value here
+            -- stamped a freshly computed score with a stale rule_version, which
+            -- is the one thing a version-triggered rescore would have to trust.
+            rule_version = EXCLUDED.rule_version,
             status = 'pending', text = NULL, last_error = NULL, invalid_attempts = 0
         """,
         (
@@ -598,11 +651,65 @@ def delete_itinerary(cur: psycopg.Cursor, p: schemas.ItineraryDelete) -> None:
 HANDLERS[config.RK_ITINERARY_DELETE] = delete_itinerary
 
 
+RETRACTABLE = {"events", "places", "facts"}
+
+
+def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
+    """Withdraw one collected record from the published output (migration 009).
+
+    An UPDATE, not a DELETE: the writer holds no DELETE grant on these tables
+    and is not being given one. The row keeps its source, its as-of and its
+    history, and the `_bump`/`_hist` triggers file the withdrawal as an
+    ordinary revision, so `record_history` shows exactly when it happened.
+
+    The decision date is never moved. `COALESCE` keeps the first
+    `retracted_at` this row was given, so replaying the queue -- or a wipe --
+    cannot restamp a withdrawal with the date of the replay. The reason and
+    the author *can* be corrected, because getting the wording of a withdrawal
+    right afterwards is a normal thing to need and the alternative is an
+    operator editing the database by hand.
+
+    A retraction naming a record this install has never held is not an error.
+    The list is curated centrally and an install only has what it ingested; a
+    retraction for a row in a city this deployment does not carry should do
+    nothing rather than dead-letter the message. It is logged at warning
+    because the other way to reach it is a typo in the curated list, and that
+    should not be invisible.
+    """
+    if p.entity not in RETRACTABLE:
+        raise Poison(f"cannot retract {p.entity}: only {sorted(RETRACTABLE)} are collected records")
+    cur.execute(
+        f"UPDATE {p.entity} SET retracted_at = COALESCE(retracted_at, %(at)s),"
+        " retraction_reason = %(reason)s, retracted_by = %(by)s"
+        " WHERE id = %(id)s AND (retracted_at IS NULL"
+        "   OR retraction_reason IS DISTINCT FROM %(reason)s"
+        "   OR retracted_by IS DISTINCT FROM %(by)s)",
+        {"at": p.retracted_at, "reason": p.reason, "by": p.retracted_by, "id": p.entity_id},
+    )
+    if cur.rowcount:
+        log.info("retracted %s %s: %s", p.entity, p.entity_id, p.reason)
+    else:
+        log.warning(
+            "retraction for %s %s changed nothing: no such row, or already "
+            "withdrawn for the same reason",
+            p.entity,
+            p.entity_id,
+        )
+
+
+HANDLERS[config.RK_RETRACT] = apply_retraction
+
+
 SOURCE_KEYS = (
     config.RK_WEATHER,
     config.RK_PLACE,
     config.RK_FACT,
     config.RK_EVENT,
+    # A retraction is collected state, not user state: it must survive the
+    # rebuild that `user_data.wipe` performs, or a wipe would silently
+    # republish every record an operator has withdrawn. Replayed in a second
+    # pass below, after the records themselves.
+    config.RK_RETRACT,
 )
 
 
@@ -615,9 +722,12 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
     or envelope aborts the transaction rather than producing a partial wipe.
     """
     with Outbox("/source-outbox/outbox.sqlite3", readonly=True) as source_box:
+        # Placeholders generated from the tuple rather than written out: the
+        # literal `(?, ?, ?, ?)` this replaces silently went wrong the moment
+        # a fifth source key was added.
         source_rows = source_box.conn.execute(
             "SELECT message_id, routing_key, body FROM outbox"
-            " WHERE routing_key IN (?, ?, ?, ?) ORDER BY seq",
+            f" WHERE routing_key IN ({', '.join('?' * len(SOURCE_KEYS))}) ORDER BY seq",
             SOURCE_KEYS,
         ).fetchall()
 
@@ -644,17 +754,62 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
             (envelope.routing_key, schemas.validate(envelope.routing_key, envelope.payload))
         )
 
+    # Retractions are carried across the rebuild rather than re-derived from
+    # it. Replaying the curated list restores every withdrawal that shipped
+    # with the repository, but not one an operator made against this install
+    # alone -- and a wipe that quietly republished a record somebody withdrew
+    # would be the same F9 defect this mechanism exists to close, arriving by
+    # a different route. Captured before the delete, re-applied after the
+    # replay, so the origin of a retraction stops mattering.
+    held = {
+        entity: cur.execute(
+            f"SELECT id, retracted_at, retraction_reason, retracted_by FROM {entity}"
+            " WHERE retracted_at IS NOT NULL"
+        ).fetchall()
+        for entity in ("events", "places", "facts")
+    }
+
     cur.execute("SELECT wipe_business_rows()")
 
-    for routing_key, payload in replay:
+    # Two passes, records then retractions. A retraction is an UPDATE of a row
+    # that must already be there, so replaying it in outbox order would depend
+    # on the accept order of two different files. Splitting the pass makes the
+    # rebuild order-independent by construction instead of by convention.
+    records = [(rk, p) for rk, p in replay if rk != config.RK_RETRACT]
+    retractions = [(rk, p) for rk, p in replay if rk == config.RK_RETRACT]
+
+    for routing_key, payload in records:
         if routing_key == config.RK_WEATHER:
             if upsert_weather(cur, payload):
                 score_defaults(cur, payload)
         else:
             HANDLERS[routing_key](cur, payload)
 
+    for routing_key, payload in retractions:
+        HANDLERS[routing_key](cur, payload)
+
+    restored = 0
+    for entity, rows in held.items():
+        for row in rows:
+            cur.execute(
+                f"UPDATE {entity} SET retracted_at = %(at)s, retraction_reason = %(reason)s,"
+                " retracted_by = %(by)s"
+                " WHERE id = %(id)s AND retracted_at IS NULL",
+                {
+                    "at": row["retracted_at"],
+                    "reason": row["retraction_reason"],
+                    "by": row["retracted_by"],
+                    "id": row["id"],
+                },
+            )
+            restored += cur.rowcount
+
     cur.execute("DELETE FROM record_history")
-    log.info("wiped user data; restored %d collected messages", len(replay))
+    log.info(
+        "wiped user data; restored %d collected messages and %d retractions",
+        len(replay),
+        restored,
+    )
 
 
 HANDLERS[config.RK_USER_DATA_WIPE] = wipe_user_data

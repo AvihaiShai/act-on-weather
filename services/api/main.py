@@ -589,6 +589,54 @@ def patch_record(
     }
 
 
+class RetractIn(RequestIn):
+    reason: str = Field(min_length=1, max_length=500)
+    retracted_by: str = Field(default="api", max_length=100)
+
+
+@app.post("/records/{entity}/{entity_id}/retract", status_code=202)
+def retract_record(entity: str, entity_id: str, body: RetractIn) -> dict[str, Any]:
+    """Withdraw a collected record from the published output (migration 009).
+
+    The counterpart to a correction. A patch says a stored record is wrong in
+    a particular field; this says the record should not be published at all --
+    the venue cancelled the concert, the recheck could not confirm the
+    listing. Accepted here and applied by the consumer like every other write.
+
+    Not a delete. The row keeps its source, its as-of and its history, and it
+    leaves every read, every answer and every count in `/coverage`. It also
+    survives a `user_data.wipe`, which is the whole point: a rebuild that
+    republished a withdrawn record would put the record back in front of a
+    reader who was told it had been taken down.
+
+    `reason` is required and deliberately has no default. A withdrawal is a
+    claim that something published here was wrong, and it is the one change
+    nobody can reconstruct from the data afterwards, because the row it refers
+    to still reads exactly as it did.
+
+    There is no un-retract route. Reinstating a record is a decision somebody
+    should have to make deliberately and record, not a button next to the one
+    that withdrew it; today it means putting the corrected listing back in the
+    snapshot with a newer as-of and clearing the mark in a migration.
+    """
+    message_id = accept(
+        config.RK_RETRACT,
+        {
+            "entity": entity,
+            "entity_id": entity_id,
+            "reason": body.reason,
+            "retracted_at": datetime.now(UTC).isoformat(),
+            "retracted_by": body.retracted_by,
+        },
+    )
+    return {
+        "accepted": True,
+        "message_id": message_id,
+        "follow": f"/outbox/{message_id}",
+        "history": f"/records/{entity}/{entity_id}/history",
+    }
+
+
 # ------------------------------------------------------------------ agent ----
 
 

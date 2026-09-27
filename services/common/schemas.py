@@ -184,6 +184,32 @@ class RecordPatch(_Payload):
     edited_by: str = "ui"
 
 
+class RecordRetraction(_Payload):
+    """Withdraw one collected record from the published output.
+
+    Only the three collected entities can be retracted. Weather is replaced
+    day by day rather than withdrawn, a recommendation is derived from a rule
+    and a forecast rather than collected, and an itinerary is the user's own
+    and already has a delete of its own (`ItineraryDelete`).
+
+    `reason` is required and has no default on purpose. A withdrawal is a
+    claim that something we published was wrong, and it is the one kind of
+    change nobody can reconstruct afterwards from the data itself -- the row
+    it refers to still looks exactly as it did. One line saying which source
+    said what, on what date, is the whole of the audit trail.
+
+    `retracted_at` is when the decision was taken, supplied by whoever took
+    it, never `now()` at the consumer: replaying the queue must not restamp a
+    withdrawal with the clock of the replay.
+    """
+
+    entity: str = Field(pattern="^(events|places|facts)$")
+    entity_id: str
+    reason: str = Field(min_length=1)
+    retracted_at: datetime
+    retracted_by: str = "operator"
+
+
 PAYLOAD_MODELS: dict[str, type[_Payload]] = {
     config.RK_WEATHER: WeatherDaily,
     config.RK_PLACE: Place,
@@ -196,6 +222,7 @@ PAYLOAD_MODELS: dict[str, type[_Payload]] = {
     config.RK_USER_DATA_WIPE: UserDataWipe,
     config.RK_PATCH: RecordPatch,
     config.RK_REENRICH: ReenrichRequest,
+    config.RK_RETRACT: RecordRetraction,
 }
 
 

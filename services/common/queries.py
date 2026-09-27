@@ -67,6 +67,9 @@ WITH localised AS (
               AT TIME ZONE c.timezone)::date
          ) AS ends_on
     FROM events e JOIN cities c ON c.id = e.city_id
+   -- Withdrawn listings leave every published read here, at the one place
+   -- both `events()` and `expired_events()` are built from. See migration 009.
+   WHERE e.retracted_at IS NULL
 )
 """
 
@@ -122,15 +125,15 @@ SELECT 'events', 'event window', MAX(e.as_of), COUNT(*),
                 AT TIME ZONE c.timezone)::date
            ))::text
   FROM events e JOIN cities c ON c.id = e.city_id
- WHERE e.valid_until > now()
+ WHERE e.valid_until > now() AND e.retracted_at IS NULL
 UNION ALL
 SELECT 'places', 'not date-scoped', MAX(as_of), COUNT(*),
        COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample), NULL, NULL
-  FROM places
+  FROM places WHERE retracted_at IS NULL
 UNION ALL
 SELECT 'facts', 'not date-scoped', MAX(as_of), COUNT(*),
        COUNT(DISTINCT city_id), COUNT(*) FILTER (WHERE is_sample), NULL, NULL
-  FROM facts
+  FROM facts WHERE retracted_at IS NULL
 UNION ALL
 SELECT 'itineraries', 'saved by users', MAX(updated_at), COUNT(*),
        COUNT(DISTINCT city_id), 0,
@@ -149,21 +152,29 @@ SELECT c.id AS city_id, c.name, c.coastal,
        c.coast_name, c.coast_distance_km,
        (SELECT COUNT(*) FROM weather_daily w WHERE w.city_id = c.id)   AS weather,
        (SELECT COUNT(*) FROM recommendations r WHERE r.city_id = c.id) AS recommendations,
-       (SELECT COUNT(*) FROM places p WHERE p.city_id = c.id)          AS places,
-       (SELECT COUNT(*) FROM facts f WHERE f.city_id = c.id)           AS facts,
-       (SELECT COUNT(*) FROM events e WHERE e.city_id = c.id)          AS events,
-       (SELECT COUNT(*) FROM events e WHERE e.city_id = c.id AND e.is_sample) AS sample_events,
+       -- Every count here is of the PUBLISHED set: a withdrawn record is
+       -- excluded from the same numbers the UI and /coverage report, so the
+       -- panel never advertises rows no answer can reach (migration 009).
+       (SELECT COUNT(*) FROM places p
+         WHERE p.city_id = c.id AND p.retracted_at IS NULL)             AS places,
+       (SELECT COUNT(*) FROM facts f
+         WHERE f.city_id = c.id AND f.retracted_at IS NULL)             AS facts,
+       (SELECT COUNT(*) FROM events e
+         WHERE e.city_id = c.id AND e.retracted_at IS NULL)             AS events,
+       (SELECT COUNT(*) FROM events e
+         WHERE e.city_id = c.id AND e.is_sample AND e.retracted_at IS NULL)
+                                                                        AS sample_events,
        -- Split out per city because F9 was about exactly this shape: "26
        -- events" read as coverage right up until you saw that eleven were in
        -- London and one was in Tel Aviv. A per-city current count is what lets
        -- the UI and the closure record say where the feed is thin without
        -- anybody having to count rows by hand.
        (SELECT COUNT(*) FROM events e
-         WHERE e.city_id = c.id AND NOT e.is_sample AND e.valid_until > now())
-                                                                       AS verified_events_current,
+         WHERE e.city_id = c.id AND NOT e.is_sample AND e.valid_until > now()
+           AND e.retracted_at IS NULL)                                 AS verified_events_current,
        (SELECT COUNT(*) FROM events e
-         WHERE e.city_id = c.id AND NOT e.is_sample AND e.valid_until <= now())
-                                                                       AS verified_events_expired
+         WHERE e.city_id = c.id AND NOT e.is_sample AND e.valid_until <= now()
+           AND e.retracted_at IS NULL)                                 AS verified_events_expired
   FROM cities c ORDER BY c.name
 """
 
@@ -191,6 +202,7 @@ SELECT COUNT(*) FILTER (WHERE NOT is_sample AND valid_until > now())  AS current
        COUNT(DISTINCT city_id) FILTER (WHERE NOT is_sample AND valid_until > now())
                                                                       AS cities_covered
   FROM events
+ WHERE retracted_at IS NULL
 """
 
 
@@ -364,7 +376,7 @@ def places(
     category it asked about is represented.
     """
     params: dict[str, Any] = {"limit": limit}
-    where = ["true"]
+    where = ["retracted_at IS NULL"]
     if city_id:
         where.append("AND city_id = %(city)s")
         params["city"] = city_id
@@ -530,7 +542,7 @@ def facts(
     sql = [
         "SELECT id, city_id, title, summary, topic, source, source_url, is_sample,",
         "       as_of, revision",
-        "  FROM facts WHERE true",
+        "  FROM facts WHERE retracted_at IS NULL",
     ]
     params: dict[str, Any] = {"limit": limit}
     if city_id:
@@ -546,13 +558,76 @@ def facts(
 # ----------------------------------------------------------- itineraries ----
 
 
+def _drop_withdrawn(conn: psycopg.Connection, days: list[dict[str, Any]]) -> int:
+    """Remove withdrawn events and places from a saved plan, in place.
+
+    A saved itinerary stores a *copy* of each row it named -- title, venue,
+    date, source link -- frozen into `itineraries.days` at the moment it was
+    built. That is deliberate: a plan should still read the same next week.
+    But it means the retraction filter on the live tables cannot reach it, and
+    a withdrawn concert would keep being rendered, with a working link to the
+    listing, for the life of the plan. That is the F9 defect wearing a
+    different coat, so the copies are checked against the tables on the way
+    out.
+
+    Returns how many entries were dropped, so the caller can say that the plan
+    is missing something rather than quietly showing a shorter day.
+    """
+    wanted: dict[str, set[str]] = {"events": set(), "places": set()}
+    for day in days:
+        for key, table in (
+            ("events", "events"),
+            ("places", "places"),
+            ("activity_places", "places"),
+        ):
+            for item in day.get(key) or []:
+                if isinstance(item, dict) and item.get("id"):
+                    wanted[table].add(item["id"])
+
+    live: dict[str, set[str]] = {}
+    for table, ids in wanted.items():
+        if not ids:
+            live[table] = set()
+            continue
+        rows = conn.execute(
+            f"SELECT id FROM {table} WHERE id = ANY(%s) AND retracted_at IS NULL",
+            (list(ids),),
+        ).fetchall()
+        live[table] = {row["id"] for row in rows}
+
+    dropped = 0
+    for day in days:
+        for key, table in (
+            ("events", "events"),
+            ("places", "places"),
+            ("activity_places", "places"),
+        ):
+            items = day.get(key)
+            if not items:
+                continue
+            kept = [
+                item
+                for item in items
+                if not (isinstance(item, dict) and item.get("id")) or item["id"] in live[table]
+            ]
+            dropped += len(items) - len(kept)
+            day[key] = kept
+    return dropped
+
+
 def itinerary(conn: psycopg.Connection, itinerary_id: str) -> dict[str, Any] | None:
-    return conn.execute(
+    row = conn.execute(
         "SELECT id, city_id, title, start_date, end_date, days, as_of, revision,"
         "       created_at, updated_at"
         "  FROM itineraries WHERE id = %s",
         (itinerary_id,),
     ).fetchone()
+    if row and row.get("days"):
+        # Counted and reported rather than silently removed: "one stop has
+        # been withdrawn since you saved this" is the honest rendering, and a
+        # plan that just got shorter is not.
+        row["withdrawn_since_saved"] = _drop_withdrawn(conn, row["days"])
+    return row
 
 
 def itineraries(conn: psycopg.Connection, city_id: str | None = None) -> list[dict[str, Any]]:

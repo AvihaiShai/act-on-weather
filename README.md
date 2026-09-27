@@ -710,7 +710,17 @@ tunnel has every route.
   holds notable venues, so the data skews to landmarks. Each row records its own
   source.
 * **A user-entered activity is scored against general outdoor comfort**, not a
-  rule tuned for it, and the answer says so.
+  rule tuned for it — but only when you request it, and the label is not yet on
+  screen. Requesting one through the UI form or `POST /recommendations` scores
+  that city-day with the generic measure and stores the caveat on the row, and
+  `GET /recommendations/{city}` returns both the `requested` flag and the
+  `reasons` that carry it. **The Streamlit UI renders neither, and the agent's
+  answer does not state the generic label**, so today the caveat is visible only
+  in the API response. Asking the agent about an activity that has never been
+  requested is a separate matter and is a known defect, not a generic score: the
+  activity is not recognised, so no generic row is created or read, and the
+  answer can carry another activity's number. Surfacing the label and fixing the
+  ask path are [future work](#production-path).
 * **The grounding guard is a set of specific checks, not a general proof.**
   `services/agent/grounding.py` validates the model's prose against the typed
   facts and throws away wording that fails, falling back to a deterministic
@@ -762,6 +772,32 @@ tunnel has every route.
   install keeps an accurate forecast while its events quietly expire, which is
   [the bargain described above](#the-data-on-board-and-when-it-goes-stale) and
   is visible in every as-of stamp.
+* **A collected record can be corrected, but not withdrawn.** Records here are
+  revised, never deleted — the writer holds no DELETE grant that reaches a
+  non-sample event or place row, which is what keeps `record_history` honest.
+  The cost of that choice is the reverse case: if a listing is removed from
+  `data/events.seed.jsonl` after it was already collected — a venue cancels, or
+  `scripts/event-recheck.sh` cannot confirm it — the row stops being shipped to
+  new installs but **remains in any database that already stored it**, still
+  carrying its source and its as-of. Removing it from a running install means
+  reinstalling from the corrected snapshot with empty volumes; deleting it by
+  hand in `psql` is undone the next time the stored envelopes are replayed.
+  Labelled demo samples are the one exception — the consumer deletes them on
+  startup whenever demo mode is off.
+
+  **Withdrawing one is a separate, deliberate act.** A record that turns out to
+  be wrong after it was collected is *retracted*: `data/retractions.jsonl`
+  carries a curated line per withdrawn record, the ingestor accepts it on every
+  boot like any other input, and the consumer marks the row `retracted_at` with
+  the stated reason (migration 009). A withdrawn record leaves every read, every
+  answer and every count in `/coverage`, and it stays out across a rebuild —
+  `POST /user-data/wipe` carries the marks over rather than replaying the record
+  back into view. The row itself is kept, with its source, its as-of and its
+  history, because "withdrawn on the 27th, the venue cancelled it" is a stronger
+  statement than a row that silently vanished. There is deliberately **no
+  un-retract route**: reinstating something means putting the corrected listing
+  back in the snapshot with a newer as-of. One line, `POST
+  /records/{entity}/{id}/retract`, does the same thing for a single install.
 * **No physical air-gap proof.** Three claims sit near each other here and are
   not the same claim, so they are kept apart on purpose:
   * **The archive is self-contained.** `scripts/verify-bundle-images.sh` checks

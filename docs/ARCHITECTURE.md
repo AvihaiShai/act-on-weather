@@ -255,6 +255,27 @@ it has no separate architectural role.
   the coverage panel can distinguish a feed that went stale from a city nobody
   checked. Re-checking a row is a patch through the queue like any other
   correction.
+- **A collected row can be corrected, but not withdrawn.** Records are revised,
+  never deleted (see `TECHNICAL_DECISIONS.md`), and the writer holds no DELETE
+  grant that reaches a non-sample event or place row. So a listing that is
+  removed from `data/events.seed.jsonl` after it was collected — because the
+  venue cancelled it, or because a recheck could not confirm it — stops being
+  shipped to new installs but **stays in a database that already has it**.
+  Sample rows are the one exception: they are deleted on startup whenever demo
+  mode is off.
+- **Retraction, for the record that was wrong rather than merely stale.** A
+  withdrawn record is marked, not deleted: `retracted_at` and a stated
+  `retraction_reason` (migration 009), applied by a `record.retract` message
+  through the queue like every other write, so the consumer stays the only
+  writer and no role gains a DELETE grant. `data/retractions.jsonl` is the
+  curated list that ships with the repository and is re-applied on every boot,
+  which is how an install that already stored the row learns it has been
+  withdrawn; `POST /records/{entity}/{id}/retract` does the same for one
+  install. A withdrawn record leaves every read, every answer and every count
+  in `/coverage`, and the mark is carried across a `user_data.wipe` rather than
+  replayed away. The row stays, with its source, its as-of and its history,
+  because a withdrawal that can be read back is worth more than a row that
+  silently disappeared. There is no un-retract route by design.
 - **Meaning of a score:** A weather score is an estimate from rules. It does
   not establish that a beach is safe to swim at, a venue is open, or an event
   still has tickets. Plans only name places and events present in stored rows.
