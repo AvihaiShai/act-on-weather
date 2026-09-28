@@ -695,10 +695,20 @@ tunnel has every route.
   travels in the row. No scoring rule may infer a sea state from a land
   measurement. An activity you name yourself is held to the same cap when its
   name says it happens in water — "scuba diving", "kite surfing", "sea kayaking"
-  — and is refused outright for a city with no coast on record, exactly as the
-  five coast-gated catalogue activities are. (Five carry `requires_coast`; the
-  four above carry the 69 ceiling as well, because `beach_day` has no ceiling of
-  its own and there is no number to cap it to.) That test is a word list
+  — and, when the name says the **sea**, is refused outright for a city with no
+  coast on record, exactly as the coast-gated catalogue activities are. (Five
+  catalogue activities carry `requires_coast`; four of those five carry the 69
+  ceiling as well. `beach_day` is the exception and keeps its full range,
+  because a day on the sand is a judgement about sun, heat, rain and wind, and
+  those are measured.) The cap and the refusal are two tests rather than one,
+  and the difference is load-bearing: a name that says fresh water rather than
+  the sea — "wild swimming", "ice swimming" — keeps the 69 ceiling, because
+  nothing here measures a lake either, and is **not** refused for an inland
+  city, because refusing it would offer "London has no coast on record" as the
+  reason a pond cannot be scored, which is a true sentence presented as a cause
+  it is not (`rules.needs_coast`, `rules.INLAND_WATER_WORDS`, and
+  `distinct_names` in `data/activities.yml`, where the collision was found).
+  The cap's test is a word list
   (`rules.SEA_WORDS`) rather than a property of a catalogue row, because a typed
   activity has no catalogue row; it is deliberately not exhaustive, and a word it
   does not know is scored generically as before. **It can only ever lower a score
@@ -722,7 +732,8 @@ tunnel has every route.
   source.
 * **A user-entered activity is scored against general outdoor comfort**, not a
   rule tuned for it — under the 69 sea ceiling if its name says water, and not
-  scored at all for an inland city if it does. Only when you request it, and the
+  scored at all for an inland city if the name says the sea rather than fresh
+  water. Only when you request it, and the
   label is not yet on screen everywhere. Requesting one through the UI form or
   `POST /recommendations` scores that city-day with the generic measure and
   stores the caveat on the row, and `GET /recommendations/{city}` returns both
@@ -769,6 +780,20 @@ tunnel has every route.
   request the activity again through the form, which stores it under the trimmed
   key. A fresh install is unaffected, and no catalogue key is reshaped by the
   trim.
+* **A question that names a scored activity and asks something else as well is
+  answered on the activity alone.** A named activity is rendered from its stored
+  rows rather than through the model, because a 1.7B model asked to summarise
+  seven `fair` days calls it a good week. That renderer reads the recommendation
+  rows and nothing else, so "what events are on tomorrow in Rome, and is it a
+  good day for running?" answers the running and says nothing about the events,
+  while `rows_used` still reports the event rows that were retrieved and then
+  dropped. The same question about an activity the catalogue does **not** score
+  keeps both halves: that route is taken only when the question asks about
+  nothing else, so a weather, events, places or facts intent sends it to the
+  model with the gap stated in its brief. Widening the scored-activity route
+  means either putting a currently exact answer back through the model or
+  writing a second renderer for mixed questions, and neither is done here. Ask
+  the two questions separately.
 * **The grounding guard is a set of specific checks, not a general proof.**
   `services/agent/grounding.py` validates the model's prose against the typed
   facts and throws away wording that fails, falling back to a deterministic
@@ -968,7 +993,7 @@ command you can run.
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh, re-enrichment | `… demos update`; `make refresh-check` |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml` and `release.yml`; release tooling in `scripts/`, including `airgap-evidence.sh` (captures engine identity, image/volume census, link state, bundle digests and exit codes) and `make-fault-injection-bundle.sh` (derives the deliberately-broken artifact for the rollback drill) | `gh run list`; [docs/RELEASE.md](docs/RELEASE.md) |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates. Targeted work covers the consumer's ack decision, partial and undated forecast coverage, the grounding guard, per-city planner coverage, migration wiring, and the Open-Meteo request/response adapter with a stubbed HTTP reply. A live connected fetch and complete end-to-end user flows are still untested in CI | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
+| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR, a real-Postgres retraction drill on each PR, and a real-model grounding gate for release candidates. Targeted work covers the consumer's ack decision, partial and undated forecast coverage, the grounding guard, per-city planner coverage, migration wiring, the retraction ledger's two arrival orders and its survival of a rebuild, and the Open-Meteo request/response adapter with a stubbed HTTP reply. A live connected fetch and complete end-to-end user flows are still untested in CI | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
 | B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at <http://127.0.0.1:3000> |
 | B3 | Automatic recovery from failures | **partial** — reconnect with backoff, `restart: unless-stopped`, healthchecks, automatic re-enrichment, and an operator backup/restore with a measured RPO and RTO | `make backup-restore`; then `… demos no-data-loss` |
 

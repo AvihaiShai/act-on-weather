@@ -46,6 +46,7 @@ from typing import Any
 import pytest
 
 from services.agent import dates, router
+from services.common import rules
 from services.common.llm import LlmUnavailable
 
 # The clock is frozen and every date is written out, so these keep meaning
@@ -327,14 +328,53 @@ def test_the_old_code_only_answer_is_gone(agent, kind):
 
 
 @pytest.mark.parametrize("kind", sorted(MIXED))
-def test_no_verdict_is_invented_for_the_unscored_activity(agent, kind):
-    """The gap is a gap. Nothing appended may carry a number or a band."""
+def test_the_appended_gap_carries_no_number_and_no_band(agent, kind):
+    """What code appends is a gap and only a gap.
+
+    Named for what it is. It reads the default stub reply, which never mentions
+    the activity, so it cannot fail because of anything the model said -- it
+    tests `unstated_activity_gaps` output. The band names come from
+    `rules.BANDS`; the earlier version of this test wrote out four and one of
+    them ("excellent") is not a band the engine has, which is how a list that
+    supplies its own expected values stops testing anything.
+    """
     reply = agent.ask(MIXED[kind])
 
     appended = reply["answer"].split("Also asked about:", 1)[-1]
     assert "/100" not in appended, appended
-    for band in ("excellent", "good", "fair", "poor"):
-        assert f"{ACTIVITY} is {band}" not in reply["answer"].lower()
+    for band, _floor in rules.BANDS:
+        assert f"{ACTIVITY} is {band}" not in appended.lower()
+
+
+@pytest.mark.parametrize("kind", sorted(MIXED))
+def test_a_band_stated_for_the_unscored_activity_is_caught(agent, kind):
+    """The hole an independent review found in the fix above, closed.
+
+    Sending the mixed question to the model is what preserves the other half,
+    and it also hands the model the chance to state a verdict. Every phrasing in
+    `grounding.VERDICT_WORDS` is a way of arguing to one, so a model that simply
+    said the band -- "Bbq is fair there" -- matched none of them, and because the
+    answer had NAMED the activity, `unstated_activity_gaps` suppressed the gap as
+    well. Verdict invented, gap withheld, nothing said. That is the substitution
+    this branch exists to close, one intent further out than the two it was
+    written for.
+
+    Discriminating on purpose: reverting the `banded` test in check 5 makes this
+    fail, where the test above it passes either way.
+    """
+    reply = agent.reply(
+        f"{EVENT_TITLE} is on at the Barbican on {TOMORROW}. "
+        f"{ACTIVITY.capitalize()} is fair there."
+    ).ask(MIXED[kind])
+
+    # Caught, and said so in the note the UI shows.
+    assert f"gives a verdict on {ACTIVITY}, which has no stored score" in reply["note"], reply
+    # The band claim is gone, and the gap is back.
+    assert f"{ACTIVITY} is fair" not in reply["answer"].lower(), reply["answer"]
+    assert GAP in reply["answer"], reply["answer"]
+    # And the half the whole fix is about is still answered, because a rejected
+    # wording falls back to the rows rather than to the other route.
+    assert EVENT_TITLE in reply["answer"], reply["answer"]
 
 
 # ------------------------------------------ without a usable model at all ----

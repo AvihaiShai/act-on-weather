@@ -173,8 +173,11 @@ is zero. This closes the live settings inspection for that date.
 
 **Superseded for the context list on 2026-09-27**, by a `PATCH` to
 `branches/main/protection/required_status_checks` that added a fifth context,
-`ui-gate`, so the required set and the set of jobs that always report now
-agree. The read above stands as the 2026-09-25 state; section 5 carries the
+`ui-gate`, so the required set and the set of jobs that always report agreed as
+`ci.yml` then stood. They no longer do, and the later paragraph in this section
+is the live one: `retraction-drill` was added afterwards, carries no `if:`, and
+is not a required context. The read above stands as the 2026-09-25 state;
+section 5 carries the
 2026-09-27 state and the before/after responses. Nothing else in the
 protection object was sent or changed, and a field-by-field comparison of the
 two full reads outside `required_status_checks` is identical. Historical

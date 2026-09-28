@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from ..common import config
+from ..common import config, rules
 
 if TYPE_CHECKING:  # pragma: no cover - router imports this module at runtime
     from .router import Retrieval
@@ -103,6 +103,22 @@ VERDICT_WORDS = (
     "favourable",
     "favorable",
 )
+
+# The bands the rule engine puts a score in. Read from `rules.BANDS` rather than
+# written out, because a list that spelled them itself would drift the moment a
+# band was renamed, and because these are not a paraphrase of a verdict -- they
+# are the verdict, in the engine's own word.
+#
+# Found by an independent review of the mixed-question route: every phrasing in
+# VERDICT_WORDS above is a way of *arguing* to a verdict, so a model that simply
+# stated one ("kite surfing is fair there") matched none of them and walked
+# through check 5 clean, with the gap suppressed because the answer had named the
+# activity. That is the substitution this branch exists to close, reached one
+# intent further out. Used only inside check 5, where the sentence has already
+# been shown to name an activity with no stored score -- as a global trigger a
+# bare band word would also fire on "conditions are fair", which is a weather
+# claim and is checks 4b and 7's business, not this one's.
+BAND_WORDS = tuple(name for name, _floor in rules.BANDS)
 
 # Anything that reads as the forecast. An activity with no stored score gets
 # one sentence -- that there is no record -- and a clause that names it beside
@@ -1436,10 +1452,18 @@ def violations(answer: str, brief: Brief) -> list[str]:
             #    sentence -- that there is no record -- and a clause naming it
             #    beside the forecast is reasoning towards the verdict either
             #    way, whether or not it lands on a word.
+            #
+            #    A band name counts as the verdict word, and only here. The
+            #    sentence has already been shown to name an activity carrying no
+            #    score, so "kite surfing is fair" is not a looser signal than
+            #    "good for kite surfing" -- it is the same claim in the engine's
+            #    own vocabulary, and it is the one wording the list of phrasings
+            #    could never cover, because it argues nothing.
             for key in brief.unscored:
                 if not _says(sentence, key.replace("_", " ")):
                     continue
-                if verdict and not negated:
+                banded = any(_says(sentence, band) for band in BAND_WORDS)
+                if (verdict or banded) and not negated:
                     found.append(f"gives a verdict on {key}, which has no stored score")
                 if any(_says(sentence, word) for word in WEATHER_WORDS):
                     found.append(f"reasons from the weather about {key}, which has no stored score")
