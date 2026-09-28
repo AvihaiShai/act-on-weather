@@ -152,8 +152,35 @@ assert EVENT_ID in ids(events()), "the event under test is not in the default re
 assert PLACE_ID in ids(places())
 assert FACT_ID in ids(facts())
 
-before_totals = coverage_counts()
-before_city = city_counts()
+
+def settled_counts(what: str, timeout: int = 180):
+    """`coverage_counts()` and `city_counts()`, once ingestion has stopped moving.
+
+    The waits above only prove that SOME rows have arrived. On a stack that has
+    just been started -- which is exactly how `scripts/retraction-drill.sh` runs
+    this file, and is the case nobody had ever exercised -- the ingestor is still
+    draining its outbox, so the "before" totals were a snapshot of a moving
+    number. The retraction then removed one row while ingestion added thirty-five
+    more, and the assertion below read `19 -> 54` and called it a failure to
+    withdraw. Nothing was wrong with the retraction.
+
+    Two consecutive agreeing reads, three seconds apart. Cheap, and it makes the
+    difference between a drill that measures a withdrawal and one that races the
+    ingestor.
+    """
+    deadline = time.monotonic() + timeout
+    previous = None
+    while time.monotonic() < deadline:
+        current = (coverage_counts(), city_counts())
+        if current == previous:
+            return current
+        previous = current
+        time.sleep(3)
+    raise AssertionError(f"timed out waiting for {what} to stop changing: {previous!r}")
+
+
+before_totals, before_city = settled_counts("ingestion")
+print(f"ingestion settled: {before_totals}")
 
 # --------------------------------- 2. retract each one, through the queue ----
 

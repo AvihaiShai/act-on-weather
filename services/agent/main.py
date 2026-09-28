@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
@@ -159,11 +160,73 @@ def ask(body: AskIn) -> dict[str, Any]:
         base = f"I have no stored records matching that for {result.resolution.city['name']}."
         return respond(result, f"{base} {missing}".strip(), llm_called=False)
 
-    if result.resolution.activities:
+    # `unknown_activities` reaches the code-rendered route only when the question
+    # is ABOUT the activity and about nothing else. Three exclusions, all found by
+    # asking the questions rather than by reading the branch:
+    #
+    #   `asks_where` -- "where can I go kite surfing in Tel Aviv?" asks for a
+    #   place. Answering it with a heading about suitability scores answers a
+    #   question nobody asked and throws away the places that were retrieved.
+    #   It falls through, as it did before.
+    #
+    #   "weather" in intents -- "what is the weather tomorrow in London, and is
+    #   it good for stargazing?" asks two things. `named_activity_answer` renders
+    #   recommendations and gaps and never touches `result.forecast`, so the
+    #   forecast row was fetched and silently discarded, and the user was told
+    #   only that stargazing is not on record. The model still answers that one,
+    #   with the gap in its brief and grounding check 5 armed on the noun.
+    #
+    #   `other_subjects` -- the same defect one intent further out, and the one
+    #   the two above did not cover. `named_activity_answer` does not touch
+    #   `result.events`, `result.places` or `result.facts` either, so "what events
+    #   are on tomorrow in Rome, and is it a good day for a bbq?" answered the
+    #   bbq and dropped the event -- while `rows_used` went on reporting the row
+    #   it had thrown away. `categories` is in the test as well as the intents,
+    #   because an interest word reaches the places query on its own:
+    #   `Router.retrieve` reads `"places" in intents or resolution.categories`.
+    #
+    # A resolved activity is unaffected, and deliberately so: `named_activity_answer`
+    # has always rendered those from their own rows, and it is the only thing
+    # standing between a reviewer and a 1.7B model summarising seven `fair` days
+    # as a good week. A mixed question naming a CATALOGUE activity still loses its
+    # events the same way, which is behaviour this branch inherited rather than
+    # introduced; it is recorded in the README's known limitations rather than
+    # changed here, because widening this route is a different argument from
+    # closing the regression above.
+    other_subjects = bool({"events", "places", "facts"} & set(result.resolution.intents)) or bool(
+        result.resolution.categories
+    )
+    answer_in_code = bool(result.resolution.activities) or (
+        bool(result.resolution.unknown_activities)
+        and not result.resolution.asks_where
+        and not result.resolution.weather_asked
+        and not other_subjects
+    )
+    if answer_in_code:
         # The small CPU model repeatedly turns seven "fair" daily scores into
         # a "good week". Render named verdicts from their stored rows so every
         # date, band and score survives without an invented overall verdict.
-        return respond(result, named_activity_answer(result), llm_called=False)
+        #
+        # `unknown_activities` is on this branch for the same reason, and it is
+        # the stronger half. A question naming ONLY activities with no score --
+        # "is tomorrow a good day to ski in Reykjavik?" -- used to fall through
+        # to the model with the gap stated in the prompt and every catalogue row
+        # beside it, and the model answered "it is a good day to ski", three
+        # times out of three, attributing it to the stored data. There is no
+        # wording for the model to get right here: the whole answer is that
+        # nothing scores this activity. Rendering it in code means the model is
+        # not called, so there is no verdict for it to invent.
+        answer = named_activity_answer(result)
+        # And the gaps, for the same reason they are appended on the model path
+        # below. This route returned before that line, so a named activity asked
+        # across a window running past the stored forecast listed only the
+        # covered days and said nothing at all about the rest -- the one case
+        # where answering in code was less truthful than answering through the
+        # model. `gap_block` is empty for a fully covered window, so an ordinary
+        # in-coverage question is unchanged.
+        missing = grounding.gap_block(dated_gap_brief(result, brief), answer)
+        joined = f"{answer}\n\n{missing}" if missing else answer
+        return respond(result, joined, llm_called=False)
 
     try:
         parsed = client.chat_json(
@@ -213,8 +276,24 @@ def ask(body: AskIn) -> dict[str, Any]:
     # Gaps are appended in code, after the model, for the same reason the as-of
     # footer is: a sentence the model cannot reword is the only kind that is
     # guaranteed to survive.
-    missing = grounding.gap_block(brief, answer)
-    return respond(result, f"{answer}\n\n{missing}" if missing else answer, llm_called=True)
+    #
+    # Activity gaps are the second block and not part of the first, because they
+    # are only appended when the model left the activity out altogether -- the
+    # prompt asks it to say these itself and it usually does, and printing both
+    # would read as a stutter. `grounding.unstated_activity_gaps` is where that
+    # judgement lives. Without it, the route the fix above sends a mixed question
+    # down answers the events and says nothing whatever about the activity: the
+    # rows would survive and half the question still would not be answered.
+    blocks = [answer]
+    blocks.extend(
+        block
+        for block in (
+            grounding.gap_block(brief, answer),
+            grounding.unstated_activity_gaps(brief, answer),
+        )
+        if block
+    )
+    return respond(result, "\n\n".join(blocks), llm_called=True)
 
 
 def plain_answer(result: Retrieval) -> str:
@@ -225,6 +304,84 @@ def plain_answer(result: Retrieval) -> str:
     to be what the traveller gets when the model's wording fails validation.
     """
     return grounding.render(grounding.build(result))
+
+
+def dated_gap_brief(result: Retrieval, brief: grounding.Brief) -> grounding.Brief:
+    """The brief the named-activity gap sentence is written from.
+
+    The same rows, minus any day the answer has just reported a score for. The
+    coverage gap is derived from the forecast rows alone, and a day can carry a
+    stored score whose forecast row is gone -- a day re-ingested short, or one
+    whose weather row was replaced. Left alone, the appended sentence then denies
+    weather for a date listed with a score three lines above it, which reads as a
+    contradiction rather than as a limit. A day with no score keeps its gap,
+    which is the whole point of appending one here.
+    """
+    dated = {str(row["forecast_date"]) for row in result.recommendations}
+    if not dated.intersection(result.uncovered_days):
+        return brief
+    return grounding.build(
+        replace(result, uncovered_days=[d for d in result.uncovered_days if d not in dated])
+    )
+
+
+def unscored_line(result: Retrieval, activity: str) -> str:
+    """The one line an activity with no stored score gets, wherever it is
+    rendered. Two callers had their own copy of it and only one of them would
+    have gained the sentence below.
+
+    The coast half answers "why not", which is the more useful half. It is read
+    from the catalogue when the catalogue holds the activity, and from the
+    activity's own name when it does not -- the same two-sided test the write
+    path uses to decide whether to store a row at all
+    (`services/consumer/main.py`, `needs_coast`). Without the second side,
+    "scuba diving in London" was told only that no score was on record, while
+    "surfing in London" was told the reason.
+
+    `rules.needs_coast`, which is narrower than `rules.names_water`: this
+    sentence is the one place the coast claim is made to a reader, so it has to
+    be the claim that is true. "wild swimming" names water and needs no sea, and
+    saying "London has no coast on record" under it would be offering a fact as
+    the cause of something it did not cause.
+    """
+    cfg = _activity_meta().get(activity) or {}
+    needs_coast = cfg.get("requires_coast") if cfg else rules.needs_coast(activity)
+    reason = ""
+    if needs_coast and not result.resolution.city.get("coastal"):
+        reason = f"; {result.resolution.city['name']} has no coast on record"
+    return f"- {activity.replace('_', ' ')}: no suitability score on record{reason}."
+
+
+def unscored_date_lines(result: Retrieval) -> list[str]:
+    """One line per named activity that has some stored scores but not all.
+
+    The gap this closes is a day, not an activity. `unscored_activities` covers
+    an activity with no row anywhere, and `grounding.gap_block` covers a day the
+    stored forecast never reached. Between them sits the day this city *does*
+    have weather for and this activity has no score on -- a typed activity
+    requested for one day of the week, or a day the enricher has not scored yet.
+    Both dated answers listed the rows they had and said nothing about the rest.
+
+    Measured against `covered_days`, which is derived from the forecast rows that
+    actually came back for this city, so a day named here is a day the answer
+    could otherwise have been expected to speak about.
+    """
+    covered = set(result.covered_days)
+    if not covered:
+        return []
+    lines: list[str] = []
+    for activity in result.resolution.activities:
+        rows = [row for row in result.recommendations if row["activity"] == activity]
+        if not rows:
+            # No row at all: already stated through `unscored_activities`.
+            continue
+        absent = sorted(covered - {str(row["forecast_date"]) for row in rows})
+        if absent:
+            lines.append(
+                f"- {rows[0]['activity_label']}: no suitability score is stored for "
+                f"{grounding.date_runs(absent)}."
+            )
+    return lines
 
 
 def where_answer(result: Retrieval) -> str:
@@ -269,18 +426,14 @@ def where_answer(result: Retrieval) -> str:
                 f"- {row['forecast_date']}: {row['activity_label']} is "
                 f"{row['band']} ({row['score']}/100)."
             )
+        # The heading is the requested window, so a day inside it with no score
+        # has to be named here or the list reads as though it covered the lot.
+        lines.extend(unscored_date_lines(result))
         lines.append("")
         lines.append(score_caveat(result))
         blocks.append("\n".join(lines))
 
-    unscored = []
-    for activity in result.unscored_activities:
-        reason = ""
-        if (meta.get(activity) or {}).get("requires_coast") and not result.resolution.city.get(
-            "coastal"
-        ):
-            reason = f"; {city} has no coast on record"
-        unscored.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+    unscored = [unscored_line(result, activity) for activity in result.unscored_activities]
     if unscored:
         blocks.append("\n".join(unscored))
 
@@ -300,10 +453,20 @@ def sea_state_caveat(result: Retrieval, *, lead: str = "These scores") -> str | 
 
     A beach day is deliberately not flagged and gets no caveat here: sun, heat,
     rain and wind are what make a day on the sand, and those are measured.
+
+    An activity the traveller typed has no row in data/activities.yml, so the
+    flag cannot be read off one -- but `rules.GENERIC_SEA_CFG` gives it the same
+    69 ceiling when its name says water, and a capped score that does not say why
+    it is capped is a number quietly lowered behind the reader's back. Scuba
+    diving in Tel Aviv was reported as "fair (69/100)" with no explanation while
+    catalogue surfing at the identical 69 carried one. The same two-sided test
+    the write path uses decides it here.
     """
     meta = _activity_meta()
     if not any(
         (meta.get(activity) or {}).get("sea_state_unmeasured")
+        if activity in meta
+        else rules.names_water(activity)
         for activity in result.resolution.activities
     ):
         return None
@@ -367,19 +530,22 @@ def named_activity_answer(result: Retrieval) -> str:
     number from.
     """
     city = result.resolution.city["name"]
-    lines = [f"Stored suitability for the activities you asked about in {city}:"]
+    # The heading has to be true of what follows it. With no row at all, every
+    # line below is a gap, and calling that list "stored suitability" would be
+    # the one sentence in a refusal that still sounds like an answer.
+    lines = [
+        f"Stored suitability for the activities you asked about in {city}:"
+        if result.recommendations
+        else f"I hold no suitability score for what you asked about in {city}:"
+    ]
     for row in result.recommendations:
         lines.append(
             f"- {row['forecast_date']}: {row['activity_label']} is "
             f"{row['band']} ({row['score']}/100)."
         )
     for activity in result.unscored_activities:
-        reason = ""
-        if _activity_meta().get(activity, {}).get(
-            "requires_coast"
-        ) and not result.resolution.city.get("coastal"):
-            reason = f"; {city} has no coast on record"
-        lines.append(f"- {activity.replace('_', ' ')}: no suitability score on record{reason}.")
+        lines.append(unscored_line(result, activity))
+    lines.extend(unscored_date_lines(result))
     # Only when there is actually a score to qualify. An inland city has no
     # coastal row at all, and its answer is already the stronger statement --
     # "London has no coast on record" -- so following it with a note about what

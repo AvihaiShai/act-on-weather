@@ -238,9 +238,143 @@ GENERIC_CFG: dict[str, Any] = {
     "max_wind_kmh": 30,
 }
 
+# Whole words that name an activity done in or on water. Matched against the
+# slug's own words, so `kite_surfing` and `scuba_diving` are caught and
+# `surf_shop` is excluded by NOT_WATER_WORDS below.
+#
+# This list exists because the catalogue's coast rules reach only the catalogue.
+# `requires_coast` and `score_ceiling` are properties of a row in
+# data/activities.yml, and a typed activity has no row there: "scuba diving"
+# asked for London went straight to `GENERIC_CFG`, which carries no ceiling, so
+# a pleasant day on land stored scuba diving in London as `good`, 100/100, with
+# no coast anywhere in the city's record. The four catalogue sea activities are
+# capped at 69 for exactly the reason that number does not describe -- nothing
+# stored measures waves, swell or water temperature -- and an inland city cannot
+# even be asked the question.
+#
+# It is a word list and it is not complete; that is the honest shape of the
+# problem, since the set of things people do in water is open. What matters is
+# the direction it fails in: a word not on the list is scored generically, as
+# before, and a word on it can only ever LOWER a score or refuse a row. Nothing
+# here can raise one.
+SEA_WORDS: frozenset[str] = frozenset(
+    """
+    sea ocean offshore surf surfing windsurf windsurfing kitesurf kitesurfing
+    bodyboard bodyboarding dive diving scuba snorkel snorkelling snorkeling
+    freediving swim swimming kayak kayaking canoe canoeing paddleboard
+    paddleboarding sail sailing yachting jetski jetskiing waterskiing
+    wakeboarding rafting tide tidal swell
+    """.split()
+)
 
-def score_requested(activity_label: str, weather: dict[str, Any]) -> Score:
-    result = score_activity(activity_label, GENERIC_CFG, weather)
+# Words that take an activity back OUT of the list above. Every one of these was
+# a false positive found by reading the list out loud against real names:
+#
+#   sky diving      "diving" -- and it is the one activity here furthest from water
+#   indoor rowing   "rowing", on a machine
+#   pool swimming   "swimming", in a pool with no sea state to be unmeasured
+#   river rafting   "rafting", on fresh water with no coast involved
+#   marine museum   "marine", which is why `marine` is not in the list at all
+#   a surf shop     "surf", which is a shop
+#   diving lesson   "diving", which may be in a pool
+#
+# Each false positive is not a harmless over-cap. It REFUSES the row outright for
+# an inland city and then tells the traveller "London has no coast on record" as
+# the reason an indoor rowing machine cannot be scored -- a fabricated causal
+# claim, which is the one thing this project may not do. `bathe`/`bathing` and
+# `beach`/`shore`/`coast` were dropped from the list above for the same reason:
+# "sun bathing" is not swimming, and a beach day is deliberately not sea-gated
+# even in the catalogue.
+NOT_WATER_WORDS: frozenset[str] = frozenset(
+    """
+    sky indoor indoors pool gym river lake museum shop store lesson lessons
+    class classes simulator machine
+    """.split()
+)
+
+
+def names_water(slug: str) -> bool:
+    """Whether an activity slug names something done in or on open water.
+
+    Read as whole words of the slug, which is what `schemas.slugify` produced
+    from what the user typed: `kite_surfing` -> {"kite", "surfing"}. A word in
+    `NOT_WATER_WORDS` anywhere in the slug settles it as not water, because the
+    cost of a false positive here is a refused row and an invented reason.
+    """
+    words = set(slug.split("_"))
+    if words & NOT_WATER_WORDS:
+        return False
+    return bool(SEA_WORDS & words)
+
+
+# Words that say the water is not the sea. They deliberately do NOT take a name
+# out of `names_water`: the quality of these activities is still a property of
+# water nothing here measures, so they keep the 69 ceiling and the caveat that
+# explains it. What they take away is the COAST requirement, which is a
+# different claim and is the one that was being made falsely.
+#
+# Both entries came from `distinct_names` in data/activities.yml, which is where
+# the collision was found:
+#
+#   wild swimming   swimming in natural water. In Britain that is usually a
+#                   river, a lake or a pond -- London has several and no coast.
+#   ice swimming    swimming in water cold enough to carry ice, which is a lake
+#                   as often as a shore.
+#
+# Before the split, `swimming` coast-gated both: a request for "wild swimming"
+# in London stored no row at all, and the agent gave the reason as "London has
+# no coast on record" -- a true sentence offered as the cause of something it
+# did not cause. That is the same fabricated causal claim `NOT_WATER_WORDS`
+# exists to prevent, and it is the worse half of it, because a refusal withholds
+# the row as well as explaining it wrongly.
+#
+# Not exhaustive, and it fails in the safe direction: a name that belongs here
+# and is missing is still coast-gated, which withholds a row rather than
+# inventing a score for one.
+INLAND_WATER_WORDS: frozenset[str] = frozenset("wild ice".split())
+
+
+def needs_coast(slug: str) -> bool:
+    """Whether a typed activity cannot be scored for a city with no coast.
+
+    Narrower than `names_water`, and the two were one test until the difference
+    bit. "Does the water decide how good this is?" governs the score ceiling and
+    is true of any open water. "Does this need the sea?" governs whether a row
+    is stored at all -- and a false yes there is not a cautious number, it is a
+    refusal whose stated reason is untrue.
+
+    Only the typed case. A catalogue activity carries `requires_coast` on its own
+    row and both callers read that first; this is what they fall back to when the
+    catalogue has never heard of the name.
+    """
+    words = set(slug.split("_"))
+    if words & INLAND_WATER_WORDS:
+        return False
+    return names_water(slug)
+
+
+# The generic measure for a typed activity that names water, in a city that has
+# a coast. Same land rules -- there are no others to apply -- plus the ceiling
+# and the flag that makes `_apply_ceiling` say which ceiling it is and why. 69
+# is the catalogue's own number for the same situation, not a new one.
+GENERIC_SEA_CFG: dict[str, Any] = {
+    **GENERIC_CFG,
+    "score_ceiling": 69,
+    "sea_state_unmeasured": True,
+}
+
+
+def score_requested(activity_label: str, weather: dict[str, Any], *, sea: bool = False) -> Score:
+    """Score an activity the catalogue does not carry.
+
+    `sea` is set by the caller when the slug names water (`names_water`), and it
+    swaps in the capped configuration. The caller decides rather than this
+    function, because the caller is also the only place that knows the city --
+    and the sibling question, "does this need a coast at all?" (`needs_coast`),
+    is answered before the forecast is even read, since no weather can supply
+    one.
+    """
+    result = score_activity(activity_label, GENERIC_SEA_CFG if sea else GENERIC_CFG, weather)
     result.reasons.append(
         "scored against general outdoor comfort, not a rule tuned for this activity"
     )

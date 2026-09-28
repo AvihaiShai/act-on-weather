@@ -231,8 +231,21 @@ def test_a_verdict_on_the_typed_activity_is_rejected(stub, answer):
 
 
 def test_the_fabricated_score_never_reaches_the_traveller(monkeypatch, stub):
-    """The end-to-end property: the model may still write it, and the answer
-    the traveller reads carries no number for paragliding at all."""
+    """The end-to-end property: whatever the model would write, the answer the
+    traveller reads carries no number for paragliding at all.
+
+    This used to be proved through the grounding guard -- the model was called,
+    it wrote the fabricated verdict, check 5 threw the wording away and `respond`
+    attached a `note`. It is now proved one step earlier and one step harder: a
+    question whose only named activity has no score is answered in code, so the
+    model is never asked. `llm_called is False` is the assertion that says so,
+    and it is strictly stronger than catching the wording afterwards, because
+    there is no wording to catch.
+
+    The stub below stays in place deliberately. If this route ever falls back to
+    the model again, `chat_json` is there to write the fabrication and the
+    assertions below will fail on it rather than quietly passing.
+    """
     route, _rows, _asked = stub
     result = route.retrieve(PARAGLIDING)
     main = agent(monkeypatch, result)
@@ -247,16 +260,28 @@ def test_the_fabricated_score_never_reaches_the_traveller(monkeypatch, stub):
     )
     response = main.ask(main.AskIn(question=PARAGLIDING))
 
-    assert "note" in response, "the ungrounded wording was accepted"
-    assert "paragliding" in response["note"]
-    # The specific regression: no number of any kind beside the word. The
-    # fallback still reports the beach_day row's real 100/100, which is where
-    # the stolen number came from -- the point is that it keeps its own name.
+    assert response["llm_called"] is False, "the model was asked to phrase a gap"
+    # The specific regression: no number of any kind beside the word.
     for line in response["answer"].splitlines():
         if "paragliding" in line.lower():
             assert not any(char.isdigit() for char in line), line
     assert "score for paragliding" not in response["answer"]
-    assert "not on record" in response["answer"]
+    assert "no suitability score on record" in response["answer"]
+    # And no other activity's number was substituted for the missing one --
+    # `beach_day`'s real 100/100 is where the stolen number came from.
+    assert "100/100" not in response["answer"]
+
+
+def test_the_grounding_guard_still_rejects_the_wording_it_was_written_for(stub):
+    """The guard is now a second line rather than the first, and it must stay
+    armed. `grounding.violations` is what protects every route that DOES reach
+    the model, so the checks are asserted directly here even though `ask()` no
+    longer depends on them for this question."""
+    route, _rows, _asked = stub
+    brief = grounding.build(route.retrieve(PARAGLIDING))
+
+    found = grounding.violations("The suitability score for paragliding is good (100/100).", brief)
+    assert any("paragliding" in v for v in found), found
 
 
 # ------------------------------------- RC2: scuba diving in a coastal city ----
@@ -289,6 +314,50 @@ def test_no_sea_claim_is_allowed_for_the_unscored_activity(stub, answer):
     route, _rows, _asked = stub
     brief = grounding.build(route.retrieve(SCUBA))
     assert grounding.violations(answer, brief), answer
+
+
+SCUBA_INLAND = "Is it a good day for scuba diving in London tomorrow?"
+
+
+def test_a_typed_sea_activity_inland_is_told_why_there_is_no_score(monkeypatch, stub):
+    """ "No suitability score on record" is true but incomplete, and the missing
+    half is the useful one. "surfing in London" has always been told that London
+    has no coast on record, because `requires_coast` is on surfing's catalogue
+    row; "scuba diving in London" was told only that no score existed, because
+    no catalogue row carries it. Both are decided by the same fact about the
+    city."""
+    route, _rows, _asked = stub
+    result = route.retrieve(SCUBA_INLAND)
+    main = agent(monkeypatch, result)
+    response = main.ask(main.AskIn(question=SCUBA_INLAND))
+
+    answer = response["answer"]
+    assert "scuba diving: no suitability score on record; London has no coast on record." in answer
+    assert response["llm_called"] is False
+
+
+def test_the_two_wording_defects_the_model_produced_here_are_unreachable(monkeypatch, stub):
+    """The live `aow-demo` answer to this question inferred a sea state from a
+    land forecast -- "a 7.8mm rainfall and a 9km/h wind, which may affect diving
+    conditions", the inference `services/common/coast.py` forbids -- and framed
+    an activity as an event, "scuba diving is not scheduled for this date".
+    Neither is a borrowed score, and both were visible to a reviewer.
+
+    They came from the model, and the model is no longer asked: a question whose
+    only named activity has no score is answered in code. Rather than add two
+    more grounding checks for two more phrasings, the route that produced them
+    is gone.
+    """
+    route, _rows, _asked = stub
+    result = route.retrieve(SCUBA_INLAND)
+    main = agent(monkeypatch, result)
+    response = main.ask(main.AskIn(question=SCUBA_INLAND))
+
+    answer = response["answer"].lower()
+    assert "diving conditions" not in answer
+    assert "not scheduled" not in answer
+    assert "rainfall" not in answer
+    assert "km/h" not in answer
 
 
 # ---------------------------------------------- RC3: an ordinary activity ----

@@ -32,8 +32,14 @@ review-*.png
 # Internal review write-ups. These belong in .private/ (HANDOFF §3.12); ignored
 # at the repo root as a backstop so `git add -A` cannot ship one into the
 # submission. Narrow paths, so a deliberate doc is never caught by accident.
+# Anchored AND unanchored on purpose. Both files cite .private/ paths by name,
+# and a copy of either under docs/ walked past the anchored form -- which matters
+# more here than it looks, because scripts/package-offline.sh seals the bundle
+# with `git archive HEAD`, so anything committed once ships in every bundle after.
 /DEVOPS_REVIEW.md
 /REVIEW_PLAN.md
+DEVOPS_REVIEW.md
+REVIEW_PLAN.md
 
 # Operational backups (scripts/backup-state.sh, demos/06_backup_restore.sh).
 # Real database and outbox contents, written beside the stack. Never committed.

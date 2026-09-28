@@ -1,0 +1,282 @@
+-- The retraction ledger: a withdrawal outlives the moment it was delivered.
+--
+-- The defect this closes. Migration 009 gave a collected record a way out of
+-- the published output, and `services/consumer/main.py:apply_retraction`
+-- applies it as an UPDATE of that row. The UPDATE is the whole of the
+-- mechanism, so a withdrawal only works if the row is already there when the
+-- message arrives. When it is not, the UPDATE matches nothing, the handler
+-- logs a warning, and the transaction commits anyway -- carrying the
+-- envelope's `message_id` into `ingest_log`. From that moment the withdrawal
+-- is spent: the id is deterministic (`ingestor/main.py:natural_key`), the
+-- outbox row is marked published and never re-drained, and `ingest_log` turns
+-- every redelivery into a duplicate. If the record it named is ingested
+-- afterwards, it is published with nothing left to withdraw it.
+--
+-- That is not a corner case. The curated `data/retractions.jsonl` list is
+-- re-accepted on every boot precisely because an install only holds what it
+-- has ingested, and `apply_retraction`'s own docstring treats "this install
+-- never had that row" as normal rather than as an error. So both orderings --
+-- record then withdrawal, withdrawal then record -- are ordinary, and only the
+-- first one worked.
+--
+-- The shape of the fix. The decision is written down as a row of its own,
+-- once, before it is applied to anything. `record_retractions` is the ledger
+-- of every withdrawal this install has been told about, whether or not it
+-- holds the record yet, and the consumer consults it whenever a collected
+-- record comes into existence (`upsert_by_id`). Arrival order stops mattering
+-- because the two halves no longer have to meet in time: the ledger is the
+-- durable half, and the mark on the row is derived from it.
+--
+-- Why a table and not a retry. Requeuing or dead-lettering the message would
+-- turn an expected condition -- a central list naming a row this deployment
+-- does not carry -- into an operational alarm, and a redrive would still only
+-- land if the record happened to have arrived by then. The ledger makes the
+-- property true by construction instead of by timing.
+--
+-- Why this survives a rebuild. `wipe_business_rows()` (005) names the tables
+-- it deletes one by one, and this is deliberately not one of them: a wipe
+-- replays every collected record, so a ledger emptied by the wipe would
+-- republish everything an operator had withdrawn -- the same F9 defect by a
+-- third route. Because the ledger survives, the rebuild re-marks the rows as
+-- it re-inserts them, and it stops depending on the wipe's two-pass order.
+--
+-- What it does not do. It is forward-looking. A withdrawal already consumed
+-- against an absent row before this migration ran left no trace in the
+-- database, and its `message_id` is in `ingest_log`, so it cannot be recovered
+-- here. It has to be re-issued, and both routes can do that.
+-- `POST /records/.../retract` mints a fresh id every time (`Envelope.create`
+-- with `retracted_at` = now()). The curated list's id covers the entity, the
+-- id, the reason and the author (`ingestor/main.py`'s `natural_key`) AND the
+-- decision date, which `envelopes_from` appends through `stamp_of` -- so
+-- editing any one of those five re-issues the line, and re-accepting it
+-- unchanged mints the same id and is deduplicated by the outbox.
+--
+-- Idempotent, like every migration before it: CREATE TABLE IF NOT EXISTS is a
+-- no-op the second time, the comments and grants are rewritten
+-- unconditionally, and it takes no lock on a table anything is reading.
+
+\set ON_ERROR_STOP on
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS record_retractions (
+  -- The target, as the `record.retract` payload names it. The entity is stored
+  -- rather than derived, so the ledger can hold a withdrawal for a table this
+  -- install has no matching row in at all -- which is the whole point.
+  entity            TEXT        NOT NULL
+                    CHECK (entity IN ('events', 'places', 'facts')),
+  entity_id         TEXT        NOT NULL,
+
+  -- The decision itself, exactly as it travels on the message. `retracted_at`
+  -- is when the decision was taken, never `now()` at the consumer, and the
+  -- ledger keeps the first value it was given for the same reason the row's
+  -- `COALESCE(retracted_at, ...)` does: a replay must not restamp a withdrawal
+  -- with the clock of the replay.
+  retracted_at      TIMESTAMPTZ NOT NULL,
+  retraction_reason TEXT        NOT NULL,
+  retracted_by      TEXT        NOT NULL DEFAULT 'operator',
+
+  -- When this install was told, as distinct from when the decision was taken.
+  -- The gap between the two is the honest answer to "how long were we still
+  -- serving it", and it is the one value here the consumer does not copy off
+  -- the message.
+  --
+  -- NULL means the install cannot say. That is the backfill's case below: a row
+  -- already marked when this migration first ran was told to this install at
+  -- some point nothing recorded, and defaulting it to the migration's own clock
+  -- would make `recorded_at - retracted_at` read as an exposure window when it
+  -- is really the age of the upgrade. An invented interval in a column whose
+  -- stated purpose is "how long were we still serving it" is worse than an
+  -- admitted gap, so the column is nullable and the backfill leaves it empty.
+  recorded_at       TIMESTAMPTZ DEFAULT now(),
+
+  -- One withdrawal per record. A second `record.retract` for the same target
+  -- is a correction of the wording or the author, not a second decision, and
+  -- the consumer's upsert treats it that way.
+  PRIMARY KEY (entity, entity_id)
+);
+
+-- `CREATE TABLE IF NOT EXISTS` is a no-op on an install that already ran an
+-- earlier version of this file, and an earlier version declared `recorded_at`
+-- `NOT NULL`. The backfill below now writes NULL there deliberately, so the
+-- constraint has to be dropped explicitly or that install fails on the first
+-- marked row. Same shape as `008_itinerary_as_of_optional.sql`: a catalog flag,
+-- no table rewrite, and a no-op when the column is already nullable.
+ALTER TABLE record_retractions ALTER COLUMN recorded_at DROP NOT NULL;
+
+-- No secondary index. The only read is by the full primary key, once per
+-- collected record written. Said out loud because the absence is a choice.
+
+COMMENT ON TABLE record_retractions IS
+  'Every record withdrawal this install has been told about, whether or not it '
+  'holds the record. Written by the consumer before the mark is applied to the '
+  'row, and consulted whenever a collected record is inserted, so a withdrawal '
+  'that arrives before its target still takes effect when the target appears. '
+  'Deliberately not deleted by wipe_business_rows(): a rebuild replays every '
+  'collected record, and an emptied ledger would republish withdrawn ones.';
+COMMENT ON COLUMN record_retractions.entity IS
+  'events, places or facts -- the three collected tables. Mirrors the '
+  'record.retract payload and services/consumer/main.py:RETRACTABLE.';
+COMMENT ON COLUMN record_retractions.entity_id IS
+  'The id of the withdrawn record. There need be no row with this id: the '
+  'ledger is what makes a withdrawal outlive the arrival of its target.';
+COMMENT ON COLUMN record_retractions.retracted_at IS
+  'When the decision was taken, supplied by whoever took it. Kept at the first '
+  'value recorded and never moved, so replaying the queue cannot restamp it.';
+COMMENT ON COLUMN record_retractions.retraction_reason IS
+  'Why, in one line. Correctable: getting the wording of a withdrawal right '
+  'afterwards is normal, and the alternative is editing the database by hand.';
+COMMENT ON COLUMN record_retractions.retracted_by IS
+  'Who decided. "operator" for the curated data/retractions.jsonl list, "api" '
+  'for a single-install withdrawal through POST /records/.../retract.';
+COMMENT ON COLUMN record_retractions.recorded_at IS
+  'When this install learned of the decision. Set by the database, not the '
+  'message -- the one value here that is local rather than collected. NULL for '
+  'a row the backfill copied off an already-marked record: that decision '
+  'predates the ledger and nothing recorded when it arrived, so the column '
+  'says so rather than reporting the migration''s own clock as an answer.';
+
+-- Backfill, so the ledger is not "every withdrawal since Tuesday". An install
+-- upgrading to this migration already carries marks on rows, put there by
+-- migration 009's handler, and every one of them is a decision with a date, a
+-- reason and an author -- the row is the only place it was ever written down.
+-- Copying them in makes the ledger the complete record, which is what lets a
+-- rebuild re-mark a row from the ledger alone instead of depending on the
+-- wipe's capture-and-restore.
+--
+-- Nothing is invented: a row with no stated reason is skipped rather than given
+-- one, because the ledger requires a reason and a made-up one would be worse
+-- than the row it came from. The supported path cannot produce such a row --
+-- `reason` is required on the `record.retract` payload -- so this excludes only
+-- a row edited into the database by hand.
+--
+-- `recorded_at` is left NULL rather than defaulted, because this install does
+-- not know when it was told: see the column comment above.
+--
+-- Runs on every boot like the rest of the file. It is a no-op once the ledger
+-- already holds every marked row, which is the state it leaves behind -- but
+-- "no-op after the first" is not quite true and the difference matters. The
+-- backfill re-derives the ledger FROM THE ROWS, so it recreates an entry that
+-- was deleted while its row was still marked. That is not a bug to be fixed
+-- here: "the ledger covers every marked row" is the invariant the rebuild
+-- depends on, and this statement is what restores it. It is a constraint on
+-- how a record is REINSTATED, and it is written down in full below.
+INSERT INTO record_retractions
+  (entity, entity_id, retracted_at, retraction_reason, retracted_by, recorded_at)
+-- `NULL::timestamptz`, not a bare `NULL`. A `UNION ALL` resolves each output
+-- column's type from its inputs alone, with no knowledge of the INSERT target,
+-- and a column whose inputs are all untyped `NULL` resolves to `text`. The
+-- INSERT would then have to coerce `text` into `timestamptz` in assignment
+-- context, for which there is no cast -- a parse-time ERROR, on every boot,
+-- including a fresh database with no marked rows at all. With ON_ERROR_STOP the
+-- whole migration aborts, `migrate` exits non-zero, and every service gated on
+-- `service_completed_successfully` refuses to start.
+SELECT 'events', id, retracted_at, retraction_reason,
+       COALESCE(retracted_by, 'operator'), NULL::timestamptz
+  FROM events WHERE retracted_at IS NOT NULL AND retraction_reason IS NOT NULL
+UNION ALL
+SELECT 'places', id, retracted_at, retraction_reason,
+       COALESCE(retracted_by, 'operator'), NULL::timestamptz
+  FROM places WHERE retracted_at IS NOT NULL AND retraction_reason IS NOT NULL
+UNION ALL
+SELECT 'facts',  id, retracted_at, retraction_reason,
+       COALESCE(retracted_by, 'operator'), NULL::timestamptz
+  FROM facts  WHERE retracted_at IS NOT NULL AND retraction_reason IS NOT NULL
+ON CONFLICT (entity, entity_id) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Reinstating a record, which is now a two-sided operation
+-- ---------------------------------------------------------------------------
+--
+-- There is still no un-retract route through the API or the queue, and there is
+-- not going to be one: reinstating something is a decision somebody takes
+-- deliberately, in a migration that can be read and reviewed, not a button.
+-- What changed with this ledger is that clearing the mark on the row is no
+-- longer sufficient, and the old one-line instruction -- "put the corrected
+-- listing back in the snapshot with a newer as-of and clear the mark in a
+-- migration" -- now silently fails in two different ways:
+--
+--   * Clear the row's mark and leave the ledger entry. The very next collected
+--     message for that id re-marks the row straight out of the ledger
+--     (`upsert_by_id` -> `apply_recorded_retraction`), and so does pass 1 of
+--     the next `user_data.wipe`. The record is withdrawn again with nobody
+--     having decided that.
+--
+--   * Delete the ledger entry and leave the row marked. The backfill above runs
+--     on the next boot, reads the still-marked row, and puts the entry back --
+--     with `recorded_at` NULL, as an upgrade artefact. Same outcome, one boot
+--     later.
+--
+-- So a reinstatement migration must do BOTH, in ONE transaction, and must be
+-- numbered ABOVE this file so the backfill cannot run between the two halves:
+--
+--   BEGIN;
+--   UPDATE events SET retracted_at = NULL, retraction_reason = NULL,
+--                     retracted_by = NULL
+--    WHERE id = '<id>';
+--   DELETE FROM record_retractions WHERE entity = 'events' AND entity_id = '<id>';
+--   COMMIT;
+--
+-- Idempotent as written: both statements match nothing the second time.
+--
+-- The DELETE is why no role is granted DELETE below. A reinstatement is run by
+-- the migration owner, through the same reviewed file every other schema change
+-- goes through, and is deliberately not something the application can do.
+--
+-- AND IT IS STILL NOT ENOUGH FOR A CURATED WITHDRAWAL. `wipe_user_data` replays
+-- every envelope the INGESTOR accepted, and `SOURCE_KEYS` includes
+-- `record.retract`. The envelope for a curated line lives in the ingestor's
+-- outbox for the life of that volume and its `message_id` stays in
+-- `ingest_log`, so the next `POST /user-data/wipe` replays it, the
+-- `ON CONFLICT DO NOTHING` insert succeeds precisely because the reinstatement
+-- deleted the ledger row, and the record is withdrawn again. Removing the line
+-- from `data/retractions.jsonl` does not help: the wipe replays the outbox, not
+-- the file.
+--
+-- So, stated plainly rather than papered over:
+--
+--   * A withdrawal made through `POST /records/.../retract` can be reinstated
+--     with the two statements above and stays reinstated. The wipe excludes
+--     api-sourced envelopes (`source <> 'api'`).
+--   * A withdrawal that came from the curated list can be reinstated, and the
+--     next wipe on that install undoes it. Making that stick needs the
+--     ingestor's outbox volume replaced -- in practice, a fresh install from a
+--     corrected snapshot, which is what the README has always said reinstating
+--     means.
+--
+-- Nothing here is silent: both are the documented no-un-retract-route design
+-- working as intended, and the second is the price of a rebuild that replays
+-- every collected decision.
+--
+-- ---------------------------------------------------------------------------
+-- One consumer
+-- ---------------------------------------------------------------------------
+--
+-- The ledger and the mark on the row are two statements, and they are correct
+-- together only because exactly one process applies them. `compose.yml`
+-- declares a single `consumer` with no `deploy.replicas`, and
+-- `services/common/rabbit.py` is a single-threaded pika loop that handles one
+-- delivery at a time, so that holds for the shipped topology.
+--
+-- It is written down because nothing enforces it. Under READ COMMITTED, two
+-- consumers can interleave a `record.retract` and the `record.event` it names
+-- so that each reads a snapshot without the other's uncommitted write: the
+-- retraction's UPDATE matches no row, the insert's ledger join finds no entry,
+-- both commit, and the record is published unwithdrawn with both message_ids in
+-- `ingest_log` so neither is ever redelivered. `docker compose up --scale
+-- consumer=2` is all it would take. This is read from the source rather than
+-- reproduced. Running more than one consumer needs a transaction-scoped
+-- advisory lock on (entity, entity_id) in both paths first.
+
+-- The reader reads and the one writer writes. No role gains DELETE on THIS
+-- table, because a withdrawal is corrected rather than removed -- not "like
+-- every other table here", which would be false: `events` (003), `itineraries`
+-- and `record_history` (004) all carry a writer DELETE for their own reasons.
+-- 001_init.sql already sets
+-- ALTER DEFAULT PRIVILEGES for both roles, so these are belt and braces --
+-- stated anyway, because that default only covers tables created by the role
+-- that set it, and a ledger nobody can read fails silently.
+GRANT SELECT                 ON record_retractions TO aow_reader;
+GRANT SELECT, INSERT, UPDATE ON record_retractions TO aow_writer;
+
+COMMIT;

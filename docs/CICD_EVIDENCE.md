@@ -38,7 +38,7 @@ Listed first, because a matrix that silently corrects its own source is not evid
 | Claim | Status | Evidence |
 |---|---|---|
 | Git repo with all code and configuration | **PASS** | Public repo (`private: false`, `visibility: public`, checked through the GitHub API on 2026-09-25); 10 Compose files, `.env.example`, `IMAGES.lock`, `models.lock`, `ruff.toml`, `pytest.ini`, `edge/nginx.conf`, `db/migrations/` all tracked |
-| CI/CD definitions present and running | **PASS** | `ci.yml` (8 jobs), `release.yml`; successful historical `main` push runs include publish |
+| CI/CD definitions present and running | **PASS** | `ci.yml` (9 jobs), `release.yml`; successful historical `main` push runs include publish |
 | README present and substantive | **PASS** | `README.md`, plus `docs/ARCHITECTURE.md`, `TECHNICAL_DECISIONS.md`, `docs/RELEASE.md` |
 | README counts are not stale | **PASS** | `scripts/snapshot_manifest.py --check` runs in `guard` on every PR |
 | No secrets committed | **PASS** | `guard` rejects a tracked `.env` and any non-placeholder password in `.env.example`; gitleaks runs on every PR; secret scanning and push protection enabled at the repo level |
@@ -173,8 +173,11 @@ is zero. This closes the live settings inspection for that date.
 
 **Superseded for the context list on 2026-09-27**, by a `PATCH` to
 `branches/main/protection/required_status_checks` that added a fifth context,
-`ui-gate`, so the required set and the set of jobs that always report now
-agree. The read above stands as the 2026-09-25 state; section 5 carries the
+`ui-gate`, so the required set and the set of jobs that always report agreed as
+`ci.yml` then stood. They no longer do, and the later paragraph in this section
+is the live one: `retraction-drill` was added afterwards, carries no `if:`, and
+is not a required context. The read above stands as the 2026-09-25 state;
+section 5 carries the
 2026-09-27 state and the before/after responses. Nothing else in the
 protection object was sent or changed, and a field-by-field comparison of the
 two full reads outside `required_status_checks` is identical. Historical
@@ -339,13 +342,24 @@ That transcript is from the four-context era and is kept as it was recorded; the
 it is not re-asserted as current.
 
 **Current required contexts, read from the API on 2026-09-27 after the change below:**
-`lint`, `unit`, `guard`, `build-and-scan`, `ui-gate` — the five jobs in `ci.yml` that
-carry no `if:` and therefore always report. A required context that can be skipped
-deadlocks merges, which is why the conditional jobs are not required: `publish-images`
-runs only on push to main, and `model-grounding` and `restore-drill` are skipped on an
-unlabelled pull request. This was measured rather than assumed — on PR #65's head
-`97fa8d9` the check runs are `lint`, `unit`, `guard`, `build-and-scan` and `ui-gate`
-`success` with `publish-images`, `model-grounding` and `restore-drill` `skipped`.
+`lint`, `unit`, `guard`, `build-and-scan`, `ui-gate` — five contexts. A required
+context that can be skipped deadlocks merges, which is why the conditional jobs are
+not required: `publish-images` runs only on push to main, and `model-grounding` and
+`restore-drill` are skipped on an unlabelled pull request. This was measured rather
+than assumed — on PR #65's head `97fa8d9` the check runs are `lint`, `unit`, `guard`,
+`build-and-scan` and `ui-gate` `success` with `publish-images`, `model-grounding` and
+`restore-drill` `skipped`.
+
+**Those five are not all of the unconditional jobs, and this line used to say they
+were.** `ci.yml` now defines nine jobs, of which **six** carry no `if:` and therefore
+always report: the five above plus **`retraction-drill`**, added later on the branch
+that introduced the retraction ledger. So `retraction-drill` runs on every pull
+request and every push to main and still cannot block a merge — the same gap
+`ui-gate` was in before the `PATCH` below, at a lower stake. Requiring it is a
+one-line addition to the same sub-resource; it has deliberately not been made here,
+because the drill's first green run is `36342755652` and a context is worth requiring
+once it has a track record rather than on the strength of one pass. Recorded as open
+rather than described as done.
 
 `ui-gate` was the gap: the browser gate that records every request the page issues and
 asserts zero off-origin traffic — the strongest anti-egress control in the repository —

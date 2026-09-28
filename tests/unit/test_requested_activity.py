@@ -128,7 +128,7 @@ def test_a_coast_activity_inland_never_reaches_the_uncapped_generic_scorer(activ
     monkeypatch.setattr(
         consumer.rules,
         "score_requested",
-        lambda *_a: pytest.fail("a requires_coast activity was scored by the generic rule"),
+        lambda *_a, **_k: pytest.fail("a requires_coast activity was scored by the generic rule"),
     )
     label = consumer.ACTIVITIES[activity].get("label", activity)
     consumer.store_recommendation_request(Cursor(), request("london", activity, label))
@@ -182,3 +182,151 @@ def test_asking_again_restamps_the_version_of_the_engine_that_just_scored_it():
     # version happened to score it first.
     assert "rule_version = EXCLUDED.rule_version" in set_clause
     assert consumer.RULE_VERSION in cursor.params[-1]
+
+
+# ------------- the coast gate reached by a name the catalogue lacks ----------
+#
+# The third defect, and the same integrity breach as the first one reached by a
+# different route. `requires_coast` is a property of a row in
+# data/activities.yml, so the gate above could only ever ask the catalogue --
+# and every water activity the catalogue does NOT list walked past it. "scuba
+# diving" asked for London reached `rules.GENERIC_CFG`, which carries no
+# ceiling, and a pleasant day on land stored scuba diving in London as `good`,
+# 100/100, for a city with no coast on record.
+#
+# Found by reading the source, not by running it: this case was never POSTed to
+# the live demo, and nothing in this file touches a database.
+
+# Every name here has to answer YES to both questions the split in
+# `rules.needs_coast` separated: does the water decide how good this is, and does
+# it need the SEA. `wild_swimming` was on this list and answers only the first --
+# swimming in a river, a lake or a Hampstead pond needs no coast, and refusing
+# the row "because London has no coast on record" offered a true fact as the
+# cause of something it did not cause. It moved to
+# tests/unit/test_inland_water.py, which asserts the other side of the split.
+TYPED_SEA = ["scuba_diving", "snorkelling", "kite_surfing", "sea_kayaking"]
+
+
+def test_none_of_the_typed_sea_activities_is_in_the_catalogue():
+    """Guard the premise. If any of these were ever added to
+    data/activities.yml it would be handled by the catalogue branch instead, and
+    every test below would be passing for the wrong reason."""
+    for activity in TYPED_SEA:
+        assert activity not in consumer.ACTIVITIES, activity
+    # And both word tests really do fire on them, while a land activity the
+    # catalogue also lacks is untouched by either. `needs_coast` is asserted as
+    # well as `names_water` because the two stopped being one test: a name that
+    # names water without needing the sea belongs in test_inland_water.py, and
+    # leaving it here would assert a refusal this file cannot justify.
+    for activity in TYPED_SEA:
+        assert consumer.rules.names_water(activity), activity
+        assert consumer.rules.needs_coast(activity), activity
+    assert not consumer.rules.names_water("kite_flying")
+    assert not consumer.rules.names_water("rock_climbing")
+
+
+@pytest.mark.parametrize("activity", TYPED_SEA)
+def test_a_typed_sea_activity_asked_for_an_inland_city_stores_no_row(activity):
+    """The same absence the catalogue's own sea activities produce for London,
+    and for the same reason: no coast, so nothing to score it from."""
+    cursor = Cursor()
+    consumer.store_recommendation_request(
+        cursor, request("london", activity, activity.replace("_", " "))
+    )
+
+    assert cursor.statements == []
+
+
+@pytest.mark.parametrize("activity", TYPED_SEA)
+def test_a_typed_sea_activity_inland_never_reaches_the_uncapped_generic_scorer(
+    activity, monkeypatch
+):
+    """The defect was reaching `GENERIC_CFG` at all."""
+    monkeypatch.setattr(
+        consumer.rules,
+        "score_requested",
+        lambda *_a, **_k: pytest.fail("a typed sea activity was scored by the generic rule"),
+    )
+    consumer.store_recommendation_request(
+        Cursor(), request("london", activity, activity.replace("_", " "))
+    )
+
+
+@pytest.mark.parametrize("activity", TYPED_SEA)
+def test_the_typed_decision_does_not_depend_on_a_forecast_being_stored(activity):
+    cursor = Cursor(weather=None)
+    consumer.store_recommendation_request(
+        cursor, request("london", activity, activity.replace("_", " "))
+    )
+
+    assert cursor.statements == []
+
+
+def test_a_typed_water_activity_that_needs_no_sea_is_stored_for_the_inland_city():
+    """The other side of the split, asserted where the refusal is actually taken.
+
+    tests/unit/test_inland_water.py holds `rules.needs_coast` to the catalogue's
+    `distinct_names`, but the decision that costs a traveller a row is this
+    handler's, and nothing asserted it there. So: London, no coast, and a row is
+    stored anyway -- under the same 69 ceiling with the same caveat, because the
+    ceiling follows `names_water` and the water here is no better measured than
+    the sea is.
+    """
+    cursor = Cursor()
+    consumer.store_recommendation_request(
+        cursor, request("london", "wild_swimming", "wild swimming")
+    )
+
+    assert "INSERT INTO recommendations" in cursor.statements[-1]
+    score, band, reasons = cursor.params[-1][4], cursor.params[-1][5], cursor.params[-1][6]
+    assert score == 69, f"wild swimming in London scored {score}"
+    assert band != "good"
+    assert "waves" in reasons
+    # The refusal sentence names the coast, so it must not appear for a name that
+    # the coast has nothing to do with.
+    assert "coast" not in reasons
+
+
+@pytest.mark.parametrize("activity", TYPED_SEA)
+def test_a_typed_sea_activity_in_a_coastal_city_is_capped_like_a_catalogue_one(activity):
+    """A coast exists, so the row is stored -- under the ceiling the four
+    catalogue sea activities carry, and never in the `good` band. PERFECT_DAY
+    violates no land rule, so 100 is what an uncapped score would be."""
+    cursor = Cursor()
+    consumer.store_recommendation_request(
+        cursor, request("rome", activity, activity.replace("_", " "))
+    )
+
+    assert "INSERT INTO recommendations" in cursor.statements[-1]
+    score, band, reasons = cursor.params[-1][4], cursor.params[-1][5], cursor.params[-1][6]
+    assert score == 69, f"{activity} scored {score}"
+    assert band != "good"
+    # The cap has to say what it is. A number quietly lowered behind the
+    # reader's back is what `_apply_ceiling`'s reason exists to prevent, and the
+    # reasons are what the model is handed to write from.
+    assert "waves" in reasons
+    assert "general outdoor comfort" in reasons
+
+
+def test_the_ceiling_matches_the_catalogue_rather_than_being_a_second_number():
+    """69 is the catalogue's own figure for this situation. Two numbers for one
+    rule is how they drift apart."""
+    ceilings = {
+        cfg["score_ceiling"]
+        for cfg in consumer.ACTIVITIES.values()
+        if cfg.get("sea_state_unmeasured")
+    }
+    assert ceilings == {consumer.rules.GENERIC_SEA_CFG["score_ceiling"]}
+
+
+def test_a_typed_land_activity_is_untouched_by_any_of_this():
+    """The bound on the repair, asserted for the inland city that provoked it.
+    `kite_flying` shares a word with `kite_surfing` and is not a water
+    activity."""
+    cursor = Cursor()
+    consumer.store_recommendation_request(cursor, request("london", "kite_flying", "kite flying"))
+
+    score, reasons = cursor.params[-1][4], cursor.params[-1][6]
+    assert score == 100
+    assert "waves" not in reasons
+    assert "general outdoor comfort" in reasons

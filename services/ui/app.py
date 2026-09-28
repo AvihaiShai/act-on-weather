@@ -559,7 +559,27 @@ def ask_for_activity(cov) -> None:
     with middle:
         day = st.date_input("Date", value=first, min_value=first, max_value=last)
     with right:
-        activity = st.text_input("Activity", placeholder="kite surfing, rock climbing, a picnic...")
+        # Every example here has to survive the round trip, or the form shows
+        # the opposite of what it claims. Both of the names this placeholder used
+        # to carry failed it, in different ways, and both are now fixed at the
+        # source rather than by choosing different words:
+        #
+        #   "kite surfing" contains the catalogue keyword `surfing`, so a
+        #   question about it was answered from the catalogue surfing row --
+        #   a different activity's number, band and caveat -- and never reached
+        #   the row this form stored. `Router.shadowing_activities` resolves the
+        #   longer name first now, to its own row or to a stated gap.
+        #
+        #   "a picnic" stored `a_picnic` while the read path resolved the same
+        #   words to `picnic`, so that row was unreachable. `schemas.slugify`
+        #   trims the same leading filler on both routes now, from one list.
+        #
+        # These three are kept anyway: they match no keyword in
+        # data/activities.yml, so they exercise the plain path a first-time
+        # reader is most likely to try.
+        activity = st.text_input(
+            "Activity", placeholder="rock climbing, stargazing, hot air ballooning..."
+        )
 
     if st.button("Ask", type="primary", disabled=not activity):
         result = api_send(
@@ -606,7 +626,11 @@ def page_chat(cov) -> None:
         st.caption(answer["as_of"] or "no data behind this answer")
     with st.expander("Answer details"):
         st.write(f"City: {answer['city'] or 'not specified'}")
-        st.write(f"Dates: {', '.join(map(str, answer['dates'])) or 'not specified'}")
+        # `dates` is one already-formatted string -- "2026-09-28", or
+        # "2026-09-29 to 2026-10-01" for a range -- and never a list of days.
+        # Joining it walked the characters and printed "2, 0, 2, 6, -, 0, 9, ...";
+        # `None`, which the field is typed to allow, raised TypeError instead.
+        st.write(f"Dates: {answer.get('dates') or 'not specified'}")
         st.write(f"Records consulted: {answer['rows_used']}")
 
 

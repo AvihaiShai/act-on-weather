@@ -504,12 +504,12 @@ and `test_airgap_evidence.py` cover bundle integrity, archive completeness, the
 bundle's image table against the Compose files, the promotion record and the
 evidence-capture tool.
 
-`make verify` runs the four gates that can run locally: `ruff check`,
+`make verify` runs the four cheap gates: `ruff check`,
 `ruff format --check`, the unit tests, and `scripts/snapshot_manifest.py
 --check`. As the script itself puts it, passing it does not promise CI is green;
 failing it promises CI is not.
 
-`.github/workflows/ci.yml` defines eight jobs:
+`.github/workflows/ci.yml` defines nine jobs:
 
 | job | when | what |
 |---|---|---|
@@ -518,12 +518,13 @@ failing it promises CI is not.
 | `guard` | every run | the claim checks below |
 | `build-and-scan` | every run | builds the service and UI images, runs three blocking Trivy scans, then `scripts/ci-integration.sh` against a real broker and database |
 | `ui-gate` | every run | a Playwright browser gate: the pages render, a "Weather as of" chip carries a timestamp, and the browser makes **zero off-origin requests** |
+| `retraction-drill` | every run | `scripts/retraction-drill.sh` on its own disposable Compose project: both arrival orders of a withdrawal and its record, a rebuild, and a corrected withdrawal surviving a second rebuild |
 | `publish-images` | push to `main` | pushes the images built and scanned above to GHCR |
 | `model-grounding` | release candidates only — `workflow_dispatch`, a `release/*` branch, or the `release-candidate` label | the real model against hand-written rows |
 | `restore-drill` | release candidates only, same condition | a restore after destroying every volume |
 
-`publish-images` needs `build-and-scan` only, so the browser gate runs alongside
-it rather than blocking it.
+`publish-images` needs `build-and-scan` only, so the browser gate and the
+retraction drill run alongside it rather than blocking it.
 
 `.github/workflows/release.yml` is the CD half, on manual dispatch against a
 merged SHA whose CI passed: it re-verifies the published image digests against
@@ -564,6 +565,7 @@ README put the place count at 289 while the snapshot already held 620.
 | `… run --rm demos update` | a correction end to end |
 | `… run --rm demos reenrich` | re-enrichment, including a full model outage |
 | `… run --rm demos backup-restore` (`make backup-restore`) | the backup and restore drill, with its measured RPO and RTO |
+| `make retraction-drill` | both arrival orders of a withdrawal and its record, a rebuild, and a corrected withdrawal surviving a second rebuild — on its own disposable Compose project, which it refuses to run if the name is already taken |
 | `make dlq` / `make redrive` | list and redrive quarantined messages |
 | `make backup` / `make restore DIR=…` | `pg_dump` plus the three outboxes and the broker definitions; restore defaults to an isolated Compose project, and refuses to destroy a target that is the live project or still has containers running unless told to |
 | `make monitor` / `make monitor-down` | start and stop the opt-in Prometheus and Grafana overlay, Grafana at <http://127.0.0.1:3000> |
@@ -691,7 +693,26 @@ tunnel has every route.
   temperature. The score is capped at **69**, one point below the `good` band, so
   none of them is ever reported as a confident recommendation, and the reason
   travels in the row. No scoring rule may infer a sea state from a land
-  measurement. Open-Meteo's keyless marine endpoint was probed rather than
+  measurement. An activity you name yourself is held to the same cap when its
+  name says it happens in water — "scuba diving", "kite surfing", "sea kayaking"
+  — and, when the name says the **sea**, is refused outright for a city with no
+  coast on record, exactly as the coast-gated catalogue activities are. (Five
+  catalogue activities carry `requires_coast`; four of those five carry the 69
+  ceiling as well. `beach_day` is the exception and keeps its full range,
+  because a day on the sand is a judgement about sun, heat, rain and wind, and
+  those are measured.) The cap and the refusal are two tests rather than one,
+  and the difference is load-bearing: a name that says fresh water rather than
+  the sea — "wild swimming", "ice swimming" — keeps the 69 ceiling, because
+  nothing here measures a lake either, and is **not** refused for an inland
+  city, because refusing it would offer "London has no coast on record" as the
+  reason a pond cannot be scored, which is a true sentence presented as a cause
+  it is not (`rules.needs_coast`, `rules.INLAND_WATER_WORDS`, and
+  `distinct_names` in `data/activities.yml`, where the collision was found).
+  The cap's test is a word list
+  (`rules.SEA_WORDS`) rather than a property of a catalogue row, because a typed
+  activity has no catalogue row; it is deliberately not exhaustive, and a word it
+  does not know is scored generically as before. **It can only ever lower a score
+  or withhold a row, never raise one.** Open-Meteo's keyless marine endpoint was probed rather than
   assumed: it answers for all four coast points, but forecasts 10 days against the
   16 stored, and from a model cell 2.9–13.2 km from the named point, so staging it
   would narrow this gap rather than close it. The measured numbers are recorded in
@@ -710,17 +731,69 @@ tunnel has every route.
   holds notable venues, so the data skews to landmarks. Each row records its own
   source.
 * **A user-entered activity is scored against general outdoor comfort**, not a
-  rule tuned for it — but only when you request it, and the label is not yet on
-  screen. Requesting one through the UI form or `POST /recommendations` scores
-  that city-day with the generic measure and stores the caveat on the row, and
-  `GET /recommendations/{city}` returns both the `requested` flag and the
-  `reasons` that carry it. **The Streamlit UI renders neither, and the agent's
-  answer does not state the generic label**, so today the caveat is visible only
-  in the API response. Asking the agent about an activity that has never been
-  requested is a separate matter and is a known defect, not a generic score: the
-  activity is not recognised, so no generic row is created or read, and the
-  answer can carry another activity's number. Surfacing the label and fixing the
-  ask path are [future work](#production-path).
+  rule tuned for it — under the 69 sea ceiling if its name says water, and not
+  scored at all for an inland city if the name says the sea rather than fresh
+  water. Only when you request it, and the
+  label is not yet on screen everywhere. Requesting one through the UI form or
+  `POST /recommendations` scores that city-day with the generic measure and
+  stores the caveat on the row, and `GET /recommendations/{city}` returns both
+  the `requested` flag and the `reasons` that carry it. **The Streamlit UI
+  renders neither**, so on screen the caveat is visible only in the API
+  response; the agent's own answer does state it, through `requested_caveat`.
+  Asking the agent about an activity that has never been
+  requested is a separate matter: the noun is extracted, slugified with the same
+  function the write path uses, and looked up, so an activity with no stored row
+  is reported as not on record rather than answered with another activity's
+  number, and one that *was* requested earlier answers from its own row. A name
+  that carries a catalogue keyword inside it as a whole word — "kite surfing",
+  which contains `surfing` — is resolved on its own terms and never from the
+  keyword inside it, whether or not a row for it exists, **when the catalogue
+  declares it a distinct name** (`distinct_names` in `data/activities.yml`).
+  That is a declared list rather than a rule, and the file says why at length:
+  the general rule was tried and turns "a museum visit", "a football match" and
+  "a market visit" into "not on record", which is a false statement about rows
+  the system holds and scores every day. Its cost is that the list is not
+  exhaustive — an undeclared name still answers with the catalogue activity's
+  score, as before — and that cost is additive and bounded, where the rule's was
+  a lie about stored data. A question whose only named activity has no score, and
+  that asks nothing else, is answered in code from the gap without the model
+  being called at all; one that also asks about the weather or about *where*
+  keeps its forecast and its places. Surfacing the generic label in the UI
+  remains [future work](#production-path).
+* **A requested activity stored before the filler trim keeps its old key, and
+  the agent will not find it.** The activity slug is frozen when the row is
+  written — `services/api/main.py` calls `schemas.slugify` and the consumer
+  stores the result unchanged — so an install that scored "a picnic" under the
+  earlier rule holds a row keyed `a_picnic`, while a question about it now
+  resolves `picnic`. There is no migration and none is planned. The only
+  uniqueness on `recommendations` is `PRIMARY KEY (city_id, forecast_date,
+  activity)`, so re-keying collides wherever the same city-day already holds the
+  trimmed key, and resolving that means discarding one of two rows a user asked
+  for — not a choice a migration that runs on every boot should make silently.
+  **What this costs is bounded, and it is checked**
+  (`tests/unit/test_activity_slug_roundtrip.py`): the question reports the
+  activity as not on record under the key it looked for, rather than answering
+  with another activity's number, so a stale row makes the agent less informed
+  and never wrong. The row is not lost either — it stays on `GET /scores` and
+  `GET /activities`, it is pickable by its label in the UI's Suitability view,
+  and `POST /reenrich` still targets it by key. The remedy is one action:
+  request the activity again through the form, which stores it under the trimmed
+  key. A fresh install is unaffected, and no catalogue key is reshaped by the
+  trim.
+* **A question that names a scored activity and asks something else as well is
+  answered on the activity alone.** A named activity is rendered from its stored
+  rows rather than through the model, because a 1.7B model asked to summarise
+  seven `fair` days calls it a good week. That renderer reads the recommendation
+  rows and nothing else, so "what events are on tomorrow in Rome, and is it a
+  good day for running?" answers the running and says nothing about the events,
+  while `rows_used` still reports the event rows that were retrieved and then
+  dropped. The same question about an activity the catalogue does **not** score
+  keeps both halves: that route is taken only when the question asks about
+  nothing else, so a weather, events, places or facts intent sends it to the
+  model with the gap stated in its brief. Widening the scored-activity route
+  means either putting a currently exact answer back through the model or
+  writing a second renderer for mixed questions, and neither is done here. Ask
+  the two questions separately.
 * **The grounding guard is a set of specific checks, not a general proof.**
   `services/agent/grounding.py` validates the model's prose against the typed
   facts and throws away wording that fails, falling back to a deterministic
@@ -773,8 +846,18 @@ tunnel has every route.
   [the bargain described above](#the-data-on-board-and-when-it-goes-stale) and
   is visible in every as-of stamp.
 * **A collected record can be corrected, but not withdrawn.** Records here are
-  revised, never deleted — the writer holds no DELETE grant that reaches a
-  non-sample event or place row, which is what keeps `record_history` honest.
+  revised, never deleted. What enforces that differs per table, and the single
+  sentence that used to stand here credited the grants with all of it: **the
+  writer does hold a direct, table-wide DELETE on `events`**, granted by
+  migration 003 and deliberately left out of migration 005's revoke, because
+  `enforce_event_mode()` needs it to purge sample rows on startup. What confines
+  that delete to samples is its own `WHERE is_sample AND retracted_at IS NULL`
+  predicate in `services/consumer/main.py`, which is application code. For
+  `places` and `facts` the revoke is real and there is no table grant, but the
+  writer can still execute the `SECURITY DEFINER` wipe function, so the
+  protection there is the indirection rather than the absence of a route. Read
+  from `information_schema.table_privileges` on a live database, not from the
+  migration text.
   The cost of that choice is the reverse case: if a listing is removed from
   `data/events.seed.jsonl` after it was already collected — a venue cancels, or
   `scripts/event-recheck.sh` cannot confirm it — the row stops being shipped to
@@ -792,12 +875,44 @@ tunnel has every route.
   the stated reason (migration 009). A withdrawn record leaves every read, every
   answer and every count in `/coverage`, and it stays out across a rebuild —
   `POST /user-data/wipe` carries the marks over rather than replaying the record
-  back into view. The row itself is kept, with its source, its as-of and its
+  back into view.
+
+  **Arrival order does not matter.** The decision is written to its own table,
+  `record_retractions`, before it is applied to anything (migration 010), so a
+  withdrawal that reaches this install before the record it names is not lost:
+  the record is marked as it arrives. That order is ordinary rather than exotic —
+  the curated list is applied against whatever this install has actually
+  ingested, the API's withdrawal travels on a different outbox from the
+  ingestor's with no ordering relationship between them, and a record that
+  dead-letters is stored only once an operator redrives it. It is
+  forward-looking: a withdrawal that was already spent this way before migration
+  010 left no trace in the database and has to be re-issued. Both routes can
+  re-issue one: `POST /records/.../retract` mints a fresh id every time, and the
+  curated list's id covers the entity, the id, the reason, the author and the
+  decision date, so editing any of them re-issues the line. A rebuild restores
+  those decisions and never
+  revises one: a withdrawal corrected through the API is not reverted by the
+  older curated envelope the wipe replays.
+
+  The row itself is kept, with its source, its as-of and its
   history, because "withdrawn on the 27th, the venue cancelled it" is a stronger
   statement than a row that silently vanished. There is deliberately **no
-  un-retract route**: reinstating something means putting the corrected listing
-  back in the snapshot with a newer as-of. One line, `POST
-  /records/{entity}/{id}/retract`, does the same thing for a single install.
+  un-retract route**. Reinstating something takes a migration numbered above 010
+  that puts the corrected listing back in the snapshot under a newer as-of and,
+  **in one transaction, both clears the row's mark and deletes its
+  `record_retractions` entry**. Doing only one half fails silently in either
+  direction: the ledger re-marks a cleared row on the next message, and 010's
+  backfill recreates a deleted entry from a still-marked row on the next boot.
+  The procedure is written out in `db/migrations/010_retraction_ledger.sql`.
+  One line, `POST /records/{entity}/{id}/retract`, withdraws a record for a
+  single install.
+
+  **Gated in CI.** `retraction-drill` runs `scripts/retraction-drill.sh` against
+  a real Postgres on its own disposable Compose project, covering both arrival
+  orders, the rebuild, and a correction surviving a second rebuild. Before that
+  job existed the ledger was exercised only empty: `data/retractions.jsonl` is
+  zero bytes, no CI step withdrew anything, and the three
+  `tests/integration/retraction_*.py` files were collected by nothing.
 * **No physical air-gap proof.** Three claims sit near each other here and are
   not the same claim, so they are kept apart on purpose:
   * **The archive is self-contained.** `scripts/verify-bundle-images.sh` checks
@@ -878,7 +993,7 @@ command you can run.
 | M12 | Update stored information | `PATCH /records/...`, the operator refresh, re-enrichment | `… demos update`; `make refresh-check` |
 | S1 | Repo with code, config, CI/CD, README | `.github/workflows/ci.yml` and `release.yml`; release tooling in `scripts/`, including `airgap-evidence.sh` (captures engine identity, image/volume census, link state, bundle digests and exit codes) and `make-fault-injection-bundle.sh` (derives the deliberately-broken artifact for the rollback drill) | `gh run list`; [docs/RELEASE.md](docs/RELEASE.md) |
 | S2 | README: startup, architecture, choices and reasoning | this file | you are reading it |
-| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR and a real-model grounding gate for release candidates. Targeted work covers the consumer's ack decision, partial and undated forecast coverage, the grounding guard, per-city planner coverage, migration wiring, and the Open-Meteo request/response adapter with a stubbed HTTP reply. A live connected fetch and complete end-to-end user flows are still untested in CI | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
+| B1 | Full tests for all components | **partial** — offline unit and Compose integration tests run in CI, with a real browser gate on each PR, a real-Postgres retraction drill on each PR, and a real-model grounding gate for release candidates. Targeted work covers the consumer's ack decision, partial and undated forecast coverage, the grounding guard, per-city planner coverage, migration wiring, the retraction ledger's two arrival orders and its survival of a rebuild, and the Open-Meteo request/response adapter with a stubbed HTTP reply. A live connected fetch and complete end-to-end user flows are still untested in CI | `docker run --rm aow/tests:dev`; [CI/CD evidence](docs/CICD_EVIDENCE.md); [targeted coverage and what it left open](docs/EVIDENCE-b1-targeted-tests.md) |
 | B2 | LLM observability metrics | **done** — Prometheus scrapes request/error/latency series from every service plus llama.cpp's own `--metrics`; 11 alert rules and three provisioned Grafana dashboards, all offline | `make monitor`, then Grafana at <http://127.0.0.1:3000> |
 | B3 | Automatic recovery from failures | **partial** — reconnect with backoff, `restart: unless-stopped`, healthchecks, automatic re-enrichment, and an operator backup/restore with a measured RPO and RTO | `make backup-restore`; then `… demos no-data-loss` |
 

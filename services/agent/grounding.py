@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from ..common import config
+from ..common import config, rules
 
 if TYPE_CHECKING:  # pragma: no cover - router imports this module at runtime
     from .router import Retrieval
@@ -103,6 +103,22 @@ VERDICT_WORDS = (
     "favourable",
     "favorable",
 )
+
+# The bands the rule engine puts a score in. Read from `rules.BANDS` rather than
+# written out, because a list that spelled them itself would drift the moment a
+# band was renamed, and because these are not a paraphrase of a verdict -- they
+# are the verdict, in the engine's own word.
+#
+# Found by an independent review of the mixed-question route: every phrasing in
+# VERDICT_WORDS above is a way of *arguing* to a verdict, so a model that simply
+# stated one ("kite surfing is fair there") matched none of them and walked
+# through check 5 clean, with the gap suppressed because the answer had named the
+# activity. That is the substitution this branch exists to close, reached one
+# intent further out. Used only inside check 5, where the sentence has already
+# been shown to name an activity with no stored score -- as a global trigger a
+# bare band word would also fire on "conditions are fair", which is a weather
+# claim and is checks 4b and 7's business, not this one's.
+BAND_WORDS = tuple(name for name, _floor in rules.BANDS)
 
 # Anything that reads as the forecast. An activity with no stored score gets
 # one sentence -- that there is no record -- and a clause that names it beside
@@ -827,7 +843,7 @@ def _stale_feed_sentence(result: Retrieval, category: str | None = None) -> str:
     )
 
 
-def _date_runs(days: list[str]) -> str:
+def date_runs(days: list[str]) -> str:
     """Consecutive dates as ranges, everything else listed.
 
     A single first-to-last span is wrong the moment the missing days are not
@@ -871,7 +887,7 @@ def _partial_coverage_sentence(result: Retrieval, city: str) -> str:
         why = "No forecast is stored at all"
 
     return (
-        f"No weather is stored for {_date_runs(missing)} in {city}. {why}, so those days "
+        f"No weather is stored for {date_runs(missing)} in {city}. {why}, so those days "
         f"are left out rather than guessed. Refresh the snapshot while connected to extend it."
     )
 
@@ -1062,6 +1078,56 @@ def gap_block(brief: Brief, already_said: str = "") -> str:
     if not gaps:
         return ""
     return "Not on record: " + " ".join(g.text for g in gaps)
+
+
+def unstated_activity_gaps(brief: Brief, answer: str) -> str:
+    """The activity gaps the model was asked to state and did not name at all.
+
+    `gap_block` above leaves activity gaps out on purpose, and that division is
+    deliberate: `prompt_block` hands them to the model under "ASKED ABOUT BUT NOT
+    ON RECORD -- say this plainly", so the model is the one that words them, and
+    appending our own sentence as well would print the same thing twice in the
+    common case. The division held only as long as the model actually said it.
+
+    Where it stopped holding is a question that asked about something else too.
+    "What events are on tomorrow in Rome, and is it a good day for a bbq?" has an
+    obvious half and a quiet one; a 1.7B model answers the events and drops the
+    bbq, and nothing catches that. `violations` cannot: check 5 fires on a
+    verdict the rows do not carry, and omitting the activity asserts nothing at
+    all. So the traveller asked two things, was answered one, and no part of the
+    system said so.
+
+    The test is "does the answer name the activity", not "does it state the gap".
+    An answer that names it has either stated the gap or made a claim about it,
+    and a claim is check 5's business; an answer that never names it has left
+    half the question alone whatever else it got right. Matched by whole word on
+    the slug and on the catalogue label, with no length floor -- `activity_names`
+    drops spellings under five characters to keep check 10 off ordinary prose,
+    and that would drop `ski` and `bbq`, which are exactly the nouns this is for.
+
+    Mismatches are cheap in one direction only, so the direction is chosen: a
+    mention this fails to see costs a sentence printed twice, while a mention it
+    sees wrongly costs the traveller the gap. Hence whole words and nothing
+    looser.
+    """
+    # Imported here rather than at the top, like every other use of it in this
+    # file: `router` imports `grounding`, so the other direction has to be late.
+    from .router import activity_meta
+
+    meta = activity_meta()
+    unsaid = []
+    for gap in brief.gaps:
+        if not gap.subject.startswith("activity:"):
+            continue
+        key = gap.subject.removeprefix("activity:")
+        label = str((meta.get(key) or {}).get("label") or "")
+        spellings = {key.replace("_", " "), _LEADING_ARTICLE.sub("", label)}
+        if any(_says(answer.lower(), s) for s in spellings if s):
+            continue
+        unsaid.append(gap.text)
+    if not unsaid:
+        return ""
+    return "Also asked about: " + " ".join(unsaid)
 
 
 # ------------------------------------------------------- the plain answer --
@@ -1386,10 +1452,18 @@ def violations(answer: str, brief: Brief) -> list[str]:
             #    sentence -- that there is no record -- and a clause naming it
             #    beside the forecast is reasoning towards the verdict either
             #    way, whether or not it lands on a word.
+            #
+            #    A band name counts as the verdict word, and only here. The
+            #    sentence has already been shown to name an activity carrying no
+            #    score, so "kite surfing is fair" is not a looser signal than
+            #    "good for kite surfing" -- it is the same claim in the engine's
+            #    own vocabulary, and it is the one wording the list of phrasings
+            #    could never cover, because it argues nothing.
             for key in brief.unscored:
                 if not _says(sentence, key.replace("_", " ")):
                     continue
-                if verdict and not negated:
+                banded = any(_says(sentence, band) for band in BAND_WORDS)
+                if (verdict or banded) and not negated:
                     found.append(f"gives a verdict on {key}, which has no stored score")
                 if any(_says(sentence, word) for word in WEATHER_WORDS):
                     found.append(f"reasons from the weather about {key}, which has no stored score")

@@ -280,6 +280,68 @@ def score_defaults(cur: psycopg.Cursor, p: schemas.WeatherDaily) -> None:
         )
 
 
+# The three collected tables. Everything else is either derived (a
+# recommendation), replaced day by day (weather) or the user's own (an
+# itinerary), and migration 009 gave a `retracted_at` column to these three
+# alone. Declared here rather than beside `apply_retraction` below because
+# `upsert_by_id` is the first thing that needs it.
+RETRACTABLE = {"events", "places", "facts"}
+
+
+def apply_recorded_retraction(cur: psycopg.Cursor, table: str, row_id: str) -> None:
+    """Mark a row from the retraction ledger as the row is written (migration 010).
+
+    A `record.retract` can arrive before the record it names, and often does:
+    the curated list is applied on every boot against whatever the install has
+    ingested, `POST /records/.../retract` publishes from the API's own outbox
+    with no ordering relationship to the ingestor's, and a record that
+    dead-letters is stored only after an operator redrives it. Before the
+    ledger, such a withdrawal was spent the moment it committed -- its
+    `message_id` was in `ingest_log`, so no redelivery could ever reach the
+    handler again -- and the record appeared later, published, with nothing
+    left to withdraw it.
+
+    So the mark is derived from the ledger instead of only from the message.
+    Called from `upsert_by_id`, which is the one and only INSERT into `events`,
+    `places` and `facts` in this repository: put here rather than at the three
+    handler call sites so that the property holds by construction and not by
+    somebody remembering.
+
+    `retracted_at IS NULL` keeps this from touching a row that already carries
+    a withdrawal -- the ledger and the row can disagree on the wording while a
+    correction is in flight, and the row's own handler is what settles that.
+    """
+    if table not in RETRACTABLE:
+        return
+    # `retraction_reason` leads the SET list so this statement does not read as
+    # `UPDATE <table> SET retracted_at ...` like the other two writers of these
+    # columns. They are told apart by their text in more than one test, and a
+    # third statement that opens identically is a trap for the next reader.
+    cur.execute(
+        f"UPDATE {table} SET retraction_reason = r.retraction_reason,"
+        "   retracted_by = r.retracted_by, retracted_at = r.retracted_at"
+        " FROM record_retractions r"
+        " WHERE r.entity = %(entity)s AND r.entity_id = %(id)s"
+        f"   AND {table}.id = %(id)s AND {table}.retracted_at IS NULL",
+        {"entity": table, "id": row_id},
+    )
+    if cur.rowcount:
+        # Deliberately `info`, and deliberately not "before this install held
+        # it". Both halves used to be wrong. This fires on the designed path --
+        # the ledger is the durable half of the mechanism and the mark is
+        # derived from it -- and it fires once per withdrawn record on every
+        # `user_data.wipe`, where the row is one this install held and had
+        # marked seconds earlier, before the rebuild deleted it. A burst of
+        # warnings claiming the opposite is how a routine rebuild came to look
+        # like an incident. The wording below is true of both arrivals.
+        log.info(
+            "applied the recorded withdrawal of %s %s: the row was just written "
+            "and the ledger holds a decision for it",
+            table,
+            row_id,
+        )
+
+
 def upsert_by_id(
     cur: psycopg.Cursor,
     table: str,
@@ -313,6 +375,13 @@ def upsert_by_id(
         f" WHERE {guard}",
         payload,
     )
+    # A record that has just come into existence, or just been replaced by a
+    # newer version, may already have been withdrawn -- by a `record.retract`
+    # that arrived before it. Only reached when the statement above actually
+    # wrote: a replay the as-of guard rejected changed nothing, so there is
+    # nothing newly published to withdraw.
+    if cur.rowcount:
+        apply_recorded_retraction(cur, table, payload["id"])
 
 
 PLACE_COLS = [
@@ -363,14 +432,39 @@ EVENT_COLS = [
 def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationRequest) -> None:
     """A user asked for one activity by name (M2).
 
-    Three outcomes. An activity the catalogue carries is scored by its own
-    thresholds; anything else is scored against general outdoor comfort; and an
-    activity needing a coast, asked for a city that has none, is refused rather
-    than scored. Whatever is stored goes in `pending`, so the enricher words it
-    like any other row, except a refusal, which is terminal.
+    Four outcomes. An activity the catalogue carries is scored by its own
+    thresholds. An activity that needs a coast, asked for a city that has none,
+    is refused rather than scored. An activity the catalogue does not carry but
+    whose name says it happens in water is scored generically under the sea
+    ceiling. Anything else is scored against general outdoor comfort.
+
+    Whether a coast is needed is read from the catalogue when the catalogue has
+    the activity and from the name when it does not -- see `needs_coast` below.
+    Whatever is stored goes in `pending`, so the enricher words it like any
+    other row, except a refusal, which is terminal.
     """
     cfg = ACTIVITIES.get(p.activity)
-    if cfg is not None and cfg.get("requires_coast") and not COASTAL.get(p.city_id, False):
+    # Whether this activity needs a coast, asked of the catalogue when the
+    # catalogue holds the activity and of the slug's own words when it does not.
+    #
+    # The second half is the correction. `requires_coast` is a property of a row
+    # in data/activities.yml, so this test used to be `cfg is not None and ...`
+    # and every activity the catalogue does NOT carry fell past it -- including
+    # the ones most obviously decided by the water. "scuba diving" asked for
+    # London reached `rules.GENERIC_CFG`, which carries no `score_ceiling`, and
+    # a pleasant day on land stored scuba diving in London as `good`, 100/100,
+    # for a city with no coast on record. That is the same integrity breach the
+    # catalogue branch below was written to close, reached by a name the
+    # catalogue happens not to list.
+    #
+    # `rules.needs_coast` rather than `rules.names_water`, and the difference is
+    # not cosmetic: "does the water decide this?" is true of any open water and
+    # is what caps the score, while "does this need the SEA?" is what refuses the
+    # row. `wild swimming` is the first and not the second, and gating it on the
+    # first told a Londoner their city has no coast as the reason a pond cannot
+    # be scored.
+    needs_coast = cfg.get("requires_coast") if cfg is not None else rules.needs_coast(p.activity)
+    if needs_coast and not COASTAL.get(p.city_id, False):
         # The catalogue says this activity needs a coast and this city has none
         # on record, so there is nothing here to score it from. Storing no row
         # is not a new policy: it is the one the rest of the system already
@@ -429,14 +523,24 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
     # If the user named an activity the catalogue already knows, score it with
     # its own thresholds rather than the generic outdoor-comfort fallback --
     # and, if it is deferred for this day, this promotes it back to 'pending'
-    # so the model words the thing that was actually asked about. The coast
-    # case has already returned above, so `cfg is None` here means one thing
-    # only: an activity the catalogue does not carry, which is exactly what the
-    # generic fallback is for.
+    # so the model words the thing that was actually asked about.
+    #
+    # The coast case has already returned above, so reaching here with
+    # `cfg is None` and a watery name means one of two things: a sea activity in
+    # a city that HAS a coast, or an inland-water one anywhere. Both are scored
+    # against the same land rules as any other typed activity -- there are no
+    # others to apply -- under the ceiling the four catalogue sea activities
+    # carry, so neither can climb into the `good` band on the strength of a
+    # forecast that measures no water.
+    #
+    # `names_water`, not `needs_coast`: the ceiling follows the water, and
+    # `wild swimming` in London reaches here precisely because it needs no coast.
+    # Reading the narrower test here would have left it uncapped, which is the
+    # defect the ceiling was added for.
     if cfg is not None:
         result = rules.score_activity(p.activity, cfg, row)
     else:
-        result = rules.score_requested(p.activity_label, row)
+        result = rules.score_requested(p.activity_label, row, sea=rules.names_water(p.activity))
     cur.execute(
         """
         INSERT INTO recommendations (city_id, forecast_date, activity, activity_label,
@@ -651,15 +755,16 @@ def delete_itinerary(cur: psycopg.Cursor, p: schemas.ItineraryDelete) -> None:
 HANDLERS[config.RK_ITINERARY_DELETE] = delete_itinerary
 
 
-RETRACTABLE = {"events", "places", "facts"}
-
-
-def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
+def apply_retraction(
+    cur: psycopg.Cursor, p: schemas.RecordRetraction, *, replay: bool = False
+) -> None:
     """Withdraw one collected record from the published output (migration 009).
 
-    An UPDATE, not a DELETE: the writer holds no DELETE grant on these tables
-    and is not being given one. The row keeps its source, its as-of and its
-    history, and the `_bump`/`_hist` triggers file the withdrawal as an
+    An UPDATE, not a DELETE, and nothing here widens what the writer may delete.
+    (It does hold a table-wide DELETE on `events`, which `enforce_event_mode()`
+    needs for the sample purge and which its own `WHERE is_sample` confines; it
+    holds none on `places` or `facts`.) The row keeps its source, its as-of and
+    its history, and the `_bump`/`_hist` triggers file the withdrawal as an
     ordinary revision, so `record_history` shows exactly when it happened.
 
     The decision date is never moved. `COALESCE` keeps the first
@@ -675,9 +780,60 @@ def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
     nothing rather than dead-letter the message. It is logged at warning
     because the other way to reach it is a typo in the curated list, and that
     should not be invisible.
+
+    But "does nothing" used to mean "is lost". The decision is now written to
+    `record_retractions` first, and unconditionally, so it outlives this
+    delivery: `message_id` goes into `ingest_log` in the same transaction and
+    no redelivery will ever reach this handler again, which made an early
+    retraction a silent republish once its target finally arrived. The ledger
+    is the durable half of the mechanism and the mark on the row is derived
+    from it -- see migration 010 and `apply_recorded_retraction`.
+
+    `replay=True` is the rebuild, and it is a different thing from a delivery.
+    `wipe_user_data` re-plays every collected envelope the ingestor ever
+    accepted, which includes retractions that have since been CORRECTED through
+    `POST /records/.../retract`. An api correction is excluded from the replay
+    set (`source <> 'api'`), so replaying the older curated envelope as though
+    it were news overwrote the corrected reason and author in both the ledger
+    and the row, silently reverting a deliberate operator decision to wording
+    that had already been withdrawn. A rebuild must restore state, never revise
+    it, so on that path the ledger is written only where it has no entry at all
+    and the row is marked FROM the ledger rather than from the envelope.
     """
     if p.entity not in RETRACTABLE:
         raise Poison(f"cannot retract {p.entity}: only {sorted(RETRACTABLE)} are collected records")
+    # The ledger first, because it is the half that has to survive. On a
+    # delivery the conflict clause mirrors the row's exactly: `retracted_at` is
+    # absent from the SET list, so the first decision date stands however often
+    # this is replayed, and the reason and the author can still be corrected. On
+    # a rebuild nothing is corrected -- see `replay` in the docstring.
+    conflict = (
+        " ON CONFLICT (entity, entity_id) DO NOTHING"
+        if replay
+        else " ON CONFLICT (entity, entity_id) DO UPDATE SET"
+        "   retraction_reason = EXCLUDED.retraction_reason,"
+        "   retracted_by = EXCLUDED.retracted_by"
+    )
+    cur.execute(
+        "INSERT INTO record_retractions"
+        " (entity, entity_id, retracted_at, retraction_reason, retracted_by)"
+        " VALUES (%(entity)s, %(id)s, %(at)s, %(reason)s, %(by)s)" + conflict,
+        {
+            "entity": p.entity,
+            "id": p.entity_id,
+            "at": p.retracted_at,
+            "reason": p.reason,
+            "by": p.retracted_by,
+        },
+    )
+    if replay:
+        # The row is marked from whatever the ledger now holds, which is the
+        # corrected decision if there is one and this envelope's if there is
+        # not. Pass 1 of the rebuild has usually done this already; this covers
+        # a record that is in the table without having come through
+        # `upsert_by_id` on this rebuild.
+        apply_recorded_retraction(cur, p.entity, p.entity_id)
+        return
     cur.execute(
         f"UPDATE {p.entity} SET retracted_at = COALESCE(retracted_at, %(at)s),"
         " retraction_reason = %(reason)s, retracted_by = %(by)s"
@@ -689,9 +845,18 @@ def apply_retraction(cur: psycopg.Cursor, p: schemas.RecordRetraction) -> None:
     if cur.rowcount:
         log.info("retracted %s %s: %s", p.entity, p.entity_id, p.reason)
     else:
+        # Three ways to get here and the message has to be true of all of them:
+        # this install holds no such row, or it holds one already withdrawn for
+        # exactly this reason and author, or the row is marked with a CORRECTED
+        # reason that this older envelope must not overwrite. The previous
+        # wording promised the decision "will be applied if the record arrives",
+        # which is false in the second and third cases -- the record is here and
+        # is already withdrawn.
         log.warning(
-            "retraction for %s %s changed nothing: no such row, or already "
-            "withdrawn for the same reason",
+            "retraction for %s %s marked no row: either this install holds no "
+            "such record, or the row already carries this withdrawal. The "
+            "decision is in record_retractions either way, and is applied to "
+            "the row whenever the record is written",
             p.entity,
             p.entity_id,
         )
@@ -761,6 +926,14 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
     # would be the same F9 defect this mechanism exists to close, arriving by
     # a different route. Captured before the delete, re-applied after the
     # replay, so the origin of a retraction stops mattering.
+    #
+    # Since migration 010 the ledger covers this too, and covers it earlier:
+    # pass 1 re-marks each row from `record_retractions` as it re-inserts it.
+    # This is kept anyway, and is not redundant. The ledger requires a reason,
+    # so a row marked in the database by hand without one is neither backfilled
+    # into it nor re-marked from it, and this is the only thing that carries
+    # such a row across. It does mean the count logged below is now what the
+    # ledger had not already covered, which is the honest reading of "restored".
     held = {
         entity: cur.execute(
             f"SELECT id, retracted_at, retraction_reason, retracted_by FROM {entity}"
@@ -785,8 +958,11 @@ def wipe_user_data(cur: psycopg.Cursor, _request: schemas.UserDataWipe) -> None:
         else:
             HANDLERS[routing_key](cur, payload)
 
-    for routing_key, payload in retractions:
-        HANDLERS[routing_key](cur, payload)
+    for _routing_key, payload in retractions:
+        # `apply_retraction` directly rather than through `HANDLERS`, because
+        # this pass needs `replay=True`: a rebuild restores the decisions this
+        # install already holds and must not revise one. See the handler.
+        apply_retraction(cur, payload, replay=True)
 
     restored = 0
     for entity, rows in held.items():
