@@ -454,8 +454,9 @@ images use dash/busybox, which has no `/dev/tcp`, so the control container
 
 ### 5.3 The example questions, offline
 
-`verify-examples.sh` re-run with the network still cut: **all checks passed**.
-E1, E2 and the out-of-coverage control all behaved exactly as in §6, with
+The §6 checks re-run with the network still cut — the same three
+`POST /agent/ask` calls, made with `curl` exactly as shown there: **all checks
+passed**. E1, E2 and the out-of-coverage control all behaved as in §6, with
 `llm_called: true` on both examples. The local model answered with no network.
 
 ### 5.4 The demo suite, offline
@@ -1123,7 +1124,7 @@ container, which is where the repository intends them to run.
 
 ## 10. For the integrator: README changes this branch implies
 
-This branch deliberately does not touch `README.md` or `DEVOPS_REVIEW.md`.
+This branch deliberately does not touch `README.md`.
 Four things in the README are now either inaccurate or incomplete because of
 what is in §7. They are listed smallest-blast-radius first.
 
@@ -1261,8 +1262,8 @@ Recorded so that nothing here is read as more than it is.
    E1's "tomorrow" will be correctly refused as out of coverage, and
    `demos questions` will fail — a true negative that looks like a regression.
    `make refresh`, which needs connectivity, is the fix.
-9. **`README.md` and `DEVOPS_REVIEW.md` were deliberately not touched**, so the
-   inaccuracies in §10 are still in the tree.
+9. **`README.md` was deliberately not touched**, so the inaccuracies in §10 are
+   still in the tree.
 
 ### Reproducing this
 
