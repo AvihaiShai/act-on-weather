@@ -575,14 +575,19 @@ absent egress (§3.4, §4). Either way the last command in the block below abort
 at the wrapper, on an unplugged machine, with no way to debug it there.
 
 **A bundle re-staged from `fb2a1e4` or later is a prerequisite for this
-procedure.** A verified bundle for `f70c28d` exists **on the development machine
-only**; its out-of-band anchor `sha256(SHA256SUMS)` is
-`923ebaac3ef445aa25c40cbf93961c1a1cb68bc5ca57a203e232ec90281887b3`. It has
-**not** been copied to the stick or to any other removable medium, so the
-transfer hop (§3.5.2) has not been exercised for it. Steps 6.1–6.3 and the
-verify and install commands below are unaffected; only `prove-offline.sh` is
-blocked, and until a post-`fb2a1e4` bundle is on the medium the drill cannot
-produce rows 15 and 16 of §7.
+procedure, and one for the current lineage is still owed.** Earlier drafts of
+this section named a verified `f70c28d` bundle and its out-of-band anchor here.
+That is withdrawn: `f70c28d` has since been retired for distribution, so quoting
+its anchor as the artifact to carry would point an operator at a bundle that
+must not be installed. **No bundle for the current lineage has been built yet**,
+and this paragraph is where its commit and its `sha256(SHA256SUMS)` anchor go
+once one has been packaged and both verifiers have passed on it. Whatever
+bundle fills it, the transfer hop (§3.5.2) is exercised only when it reaches the
+medium — nothing has been copied to the stick or to any other removable medium
+for any post-`fb2a1e4` commit. Steps 6.1–6.3 and the verify and install commands
+below are unaffected; only `prove-offline.sh` is blocked, and until a
+post-`fb2a1e4` bundle is on the medium the drill cannot produce rows 15 and 16
+of §7.
 
 **Evidence goes outside the bundle, and never through a pipe.** Both rules are
 corrections of an earlier draft of this procedure:
