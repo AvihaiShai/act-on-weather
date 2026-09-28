@@ -161,7 +161,7 @@ def ask(body: AskIn) -> dict[str, Any]:
         return respond(result, f"{base} {missing}".strip(), llm_called=False)
 
     # `unknown_activities` reaches the code-rendered route only when the question
-    # is ABOUT the activity and about nothing else. Two exclusions, both found by
+    # is ABOUT the activity and about nothing else. Three exclusions, all found by
     # asking the questions rather than by reading the branch:
     #
     #   `asks_where` -- "where can I go kite surfing in Tel Aviv?" asks for a
@@ -176,12 +176,31 @@ def ask(body: AskIn) -> dict[str, Any]:
     #   only that stargazing is not on record. The model still answers that one,
     #   with the gap in its brief and grounding check 5 armed on the noun.
     #
-    # A resolved activity is unaffected: `named_activity_answer` has always
-    # rendered those, and it renders them from their own rows.
+    #   `other_subjects` -- the same defect one intent further out, and the one
+    #   the two above did not cover. `named_activity_answer` does not touch
+    #   `result.events`, `result.places` or `result.facts` either, so "what events
+    #   are on tomorrow in Rome, and is it a good day for a bbq?" answered the
+    #   bbq and dropped the event -- while `rows_used` went on reporting the row
+    #   it had thrown away. `categories` is in the test as well as the intents,
+    #   because an interest word reaches the places query on its own:
+    #   `Router.retrieve` reads `"places" in intents or resolution.categories`.
+    #
+    # A resolved activity is unaffected, and deliberately so: `named_activity_answer`
+    # has always rendered those from their own rows, and it is the only thing
+    # standing between a reviewer and a 1.7B model summarising seven `fair` days
+    # as a good week. A mixed question naming a CATALOGUE activity still loses its
+    # events the same way, which is behaviour this branch inherited rather than
+    # introduced; it is recorded in the README's known limitations rather than
+    # changed here, because widening this route is a different argument from
+    # closing the regression above.
+    other_subjects = bool({"events", "places", "facts"} & set(result.resolution.intents)) or bool(
+        result.resolution.categories
+    )
     answer_in_code = bool(result.resolution.activities) or (
         bool(result.resolution.unknown_activities)
         and not result.resolution.asks_where
         and not result.resolution.weather_asked
+        and not other_subjects
     )
     if answer_in_code:
         # The small CPU model repeatedly turns seven "fair" daily scores into
@@ -257,8 +276,24 @@ def ask(body: AskIn) -> dict[str, Any]:
     # Gaps are appended in code, after the model, for the same reason the as-of
     # footer is: a sentence the model cannot reword is the only kind that is
     # guaranteed to survive.
-    missing = grounding.gap_block(brief, answer)
-    return respond(result, f"{answer}\n\n{missing}" if missing else answer, llm_called=True)
+    #
+    # Activity gaps are the second block and not part of the first, because they
+    # are only appended when the model left the activity out altogether -- the
+    # prompt asks it to say these itself and it usually does, and printing both
+    # would read as a stutter. `grounding.unstated_activity_gaps` is where that
+    # judgement lives. Without it, the route the fix above sends a mixed question
+    # down answers the events and says nothing whatever about the activity: the
+    # rows would survive and half the question still would not be answered.
+    blocks = [answer]
+    blocks.extend(
+        block
+        for block in (
+            grounding.gap_block(brief, answer),
+            grounding.unstated_activity_gaps(brief, answer),
+        )
+        if block
+    )
+    return respond(result, "\n\n".join(blocks), llm_called=True)
 
 
 def plain_answer(result: Retrieval) -> str:
@@ -302,9 +337,15 @@ def unscored_line(result: Retrieval, activity: str) -> str:
     (`services/consumer/main.py`, `needs_coast`). Without the second side,
     "scuba diving in London" was told only that no score was on record, while
     "surfing in London" was told the reason.
+
+    `rules.needs_coast`, which is narrower than `rules.names_water`: this
+    sentence is the one place the coast claim is made to a reader, so it has to
+    be the claim that is true. "wild swimming" names water and needs no sea, and
+    saying "London has no coast on record" under it would be offering a fact as
+    the cause of something it did not cause.
     """
     cfg = _activity_meta().get(activity) or {}
-    needs_coast = cfg.get("requires_coast") if cfg else rules.names_water(activity)
+    needs_coast = cfg.get("requires_coast") if cfg else rules.needs_coast(activity)
     reason = ""
     if needs_coast and not result.resolution.city.get("coastal"):
         reason = f"; {result.resolution.city['name']} has no coast on record"

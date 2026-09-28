@@ -12,10 +12,14 @@
 #                    agent's router matches on them so it can tell when a
 #                    question asks about an activity it holds no row for,
 #                    and say so instead of letting the model improvise one.
-#                    They are also slugified into `Router.keyword_slugs`, which
-#                    is what keeps a multi-word keyword ("a long walk") from
-#                    being read as a name of its own -- so editing one changes
-#                    how a longer name containing it resolves.
+#                    `Router._shadows_a_keyword` tests the raw phrase text, not
+#                    a slug: a keyword sitting inside a longer phrase as a whole
+#                    word admits that phrase to the shadowing probe, while a
+#                    phrase that IS a keyword -- including a multi-word one like
+#                    "a long walk" -- fails its `word != phrase` test and never
+#                    reaches the probe at all. `shadowing_activities` then skips
+#                    a phrase whose own slug is a key in this file. So editing a
+#                    keyword changes how a longer name containing it resolves.
 #   indoor           true -> scored as the inverse of outdoor comfort
 #   interests        which data/interests.yml keys this activity serves. The
 #                    trip planner uses it to weight the day's pick towards

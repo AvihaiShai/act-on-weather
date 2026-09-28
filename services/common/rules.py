@@ -307,6 +307,52 @@ def names_water(slug: str) -> bool:
     return bool(SEA_WORDS & words)
 
 
+# Words that say the water is not the sea. They deliberately do NOT take a name
+# out of `names_water`: the quality of these activities is still a property of
+# water nothing here measures, so they keep the 69 ceiling and the caveat that
+# explains it. What they take away is the COAST requirement, which is a
+# different claim and is the one that was being made falsely.
+#
+# Both entries came from `distinct_names` in data/activities.yml, which is where
+# the collision was found:
+#
+#   wild swimming   swimming in natural water. In Britain that is usually a
+#                   river, a lake or a pond -- London has several and no coast.
+#   ice swimming    swimming in water cold enough to carry ice, which is a lake
+#                   as often as a shore.
+#
+# Before the split, `swimming` coast-gated both: a request for "wild swimming"
+# in London stored no row at all, and the agent gave the reason as "London has
+# no coast on record" -- a true sentence offered as the cause of something it
+# did not cause. That is the same fabricated causal claim `NOT_WATER_WORDS`
+# exists to prevent, and it is the worse half of it, because a refusal withholds
+# the row as well as explaining it wrongly.
+#
+# Not exhaustive, and it fails in the safe direction: a name that belongs here
+# and is missing is still coast-gated, which withholds a row rather than
+# inventing a score for one.
+INLAND_WATER_WORDS: frozenset[str] = frozenset("wild ice".split())
+
+
+def needs_coast(slug: str) -> bool:
+    """Whether a typed activity cannot be scored for a city with no coast.
+
+    Narrower than `names_water`, and the two were one test until the difference
+    bit. "Does the water decide how good this is?" governs the score ceiling and
+    is true of any open water. "Does this need the sea?" governs whether a row
+    is stored at all -- and a false yes there is not a cautious number, it is a
+    refusal whose stated reason is untrue.
+
+    Only the typed case. A catalogue activity carries `requires_coast` on its own
+    row and both callers read that first; this is what they fall back to when the
+    catalogue has never heard of the name.
+    """
+    words = set(slug.split("_"))
+    if words & INLAND_WATER_WORDS:
+        return False
+    return names_water(slug)
+
+
 # The generic measure for a typed activity that names water, in a city that has
 # a coast. Same land rules -- there are no others to apply -- plus the ceiling
 # and the flag that makes `_apply_ceiling` say which ceiling it is and why. 69
@@ -323,9 +369,10 @@ def score_requested(activity_label: str, weather: dict[str, Any], *, sea: bool =
 
     `sea` is set by the caller when the slug names water (`names_water`), and it
     swaps in the capped configuration. The caller decides rather than this
-    function, because the same test also governs whether a row is stored at all
-    for an inland city -- and that decision is taken before the forecast is even
-    read, since no weather can supply a coast.
+    function, because the caller is also the only place that knows the city --
+    and the sibling question, "does this need a coast at all?" (`needs_coast`),
+    is answered before the forecast is even read, since no weather can supply
+    one.
     """
     result = score_activity(activity_label, GENERIC_SEA_CFG if sea else GENERIC_CFG, weather)
     result.reasons.append(

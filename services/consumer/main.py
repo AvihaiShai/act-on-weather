@@ -456,7 +456,14 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
     # for a city with no coast on record. That is the same integrity breach the
     # catalogue branch below was written to close, reached by a name the
     # catalogue happens not to list.
-    needs_coast = cfg.get("requires_coast") if cfg is not None else rules.names_water(p.activity)
+    #
+    # `rules.needs_coast` rather than `rules.names_water`, and the difference is
+    # not cosmetic: "does the water decide this?" is true of any open water and
+    # is what caps the score, while "does this need the SEA?" is what refuses the
+    # row. `wild swimming` is the first and not the second, and gating it on the
+    # first told a Londoner their city has no coast as the reason a pond cannot
+    # be scored.
+    needs_coast = cfg.get("requires_coast") if cfg is not None else rules.needs_coast(p.activity)
     if needs_coast and not COASTAL.get(p.city_id, False):
         # The catalogue says this activity needs a coast and this city has none
         # on record, so there is nothing here to score it from. Storing no row
@@ -519,15 +526,21 @@ def store_recommendation_request(cur: psycopg.Cursor, p: schemas.RecommendationR
     # so the model words the thing that was actually asked about.
     #
     # The coast case has already returned above, so reaching here with
-    # `cfg is None` and `needs_coast` true means one thing: a typed water
-    # activity in a city that HAS a coast. It is scored against the same land
-    # rules as any other typed activity -- there are no others to apply -- under
-    # the ceiling the four catalogue sea activities carry, so it cannot climb
-    # into the `good` band on the strength of a forecast that measures no water.
+    # `cfg is None` and a watery name means one of two things: a sea activity in
+    # a city that HAS a coast, or an inland-water one anywhere. Both are scored
+    # against the same land rules as any other typed activity -- there are no
+    # others to apply -- under the ceiling the four catalogue sea activities
+    # carry, so neither can climb into the `good` band on the strength of a
+    # forecast that measures no water.
+    #
+    # `names_water`, not `needs_coast`: the ceiling follows the water, and
+    # `wild swimming` in London reaches here precisely because it needs no coast.
+    # Reading the narrower test here would have left it uncapped, which is the
+    # defect the ceiling was added for.
     if cfg is not None:
         result = rules.score_activity(p.activity, cfg, row)
     else:
-        result = rules.score_requested(p.activity_label, row, sea=needs_coast)
+        result = rules.score_requested(p.activity_label, row, sea=rules.names_water(p.activity))
     cur.execute(
         """
         INSERT INTO recommendations (city_id, forecast_date, activity, activity_label,

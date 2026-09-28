@@ -499,12 +499,14 @@ jobs:
   #
   # Added because nothing automatic exercised it. Migration 010's schema was
   # applied on every CI boot, but only ever with an EMPTY ledger --
-  # `data/retractions.jsonl` is zero bytes, no CI step withdrew anything, and the
-  # three `tests/integration/retraction_*.py` files were collected by nothing:
-  # `pytest.ini` has `testpaths = tests/unit` and they are not named `test_*.py`,
-  # and `scripts/ci-integration.sh` never referenced them. What stood behind the
-  # feature was a set of unit tests that read the SQL as source text plus an
-  # operator drill nobody had run.
+  # `data/retractions.jsonl` is zero bytes and no CI step withdrew anything. The
+  # one retraction file that existed before this branch,
+  # `tests/integration/retraction.py`, was run by nothing: `pytest.ini` has
+  # `testpaths = tests/unit`, the file is not named `test_*.py`, and
+  # `scripts/ci-integration.sh` never referenced it. The three
+  # `retraction_*.py` phase files this job drives arrived with the job itself.
+  # What stood behind the feature was a set of unit tests that read the SQL as
+  # source text plus an operator drill nobody had run.
   #
   # Its own job rather than a step inside `build-and-scan`, and its own Compose
   # project, because these drills are destructive in a direction nothing undoes:

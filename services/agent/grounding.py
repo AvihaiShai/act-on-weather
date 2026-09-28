@@ -1064,6 +1064,56 @@ def gap_block(brief: Brief, already_said: str = "") -> str:
     return "Not on record: " + " ".join(g.text for g in gaps)
 
 
+def unstated_activity_gaps(brief: Brief, answer: str) -> str:
+    """The activity gaps the model was asked to state and did not name at all.
+
+    `gap_block` above leaves activity gaps out on purpose, and that division is
+    deliberate: `prompt_block` hands them to the model under "ASKED ABOUT BUT NOT
+    ON RECORD -- say this plainly", so the model is the one that words them, and
+    appending our own sentence as well would print the same thing twice in the
+    common case. The division held only as long as the model actually said it.
+
+    Where it stopped holding is a question that asked about something else too.
+    "What events are on tomorrow in Rome, and is it a good day for a bbq?" has an
+    obvious half and a quiet one; a 1.7B model answers the events and drops the
+    bbq, and nothing catches that. `violations` cannot: check 5 fires on a
+    verdict the rows do not carry, and omitting the activity asserts nothing at
+    all. So the traveller asked two things, was answered one, and no part of the
+    system said so.
+
+    The test is "does the answer name the activity", not "does it state the gap".
+    An answer that names it has either stated the gap or made a claim about it,
+    and a claim is check 5's business; an answer that never names it has left
+    half the question alone whatever else it got right. Matched by whole word on
+    the slug and on the catalogue label, with no length floor -- `activity_names`
+    drops spellings under five characters to keep check 10 off ordinary prose,
+    and that would drop `ski` and `bbq`, which are exactly the nouns this is for.
+
+    Mismatches are cheap in one direction only, so the direction is chosen: a
+    mention this fails to see costs a sentence printed twice, while a mention it
+    sees wrongly costs the traveller the gap. Hence whole words and nothing
+    looser.
+    """
+    # Imported here rather than at the top, like every other use of it in this
+    # file: `router` imports `grounding`, so the other direction has to be late.
+    from .router import activity_meta
+
+    meta = activity_meta()
+    unsaid = []
+    for gap in brief.gaps:
+        if not gap.subject.startswith("activity:"):
+            continue
+        key = gap.subject.removeprefix("activity:")
+        label = str((meta.get(key) or {}).get("label") or "")
+        spellings = {key.replace("_", " "), _LEADING_ARTICLE.sub("", label)}
+        if any(_says(answer.lower(), s) for s in spellings if s):
+            continue
+        unsaid.append(gap.text)
+    if not unsaid:
+        return ""
+    return "Also asked about: " + " ".join(unsaid)
+
+
 # ------------------------------------------------------- the plain answer --
 
 
