@@ -197,7 +197,14 @@ def test_asking_again_restamps_the_version_of_the_engine_that_just_scored_it():
 # Found by reading the source, not by running it: this case was never POSTed to
 # the live demo, and nothing in this file touches a database.
 
-TYPED_SEA = ["scuba_diving", "snorkelling", "kite_surfing", "wild_swimming", "sea_kayaking"]
+# Every name here has to answer YES to both questions the split in
+# `rules.needs_coast` separated: does the water decide how good this is, and does
+# it need the SEA. `wild_swimming` was on this list and answers only the first --
+# swimming in a river, a lake or a Hampstead pond needs no coast, and refusing
+# the row "because London has no coast on record" offered a true fact as the
+# cause of something it did not cause. It moved to
+# tests/unit/test_inland_water.py, which asserts the other side of the split.
+TYPED_SEA = ["scuba_diving", "snorkelling", "kite_surfing", "sea_kayaking"]
 
 
 def test_none_of_the_typed_sea_activities_is_in_the_catalogue():
@@ -206,10 +213,14 @@ def test_none_of_the_typed_sea_activities_is_in_the_catalogue():
     every test below would be passing for the wrong reason."""
     for activity in TYPED_SEA:
         assert activity not in consumer.ACTIVITIES, activity
-    # And the word test really does fire on them, while a land activity the
-    # catalogue also lacks is untouched by it.
+    # And both word tests really do fire on them, while a land activity the
+    # catalogue also lacks is untouched by either. `needs_coast` is asserted as
+    # well as `names_water` because the two stopped being one test: a name that
+    # names water without needing the sea belongs in test_inland_water.py, and
+    # leaving it here would assert a refusal this file cannot justify.
     for activity in TYPED_SEA:
         assert consumer.rules.names_water(activity), activity
+        assert consumer.rules.needs_coast(activity), activity
     assert not consumer.rules.names_water("kite_flying")
     assert not consumer.rules.names_water("rock_climbing")
 
@@ -249,6 +260,31 @@ def test_the_typed_decision_does_not_depend_on_a_forecast_being_stored(activity)
     )
 
     assert cursor.statements == []
+
+
+def test_a_typed_water_activity_that_needs_no_sea_is_stored_for_the_inland_city():
+    """The other side of the split, asserted where the refusal is actually taken.
+
+    tests/unit/test_inland_water.py holds `rules.needs_coast` to the catalogue's
+    `distinct_names`, but the decision that costs a traveller a row is this
+    handler's, and nothing asserted it there. So: London, no coast, and a row is
+    stored anyway -- under the same 69 ceiling with the same caveat, because the
+    ceiling follows `names_water` and the water here is no better measured than
+    the sea is.
+    """
+    cursor = Cursor()
+    consumer.store_recommendation_request(
+        cursor, request("london", "wild_swimming", "wild swimming")
+    )
+
+    assert "INSERT INTO recommendations" in cursor.statements[-1]
+    score, band, reasons = cursor.params[-1][4], cursor.params[-1][5], cursor.params[-1][6]
+    assert score == 69, f"wild swimming in London scored {score}"
+    assert band != "good"
+    assert "waves" in reasons
+    # The refusal sentence names the coast, so it must not appear for a name that
+    # the coast has nothing to do with.
+    assert "coast" not in reasons
 
 
 @pytest.mark.parametrize("activity", TYPED_SEA)
