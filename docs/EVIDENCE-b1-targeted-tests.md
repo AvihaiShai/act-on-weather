@@ -494,11 +494,11 @@ not a list of what is safe.
 
 ## 7. README: applied
 
-`CLAUDE.md` requires that a behaviour change update `README.md` in the same
-change. This branch initially did not, deliberately: `README.md` was held out of
-its scope while another session rewrote it, and editing it in parallel would have
-produced a conflict in the one file `DEVOPS_REVIEW.md` records as having already
-cost work once.
+This repository's convention is that a behaviour change updates `README.md` in
+the same change, because the README is the submission. This branch initially did
+not, deliberately: `README.md` was held out of its scope while another session
+rewrote it, and editing it in parallel would have risked a conflict in the one
+file where a parallel edit had already cost another session's work once.
 
 That rewrite has landed — PR #51, merged as `6664454`, replacing the ~1900-line
 README with 680 lines — and **the wording is now applied**, against the rewritten
