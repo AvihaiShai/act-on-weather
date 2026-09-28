@@ -528,6 +528,41 @@ def named_activity_answer(result: Retrieval) -> str:
     is. Before that, the noun resolved to nothing, the retrieval was never
     narrowed, and the model was handed one row per catalogue activity to pick a
     number from.
+
+    DECIDED, AND THE ANSWER IS NO: the enricher's stored wording is not printed
+    here. `queries.recommendations` already selects `r.text` -- the sentence the
+    local model wrote about this exact row -- so rendering it would be one line,
+    and the argument for it is real: this is the question a reviewer is most
+    likely to ask, it is the one route that never calls the model, and a
+    reviewer who only asks activity questions never sees the model's prose
+    through the agent at all.
+
+    It is still no, for two reasons that do not cancel out.
+
+    First, what that column has been checked against. `enricher.validate_text`
+    runs `grounding.schedule_claims` and nothing else -- shape, length, and the
+    one claim a suitability row can never support -- because the enricher holds
+    no retrieved rows to check anything wider against. `grounding.violations`,
+    which every other piece of model prose the agent prints must survive, has
+    never run on it. Printing it here would put the least-checked model output
+    in the system into the most-scrutinised answer in the system, and it would
+    arrive below a heading that says these are stored suitability figures.
+
+    Second, what this route is for. It exists because the model answered "it is
+    a good day to ski in Reykjavik" with no ski row anywhere, three times out of
+    three, and because a 1.7B model summarises seven `fair` days as a good week.
+    Both failures are verdicts in prose beside correct numbers, which is exactly
+    the shape `text` has.
+
+    The wording is not hidden, either. The UI's Suitability page prints it in
+    full, per row and with the model that wrote it, and the trip planner carries
+    it into each day (`planning.grounded_why`, which re-runs `schedule_claims` and
+    falls back to the rule engine's own reasons if it fails). So the demand
+    behind this is met by looking there, rather than by weakening the one route
+    that renders only what the rule engine decided. The model is still reached
+    from the agent by every question that is not solely about a named activity:
+    weather, events, places, background and mixed questions all call
+    `client.chat_json`.
     """
     city = result.resolution.city["name"]
     # The heading has to be true of what follows it. With no row at all, every
