@@ -41,6 +41,24 @@ review-*.png
 DEVOPS_REVIEW.md
 REVIEW_PLAN.md
 
+# The dress-rehearsal prompts and their report, same block and same reason. They
+# were untracked and stageable until 2026-09-28, when they moved to .private/;
+# `git check-ignore` matched none of them, so nothing but care stopped a
+# `git add -A` from committing them -- and `git archive HEAD` would then have
+# shipped an internal hiring-review corpus in every bundle after. Anchored and
+# unanchored, because the report sat under docs/ and the prompts at the root.
+# No rule for docs/rehearsal-review/ on purpose. Until this commit two files
+# under it were tracked, and .gitignore does not untrack anything, so a pattern
+# there would have shadowed a tracked path -- a trap rather than a backstop. Both
+# moved to .private/ here, so the directory is now empty of tracked files; the
+# rule is still not worth adding, because the only way one appears under it again
+# is somebody deciding to put it there.
+/HIRING_MANAGER_DRESS_REHEARSAL_PROMPT.md
+/HIRING_MANAGER_NEXT_OPUS_BATCH.md
+HIRING_MANAGER_DRESS_REHEARSAL_PROMPT.md
+HIRING_MANAGER_NEXT_OPUS_BATCH.md
+HIRING_MANAGER_DRESS_REHEARSAL_REPORT.md
+
 # Operational backups (scripts/backup-state.sh, demos/06_backup_restore.sh).
 # Real database and outbox contents, written beside the stack. Never committed.
 backups/
