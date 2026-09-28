@@ -1149,10 +1149,25 @@ def footer(result: Retrieval) -> str:
     # Gated on the answer actually being about a date range. "Where can I surf
     # in Tel Aviv?" names no date and needs none, and telling its reader which
     # week the answer assumed would invent a scope the answer never had.
+    #
+    # The zone is on the same line and under the same gate, because it answers
+    # the other half of the same question. `dates.today_in` resolves "tomorrow"
+    # in the CITY's zone, which is right and was invisible: asked late on the
+    # 28th from a machine in London about Tel Aviv, the answer named a date the
+    # reader could not reconcile with their own calendar, and "which day did you
+    # mean?" is the follow-up that costs the most to answer afterwards. A range
+    # the questioner wrote out in full is `relative=False` and gets nothing --
+    # 2026-10-05 is 2026-10-05 in every zone, and naming one would imply a
+    # conversion that never happened.
     window = result.resolution.window
     dated = used_weather or result.events or "events" in result.resolution.intents
     if dated and window is not None and "assumed" in window.label:
-        parts.append(f"no dates in the question, so this covers {window}")
+        parts.append(f"no dates in the question, so this covers {window} in {window.timezone}")
+    elif dated and window is not None and window.relative:
+        # "means" rather than "is", because the label is not always a singular
+        # noun: "the next 3 days is ..." is the one phrasing this line can
+        # produce that reads like a bug.
+        parts.append(f"{window.label} means {window} in {window.timezone}")
     as_of = coverage.get("weather_as_of")
     if used_weather and as_of:
         parts.append(

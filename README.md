@@ -52,6 +52,18 @@ every stored expiry. It is deliberately not patchable on its own. Every answer
 and every chart carries its as-of stamp, and a question past the window is
 refused rather than guessed.
 
+**"Tomorrow" means tomorrow in the city, and the answer says which.** A relative
+date is resolved in the city's own zone — `Asia/Jerusalem` for Tel Aviv,
+`Atlantic/Reykjavik` for Reykjavík — and not in the zone of the machine running
+the stack, so asking about Tel Aviv from London late in the evening gives Tel
+Aviv's tomorrow rather than London's. That was always true and was unstated,
+which left the reader nothing to check the date against; the footer now names
+both, as `tomorrow means 2026-09-29 in Asia/Jerusalem`, on the same line as the
+"no dates in the question, so this covers …" note when the range was assumed. A
+date written out in full carries no zone, because none was used: `2026-10-05` is
+`2026-10-05` everywhere, and naming one would imply a conversion that never
+happened.
+
 A question that only *partly* reaches past the window — the ordinary case a few
 days after the snapshot was taken — is answered for the days that have rows and
 names the days that do not, rather than being refused whole or quietly
