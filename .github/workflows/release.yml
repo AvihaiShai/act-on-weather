@@ -137,6 +137,7 @@ jobs:
       # Nothing here re-publishes images: this only reads what that run
       # already produced.
       - name: Find the ci.yml run that tested this commit
+        id: find_ci_run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -155,8 +156,8 @@ jobs:
             echo "::error::ci.yml run $run_id for commit $sha concluded '$conclusion', not 'success'."
             exit 1
           fi
-          echo "ci_run_id=$run_id" >> "$GITHUB_ENV"
-          echo "ci_run_url=$run_url" >> "$GITHUB_ENV"
+          echo "ci_run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "ci_run_url=$run_url" >> "$GITHUB_OUTPUT"
           echo "green CI run for $sha: $run_url"
 
       # Live read, not an assertion. A promotion record is the one place a
@@ -202,7 +203,7 @@ jobs:
         with:
           name: aow-images-${{ inputs.sha }}
           path: release
-          run-id: ${{ env.ci_run_id }}
+          run-id: ${{ steps.find_ci_run.outputs.ci_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate images.lock shape and commit
@@ -415,8 +416,8 @@ jobs:
         env:
           RELEASE_SHA: ${{ inputs.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          CI_RUN_ID: ${{ env.ci_run_id }}
-          CI_RUN_URL: ${{ env.ci_run_url }}
+          CI_RUN_ID: ${{ steps.find_ci_run.outputs.ci_run_id }}
+          CI_RUN_URL: ${{ steps.find_ci_run.outputs.ci_run_url }}
           RELEASE_LOCK: release/images.lock
           BUNDLE_LOCK: dist/aow-${{ inputs.sha }}/images.bundle.lock
           BUNDLE_CHECKSUMS: dist/aow-${{ inputs.sha }}/SHA256SUMS
