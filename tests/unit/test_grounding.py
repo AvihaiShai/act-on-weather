@@ -724,6 +724,101 @@ def test_the_footer_says_when_the_dates_were_assumed():
     assert "no dates in the question" not in router.footer(explicit)
 
 
+def test_the_footer_says_which_zone_a_relative_date_resolved_in():
+    """R4. `dates.today_in` resolves "tomorrow" in the CITY's zone, which is
+    right and was unstated, so an answer read late in the day named a date the
+    reader could not reconcile with their own calendar and had nothing to check
+    it against.
+
+    The window is read back off the resolution rather than written out, so this
+    asserts the disclosure and not the calendar."""
+    result = retrieval("What is the weather in London tomorrow?")
+    result.forecast = [forecast_row(result.resolution.window.start)]
+    stamp = router.footer(result)
+
+    assert f"tomorrow means {result.resolution.window} in Europe/London" in stamp
+
+
+def test_the_zone_named_is_the_one_the_question_was_resolved_for():
+    """The city decides it, not the process. Same question, other city, other
+    zone -- which is the property that makes the line worth printing at all."""
+    result = retrieval("What is the weather in Lisbon tomorrow?", city=LISBON)
+    result.forecast = [forecast_row(result.resolution.window.start)]
+
+    assert "in Europe/Lisbon" in router.footer(result)
+    assert "Europe/London" not in router.footer(result)
+
+
+def test_the_assumed_week_names_its_zone_on_the_same_line():
+    """One line, not two: the assumed range and the zone it was assumed in are
+    halves of the same disclosure, and a reader who has been told the week was
+    guessed is owed the basis of the guess in the same breath."""
+    result = retrieval("Are there any sports events in London in October?")
+    stamp = router.footer(result)
+
+    assert "no dates in the question" in stamp
+    assert f"covers {result.resolution.window} in Europe/London" in stamp
+    # And not twice: the relative branch must not also fire for an assumed range.
+    assert stamp.count("Europe/London") == 1
+
+
+def test_a_date_written_out_in_full_is_stamped_with_no_zone():
+    """Nothing was resolved for it, so there is no basis to state, and stating
+    one would imply a conversion that never happened.
+
+    Seeded with an event so the answer is a dated one: the zone line is gated on
+    that, and an undated answer would pass this without the gate being reached.
+    """
+    result = retrieval(
+        "Which concerts are on in London on 2026-10-05?",
+        events=[event("lso:autumn", "Autumn Recital", "concert", date(2026, 10, 5))],
+    )
+    stamp = router.footer(result)
+
+    assert result.resolution.window.relative is False
+    assert "Europe/London" not in stamp
+    assert "means" not in stamp
+    assert "no dates in the question" not in stamp
+
+
+def test_a_question_that_names_no_city_is_counted_in_utc_and_says_so(monkeypatch):
+    """The one branch of the zone line that names something other than a place.
+
+    `Router.resolve` has no city to take a zone from when none was matched, so
+    it hands `dates.parse` the string "UTC" and the footer prints "means ... in
+    UTC". That is honest -- UTC is the zone the date was actually counted in --
+    but it is the only case where the stated zone is the server's convention
+    rather than a property of the city, so it is pinned rather than left to be
+    rediscovered by whoever reads the line and assumes a city is always behind
+    it. Both halves are asserted: the fallback that picks the zone, and the
+    disclosure that reports it.
+    """
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON, LISBON])
+
+    resolution = router.Router(object()).resolve("Is tomorrow good for running?")
+
+    assert resolution.city is None
+    assert resolution.window.timezone == "UTC"
+
+    # The footer half. Built by hand because `retrieval` reads `city["timezone"]`
+    # and there is no city here -- which is the whole point of the case.
+    result = router.Retrieval(resolution, COVERAGE, True)
+    result.forecast = [forecast_row(resolution.window.start)]
+
+    assert f"tomorrow means {resolution.window} in UTC" in router.footer(result)
+
+
+def test_a_where_answer_names_no_zone_either():
+    """The same gate the window itself is under. A location question named no
+    date and needs none, and telling its reader which zone the answer counted in
+    would invent a scope the answer never had."""
+    result = _where_result("Where can I surf in London?", ["surfing"], unlocated=["surfing"])
+    stamp = router.footer(result)
+
+    assert "Europe/London" not in stamp
+    assert "means" not in stamp
+
+
 def test_a_background_answer_is_not_headed_by_a_forecast_window():
     result = retrieval("Tell me about the history of Lisbon", city=LISBON)
     result.facts = [{"title": "Lisbon", "summary": "Capital of Portugal."}]

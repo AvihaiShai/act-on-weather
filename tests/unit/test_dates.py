@@ -207,3 +207,60 @@ def test_a_relative_range_starts_on_the_citys_today():
     for timezone in ("Europe/London", "Asia/Jerusalem", "Atlantic/Reykjavik"):
         window = dates.parse("the next three days", timezone)
         assert window.start == dates.today_in(timezone)
+
+
+# ------------------------------------------- the zone the answer discloses ----
+#
+# Resolving in the city's zone was already right, and it was invisible. Asked
+# late on the 28th, from a machine in London, about Tel Aviv, the answer named a
+# date the reader could not reconcile against their own calendar, and there was
+# nothing in it to check that against. `DateRange.timezone` is what
+# `router.footer` prints. These pin that it is carried by every branch, that it
+# is the zone actually counted in rather than the one requested, and that a date
+# written out in full is stamped with no zone at all.
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["tomorrow", "today", "the day after tomorrow", "this weekend", "next week", "the next 3 days"],
+)
+def test_a_resolved_range_carries_the_zone_it_was_resolved_in(question):
+    window = dates.parse(question, "Asia/Jerusalem")
+    assert window.timezone == "Asia/Jerusalem"
+    assert window.relative is True
+
+
+def test_the_default_range_carries_it_too():
+    """The assumed week is the range most likely to be questioned, so it is the
+    last one that should be missing its basis."""
+    window = dates.parse("are there any sports events on?", "Atlantic/Reykjavik")
+    assert "assumed" in window.label
+    assert window.timezone == "Atlantic/Reykjavik"
+    assert window.relative is True
+
+
+def test_a_range_written_out_in_full_names_no_zone():
+    """Nothing was resolved, so there is no basis to disclose. Naming one would
+    imply a conversion that never happened: 2026-10-05 is 2026-10-05
+    everywhere."""
+    window = dates.parse("from 2026-10-05 to 2026-10-14", "Asia/Jerusalem")
+    assert window.relative is False
+
+
+def test_the_zone_reported_is_the_zone_actually_counted_in():
+    """`today_in` falls back to UTC for a zone it cannot load, deliberately and
+    silently. Reporting the requested name anyway would put a basis in the
+    footer that the dates were not computed in -- which is worse than no basis,
+    because a reader checking the date against it would find it off by a day and
+    have no way to tell why."""
+    assert dates.zone_used("Mars/Olympus_Mons") == "UTC"
+    assert dates.parse("tomorrow", "Mars/Olympus_Mons").timezone == "UTC"
+    assert dates.zone_used("Asia/Jerusalem") == "Asia/Jerusalem"
+
+
+def test_every_zone_the_city_list_ships_survives_the_round_trip():
+    """The guard that matters in production: a zone in data/cities.yml that
+    `zone_used` quietly rewrote to UTC would mislabel every date for that city
+    while looking correct."""
+    for timezone in ("Europe/Rome", "Europe/London", "Europe/Lisbon", "Asia/Jerusalem"):
+        assert dates.parse("tomorrow", timezone).timezone == timezone

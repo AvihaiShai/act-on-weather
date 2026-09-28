@@ -7,12 +7,20 @@ front of a reviewer.
 
 "Today" is resolved in the *city's* timezone, not the server's, so asking about
 tomorrow in Tel Aviv from a machine in London gives the right day.
+
+And the answer says which zone that was. Resolving correctly is half of it: a
+reader who sees "tomorrow, 2026-09-29" late on the 28th has no way to know
+whether that is their tomorrow or the city's, and the follow-up question is
+always the same one. Every range this module resolves from a `today` therefore
+carries the zone it counted in (`DateRange.timezone`), and `router.footer`
+prints it. A range the questioner wrote out in full carries `relative=False`
+instead and is stamped with no zone, because none was used.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -69,6 +77,20 @@ class DateRange:
     start: date
     end: date
     label: str
+    # The zone "tomorrow" was counted in. Carried on the range rather than
+    # recomputed by the reader, because `parse` is the only place that knows
+    # which zone was used and the answer has to be able to say so: "is tomorrow
+    # good for surfing in Tel Aviv?" asked at 23:30 UK time resolves two
+    # different dates depending on whether the question meant the city's
+    # tomorrow or the machine's, and until the footer named the zone there was
+    # nothing in the answer a reader could check that against.
+    timezone: str = "UTC"
+    # False when the questioner wrote the dates out in full. Nothing was
+    # resolved for those, so there is no zone to disclose and saying one would
+    # imply a conversion that never happened -- "2026-10-05" is 2026-10-05
+    # everywhere. Everything else here counts days from a today, and a today is
+    # a fact about a timezone.
+    relative: bool = True
 
     def days(self) -> list[date]:
         return [self.start + timedelta(days=i) for i in range((self.end - self.start).days + 1)]
@@ -84,6 +106,24 @@ def today_in(timezone: str) -> date:
         return datetime.now(ZoneInfo(timezone)).date()
     except Exception:  # noqa: BLE001 - an unknown tz must not break the answer
         return datetime.now(UTC).date()
+
+
+def zone_used(timezone: str) -> str:
+    """The zone name `today_in` will actually have counted in.
+
+    Not the same as the name it was handed. `today_in` falls back to UTC for
+    anything `zoneinfo` cannot load, silently and on purpose -- a bad tz in
+    `data/cities.yml` must not turn every question about that city into a 500.
+    Stamping the requested name onto the range anyway would put a zone in the
+    footer that the dates were not computed in, which is the one failure a
+    disclosure like this must not have: a reader checking the date against the
+    stated zone would find it off by a day and have no way to tell why.
+    """
+    try:
+        ZoneInfo(timezone)
+    except Exception:  # noqa: BLE001 - the same fallback, reported rather than hidden
+        return "UTC"
+    return timezone
 
 
 def _iso_dates(text: str) -> list[date]:
@@ -121,8 +161,8 @@ def _explicit(text: str) -> DateRange | None:
     if (end - start).days + 1 > MAX_EXPLICIT_DAYS:
         end = start + timedelta(days=MAX_EXPLICIT_DAYS - 1)
     if start == end:
-        return DateRange(start, start, start.isoformat())
-    return DateRange(start, end, f"{start.isoformat()} to {end.isoformat()}")
+        return DateRange(start, start, start.isoformat(), relative=False)
+    return DateRange(start, end, f"{start.isoformat()} to {end.isoformat()}", relative=False)
 
 
 def _count(match: re.Match[str]) -> int:
@@ -145,10 +185,23 @@ def parse(question: str, timezone: str = "UTC") -> DateRange:
     """Pick the range the question is about. Defaults to the coming week.
 
     The default is stated in the answer's footer, so a user who meant something
-    else can see what was assumed rather than having to guess.
+    else can see what was assumed rather than having to guess -- and so is the
+    zone, for the same reason. `_resolve` decides the dates and this stamps the
+    zone they were decided in onto whatever it returned, so a branch added there
+    later cannot forget to carry it.
+    """
+    return replace(_resolve(question, today_in(timezone)), timezone=zone_used(timezone))
+
+
+def _resolve(question: str, today: date) -> DateRange:
+    """The range, relative to a `today` the caller has already decided.
+
+    Split out from `parse` so there is exactly one place the timezone is
+    attached. Every branch below counts days from `today`, which is why they all
+    keep the default `relative=True`: only `_explicit`, which reads dates the
+    questioner wrote out in full, resolves nothing and says so.
     """
     text = question.lower()
-    today = today_in(timezone)
 
     explicit = _explicit(text)
     if explicit:
