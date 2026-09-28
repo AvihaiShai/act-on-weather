@@ -389,6 +389,14 @@ jobs:
       - name: README counts match the committed snapshot
         run: python scripts/snapshot_manifest.py --check
 
+      # The job tables in README.md and docs/CICD_EVIDENCE.md describe this
+      # file, and for two merges the README's `restore-drill` row said
+      # "release candidates only" after a push-to-main trigger had been added
+      # to it here. Nothing failed, because nothing read this file. Now
+      # something does.
+      - name: Documented job tables match this workflow
+        run: python scripts/check-ci-docs.py
+
   # Builds, scans, and proves the stack works (scripts/ci-integration.sh:
   # real Postgres/RabbitMQ, five outage drills, traced-ID recovery). This job
   # never holds `packages: write` -- nothing in it pushes anywhere. It hands

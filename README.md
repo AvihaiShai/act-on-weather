@@ -521,10 +521,22 @@ failing it promises CI is not.
 | `retraction-drill` | every run | `scripts/retraction-drill.sh` on its own disposable Compose project: both arrival orders of a withdrawal and its record, a rebuild, and a corrected withdrawal surviving a second rebuild |
 | `publish-images` | push to `main` | pushes the images built and scanned above to GHCR |
 | `model-grounding` | release candidates only — `workflow_dispatch`, a `release/*` branch, or the `release-candidate` label | the real model against hand-written rows |
-| `restore-drill` | release candidates only, same condition | a restore after destroying every volume |
+| `restore-drill` | `workflow_dispatch`, a `release/*` branch, the `release-candidate` label, **and every push to `main`** | a restore after destroying every volume |
 
 `publish-images` needs `build-and-scan` only, so the browser gate and the
 retraction drill run alongside it rather than blocking it.
+
+`restore-drill` is the one release-candidate gate that also runs on a plain push
+to `main` — `publish-images` is conditional as well, and also runs on push — and
+the extra trigger buys detection rather than prevention: by the time a push runs,
+the merge has already happened. It is deliberately not a required context: the
+merge-blocking set is kept to the jobs that run on **every pull request**, and
+this one does not — on an unlabelled pull request it reports `skipped`, so
+requiring it would add a context that says nothing about the change being merged.
+The table above is checked
+against `ci.yml` by `scripts/check-ci-docs.py`, which the `guard` job runs; an
+earlier version of this row claimed `restore-drill` was release-candidate-only,
+and nothing failed.
 
 `.github/workflows/release.yml` is the CD half, on manual dispatch against a
 merged SHA whose CI passed: it re-verifies the published image digests against
@@ -553,8 +565,12 @@ gitleaks finds a secret (checked against a planted canary, so a silent scanner
 fails too), if a hosted-model SDK or endpoint appears in the source, or if any
 count quoted in `README.md`, the `Makefile`, `ASSIGNMENT.md`,
 `TECHNICAL_DECISIONS.md` or `docs/ARCHITECTURE.md` disagrees with
-`data/snapshot/MANIFEST.json`. That last one is not hypothetical: an earlier
-README put the place count at 289 while the snapshot already held 620.
+`data/snapshot/MANIFEST.json`, or if the job table above and the one in
+`docs/CICD_EVIDENCE.md` disagree with the jobs and `if:` conditions `ci.yml`
+actually declares. Neither of those last two is hypothetical: an earlier README
+put the place count at 289 while the snapshot already held 620, and the
+`restore-drill` row above described the wrong trigger for two merges while this
+file's own evidence document said otherwise.
 
 ### Drills and operator commands
 
@@ -1036,5 +1052,6 @@ stored in demo mode only.
 | [docs/CICD_EVIDENCE.md](docs/CICD_EVIDENCE.md) | the CI/CD evidence matrix: which gate proves which claim |
 | [docs/EVIDENCE-observability-and-recovery.md](docs/EVIDENCE-observability-and-recovery.md) | executed evidence for the metrics stack and for backup and restore |
 | [docs/EVIDENCE-f9-events-and-coastal.md](docs/EVIDENCE-f9-events-and-coastal.md) | event validity mechanics and the sea-state claims |
+| [docs/EVIDENCE-live-78ef8f6.md](docs/EVIDENCE-live-78ef8f6.md) | the live reading of the shipped build: baseline counts cross-checked against the database, the two write paths (an inland coast refusal, a retraction end to end), nine UI pages in a real browser, and whether a plain `up` re-runs `migrate` |
 | [ASSIGNMENT.md](ASSIGNMENT.md) | the brief, the requirement IDs, and which choices are ours |
 | [TECHNICAL_DECISIONS.md](TECHNICAL_DECISIONS.md) | the decision record behind the choices above |

@@ -1,10 +1,13 @@
 # CI/CD evidence matrix — review item #4 (S1, B1)
 
-**Updated 2026-09-26.** Named run counts and timings are historical; the new
-clean-daemon release gate passed in release run `36071276502`. Every row names
-a gate and a run, or says plainly that it is manual. The `restore-drill` row in
-§3 now names run `36256406183` on commit `bbee42c`; the run it supersedes is
-kept beside it rather than deleted.
+**Updated 2026-09-28 for commit `78ef8f6`.** §3's gate table is anchored to the
+**union** of two runs on that commit — push `36365166408` and dispatch
+`36365764721` — because neither alone reaches all nine jobs. Every row names a
+gate and a run, or says plainly that it is manual. Superseded runs are kept
+beside their replacements rather than deleted, and a run id is never detached
+from the figures it produced. Where a named count or timing belongs to an older
+run, the run is named next to it; those are historical and are not re-asserted as
+current.
 Written for a reviewer who wants to check the claims rather than read about them.
 
 Review item #4 asked whether CI/CD is adequate against **S1** ("Git repo with all code,
@@ -49,8 +52,11 @@ S1 is a low bar and the repository clears it. Nothing here is open.
 
 ## 2. B1 — partial, and honest about which parts
 
-"Full tests for all components." Main run `36057664448` collected 1170 tests:
-1168 passed and 2 skipped under `--network none`.
+"Full tests for all components." On commit `78ef8f6` the `unit` job reported
+**2087 passed, 2 skipped** under `--network none` — the same counts in both runs
+(push `36365166408` in 106.9s; dispatch `36365764721` in 88.9s). The earlier
+figure quoted here, 1168 passed in run `36057664448`, belongs to that run and is
+kept only as history.
 Per component:
 
 | Component | Automated coverage in the cited runs | Level |
@@ -79,26 +85,72 @@ reply, since the per-PR integration stack does not start llama.cpp.
 
 All timings from real GitHub-hosted runners, not estimates.
 
+**What proves this table, and why it takes two runs.** Every gate below is
+anchored to commit `78ef8f6`, and the anchor is the **union** of two runs on that
+exact SHA — neither one alone covers all nine jobs:
+
+* push run [`36365166408`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36365166408)
+  (2026-09-28T01:13:30Z, event `push`): eight jobs success, `model-grounding`
+  **skipped**, because its `if:` does not list a push.
+* dispatch run [`36365764721`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36365764721)
+  (2026-09-28T01:23:07Z, event `workflow_dispatch`): eight jobs success,
+  `publish-images` **skipped**, correctly — the push run had already published,
+  and its `if:` is push-to-`main` only.
+
+So `model-grounding` is proven by the dispatch and `publish-images` by the push,
+and quoting either run as covering the whole matrix would be false.
+
 | Gate | What it asserts | When | Proof |
 |---|---|---|---|
-| `lint` | ruff check + format | every PR | green in `main` run `36057664448` |
-| `unit` | 1168 passed, 2 skipped, `--network none` | every PR | run `36057664448` |
-| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; no workflow literal disagrees with `compose.tools.yml`'s model-mirror default; README counts match the snapshot | every PR and push | main guard run `36057664448` scanned 2.08 MB of committed content |
-| `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 4m7s on PR #37; enricher reported 480 pending rows |
-| `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | run `36057664448`: 155 same-origin, 0 external requests |
-| `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | run `36055211121`: **82s**, 8/8 grounded; upgraded cache action ran on a cache miss |
-| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate **and every push to `main`** (2026-09-27) | run `36256406183`, backup `started_at` 2026-09-26T16:45:31Z, commit `bbee42c` — the current commit: measured RPO 15s, at-risk window 19s, **two RTO figures kept apart** (`RTO_SECONDS=20` self-reported by `restore-state.sh`, 22s in the drill's summary including its per-id `psql` assertions) and **two wall clocks kept apart** (92s drill body, 104s CI job step). See the row below the table, and §9 of [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) for the artefact sizes. A GitHub-hosted runner, so not comparable with the development-machine runs in that same §9 |
-| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `5bb498f` (run `36057664448`) |
+| `lint` | ruff check + format | every PR | 9s in push run `36365166408` |
+| `unit` | 2087 passed, 2 skipped, `--network none` | every PR | run `36365166408`, pytest 106.9s inside a 2m23s job |
+| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; no workflow literal disagrees with `compose.tools.yml`'s model-mirror default; README counts match the snapshot | every PR and push | guard run `36365166408`, 12s, gitleaks scanned 3,297,635 bytes (3.30 MB) of committed content |
+| `guard`, one further step | README's and this file's job tables match `ci.yml`, by job set in both directions, prose counts and per-job trigger set (`scripts/check-ci-docs.py`) | every PR and push | first executed in the pull request that added it, run [`36416066425`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36416066425) on `da1c40f` — job `108907390029`, step 15, "Documented job tables match this workflow", **`success`**. Read the job, not the run: a later push to the same branch superseded that run through `ci.yml`'s concurrency group, so the run reads `cancelled` while `lint`, `unit` and `guard` had already completed `success`. The **current** anchor is the push-to-`main` run on the merged head, which every other row in this table also moves to; until that is written in, this row's claim is "the step exists and has passed", not "it passed on `main`". Deliberately **not** `36365166408`: `scripts/check-ci-docs.py` does not exist at `78ef8f6`, and that run's `guard` log ends at "README counts match the committed snapshot" |
+| `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 3m47s in run `36365166408`; enricher reported 480 pending rows |
+| `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | run `36365166408`, 88s: 145 same-origin requests, 0 off-origin |
+| `retraction-drill` | `scripts/retraction-drill.sh` on its own disposable Compose project: a withdrawal that arrives **before** the record it withdraws still suppresses it; the suppression survives a full rebuild from the ingestor's outbox; and a corrected withdrawal is not reverted by a second rebuild | every PR and push | run `36365166408`, 81s. Carries no `if:`, so it always reports — but it is **not** a required context, so it cannot block a merge. See §5 |
+| `model-grounding` | 8 adversarial cases against real llama.cpp + Qwen3-1.7B | release candidate | dispatch run `36365764721`: **123s** wall clock, 8/8 grounded. Skipped on the push run |
+| `restore-drill` | destroys pgdata, rabbitdata and all three outbox volumes; a **separate reader** (psql, not the API that accepted the writes) asserts each pre-backup `message_id` appears in `ingest_log` **exactly once**; post-backup IDs asserted absent *and* asserted committed before the disruption | release candidate **and every push to `main`** (2026-09-27) | it ran **twice** on `78ef8f6`, once per run above, and the two sets of figures are **not** interchangeable. Every figure lives in the run-history table below, keyed by run id *and* backup `started_at`; none is repeated here, deliberately. See §9 of [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) for the artefact sizes. GitHub-hosted runners, so not comparable with the development-machine runs in that same §9 |
+| `publish-images` | publishes only after scans and integration pass; wraps the pushed manifest in a platform-described index; asserts registry-side that each ref **is** an index with `linux/amd64`, and that `images.lock` names that same index | push to `main` | green on `78ef8f6` in push run `36365166408`, 66s. Skipped on the dispatch run, correctly |
 
 **`restore-drill`: the run history, and why four numbers are not two.** The
-drill is re-run per commit, and each run keeps its own identity — run id, job,
-backup `started_at`, commit — because a figure is only worth reading next to the
-run that produced it.
+drill runs on each triggering event rather than once per commit — so a commit can
+have more than one row — and each run keeps its own identity: run id, job, backup
+`started_at`, commit. A figure is only worth reading next to the run that
+produced it.
 
 | Run | Commit | Backup `started_at` | RPO | At-risk window | RTO, self-reported | RTO, drill summary | Drill body | CI job step |
 |---|---|---|---|---|---|---|---|---|
-| **`36256406183`** — current | `bbee42c` | 2026-09-26T16:45:31Z | **15s** | **19s** | **20s** (`RTO_SECONDS=20`) | **22s** | **92s** | **104s** |
+| **`36365166408`** (push) — current | `78ef8f6` | 2026-09-28T01:16:50Z | **15s** | **16s** | **21s** (`RTO_SECONDS=21`) | **22s** | **91s** | **102s** |
+| **`36365764721`** (dispatch) — current | `78ef8f6` | 2026-09-28T01:26:30Z | **13s** | **18s** | **20s** (`RTO_SECONDS=20`) | **21s** | **95s** | **107s** |
+| `36256406183` — superseded, not deleted | `bbee42c` | 2026-09-26T16:45:31Z | 15s | 19s | 20s (`RTO_SECONDS=20`) | 22s | 92s | 104s |
 | `36055211121` — superseded, not deleted | `862a08f` | 2026-09-24T20:31:40Z | 15s | 19s | 20s | not recorded separately | not recorded separately | 104s |
+
+**Read that table by the row, never by the column.** Two of these four runs
+report an RPO of 15s and three report a self-reported RTO of 20s, on three
+different commits two days apart, and the `78ef8f6` pair differs from each other
+in every column but the commit. Near-identical numbers from unrelated runs are
+exactly how a figure gets silently attached to the wrong run, so a figure quoted
+without **both** its run id and its backup `started_at` is not quotable here.
+Nothing in this table may be merged with another row, averaged across rows, or
+combined with the development-machine runs in
+[RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) §9, which were measured on
+different hardware for a different purpose.
+
+**Why `78ef8f6` has two rows rather than one.** `restore-drill` now runs on a
+push to `main` as well as on a dispatch, so the commit that got both triggers got
+two independent drills ten minutes apart. Each took its own backup — the
+`started_at` values, `2026-09-28T01:16:50Z` and `2026-09-28T01:26:30Z`, are the
+identities that keep them apart, and each corresponds to its own backup
+directory, `backups/20260928T011650Z` and `backups/20260928T012630Z`. Both began
+from the same stored state (836 ingestor outbox rows, 4 api, 0 enricher) and both
+lost both set-B records as designed, so the difference between them is run-to-run
+variation, not a change in the system; **no cause was measured.** Runner CPU,
+disk and network contention would all produce a difference of this size, and this
+project has no reading that tells them apart — the same discipline the 31s → 35s
+difference in [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) §9 is held
+to, where a plausible mechanism is recorded as plausible and never as measured. Neither run supersedes the
+other: they are two measurements of the same commit.
 
 Two distinctions the table exists to keep:
 
@@ -108,14 +160,16 @@ Two distinctions the table exists to keep:
   the same restore *plus* the per-id `psql` assertions it then makes from a
   separate reader. Quote whichever answers the question being asked, and say
   which one it is; never average them or present one as "the" RTO.
-* **The two wall clocks are different scopes.** 92s is the drill body —
-  `demos/06_backup_restore.sh` from its first line to its last. 104s is the
-  whole `restore-drill` job step around it, which also brings the isolated stack
-  up and tears it down. Row `36055211121` records only the job-step figure, so
-  its blank cells are blank rather than back-filled.
+* **The two wall clocks are different scopes.** The "drill body" column is
+  `demos/06_backup_restore.sh` from its first line to its last, as the script
+  itself reports it. The "CI job step" column is the whole `restore-drill` step
+  around it, which also builds the service image the drill runs against, brings
+  the isolated stack up and tears it down; it is read from the job's step
+  timestamps, not from the script. Row `36055211121` records only the job-step
+  figure, so its blank cells are blank rather than back-filled.
 
-The `36055211121` row is kept because run ids in §8 below still refer to it.
-Both rows are GitHub-hosted runners and neither is comparable with the
+The superseded rows are kept because run ids in §8 below still refer to them.
+Every row is a GitHub-hosted runner and none is comparable with the
 development-machine drills in [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md)
 §9.
 
@@ -342,13 +396,18 @@ That transcript is from the four-context era and is kept as it was recorded; the
 it is not re-asserted as current.
 
 **Current required contexts, read from the API on 2026-09-27 after the change below:**
-`lint`, `unit`, `guard`, `build-and-scan`, `ui-gate` — five contexts. A required
-context that can be skipped deadlocks merges, which is why the conditional jobs are
-not required: `publish-images` runs only on push to main, and `model-grounding` and
-`restore-drill` are skipped on an unlabelled pull request. This was measured rather
-than assumed — on PR #65's head `97fa8d9` the check runs are `lint`, `unit`, `guard`,
-`build-and-scan` and `ui-gate` `success` with `publish-images`, `model-grounding` and
-`restore-drill` `skipped`.
+`lint`, `unit`, `guard`, `build-and-scan`, `ui-gate` — five contexts. The
+merge-blocking set is deliberately limited to the jobs that run on **every pull
+request**, which is why the conditional jobs are not required: `publish-images` runs
+only on push to main, and `model-grounding` and `restore-drill` are skipped on an
+unlabelled pull request, so requiring one would add a context that reports nothing
+about the change being merged. **Not** because requiring it would deadlock the merge:
+a job-level `if:` still produces a `skipped` check run, which branch protection
+treats as satisfied, and nothing in this repository demonstrates a deadlock. The
+skipped-but-present half was measured rather than assumed — on PR #65's head
+`97fa8d9` the check runs are `lint`, `unit`, `guard`, `build-and-scan` and `ui-gate`
+`success` with `publish-images`, `model-grounding` and `restore-drill` `skipped`, and
+that pull request merged.
 
 **Those five are not all of the unconditional jobs, and this line used to say they
 were.** `ci.yml` now defines nine jobs, of which **six** carry no `if:` and therefore
@@ -533,10 +592,12 @@ artifact actions (`checkout` v7.0.1, `setup-python` v7.0.0, `upload-artifact` v7
 Evidence for the sweep and its follow-up:
 
 - **The annotation is gone.** Run `36050580394` (`804b5df`) carries six Node 20 warnings;
-  run `36055198116` (`862a08f`) carries none. `model-grounding` and `restore-drill` are
-  skipped on an ordinary push, so a push run alone would not have exercised every pin
-  — dispatch run `36055211121` on the same commit covers those two, `actions/cache`
-  included.
+  run `36055198116` (`862a08f`) carries none. `model-grounding` and `restore-drill` were
+  both skipped on an ordinary push at that time, so a push run alone would not have
+  exercised every pin — dispatch run `36055211121` on the same commit covers those two,
+  `actions/cache` included. (`restore-drill` gained its push-to-`main` trigger on
+  2026-09-27, after this sweep; `model-grounding` still has none, so a dispatch is
+  still what reaches every pin.)
 - **Nothing node20 is left in the transitive closure either**, which is the part the issue
   said a version sweep could not reach. `trivy-action` v0.36.0 pulls `setup-trivy` v0.2.6
   and `actions/cache` v5.0.5; `setup-trivy` pulls `cache/restore`, `cache/save` and

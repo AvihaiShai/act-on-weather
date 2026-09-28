@@ -41,6 +41,36 @@ review-*.png
 DEVOPS_REVIEW.md
 REVIEW_PLAN.md
 
+# The internal hiring-review corpus, same block and same reason. Eighty-one files
+# -- lane review notes, agent transcripts, a dress-rehearsal report, a presenter's
+# demo script -- were untracked and stageable until 2026-09-28, when they moved
+# under .private/; `git check-ignore` matched none of them, so nothing but care
+# stopped a `git add -A` from committing them, and `git archive HEAD` (which
+# scripts/package-offline.sh seals the bundle with) would then have shipped them
+# to every air-gapped host afterwards.
+#
+# These patterns are unanchored, so they match at the root and under docs/ alike,
+# which is where the corpus was split. The two directory rules were withheld in
+# the commit that moved these files, because .gitignore does not untrack anything
+# and a pattern over docs/rehearsal-review/ would have shadowed the two paths
+# still tracked there at the time. That reason expired in the same commit: it
+# untracked them, `git ls-files docs/rehearsal-review` is empty, and so is
+# `git ls-files -i -c --exclude-standard` after these rules. A backstop that
+# covers 3 of 81 filenames is not one.
+#
+# The two directory rules carry most of the corpus, including the eight lane
+# folders whose notes are all named handoff.md in lower case -- the HANDOFF-*
+# patterns below are for the root-level ones and are case-sensitive off Windows,
+# so the directory rule is what makes the lower-case ones safe.
+HIRING_MANAGER_DRESS_REHEARSAL_PROMPT.md
+HIRING_MANAGER_NEXT_OPUS_BATCH.md
+HIRING_MANAGER_DRESS_REHEARSAL_REPORT.md
+DEMO-SCRIPT-*.md
+HANDOFF.md
+HANDOFF-*.md
+docs/rehearsal-review/
+docs/dress-rehearsal-*-evidence/
+
 # Operational backups (scripts/backup-state.sh, demos/06_backup_restore.sh).
 # Real database and outbox contents, written beside the stack. Never committed.
 backups/

@@ -70,6 +70,13 @@ MSYS_NO_PATHCONV=1 docker run --rm --pull never --network none \
   python scripts/snapshot_manifest.py --check
 record "snapshot manifest" $?
 
+# Same reasoning, same image: this one reads README.md, docs/CICD_EVIDENCE.md
+# and .github/workflows/ci.yml, none of which is in the gate image either.
+MSYS_NO_PATHCONV=1 docker run --rm --pull never --network none \
+  --mount "type=bind,src=$WORKDIR,dst=/work,readonly" -w /work "$PYIMAGE" \
+  python scripts/check-ci-docs.py
+record "ci.yml vs documented job tables" $?
+
 echo
 failed=0
 for i in "${!names[@]}"; do

@@ -12,7 +12,7 @@ version: 2
 # So: pins stay immutable, and Dependabot is the mechanism that tells us when one
 # has moved. It preserves SHA pins and updates the trailing version comment, so
 # its pull requests satisfy the `guard` job rather than fighting it. Every one of
-# them still has to pass the four required checks before it can merge.
+# them still has to pass the five required checks before it can merge.
 
 updates:
   - package-ecosystem: github-actions

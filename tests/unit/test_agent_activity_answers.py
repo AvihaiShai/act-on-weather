@@ -1,8 +1,9 @@
 """Three ways a named-activity answer said less than it knew.
 
-All three were found by reading `docs/DEMO-SCRIPT-2026-09-28.md` §5, which lists
-them as live hazards to be steered around during a demo (H2, H6, H7) rather than
-as behaviour to rely on. Each is reproduced here first and then pinned.
+All three were found while preparing the 2026-09-28 reviewer walkthrough, which
+listed them as live hazards to be steered around during a demo (H2, H6, H7)
+rather than as behaviour to rely on. Each is reproduced here first and then
+pinned.
 
 H2 -- **a named-activity answer dropped the days it had no data for.** `ask()`
 appends `grounding.gap_block` after the model has spoken, but the named-activity

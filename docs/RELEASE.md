@@ -182,11 +182,26 @@ archive verification for every image alias in the bundle, and a passing data
 smoke. Earlier hosted release runs installed on the packaging daemon, so their
 passes do not supply this evidence.
 
-That evidence covers `6ba3e78` and nothing else. **A commit later than the one
-named above carries no clean-engine proof until `release.yml` is dispatched for
-it**, because this gate runs only on that manual dispatch -- not on push, and
-not on merge. Read the promotion record of the release you are installing rather
-than assuming the head of `main` has been promoted.
+Seven dispatches since have passed the same step, each anchored to its own
+commit: `9cea79c`, `8975403`, `fb2a1e4`, `f70c28d`, `bbee42c`, `efaec14` and
+`78ef8f6`. The most recent is run
+[`36383666587`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36383666587)
+on `78ef8f6` (dispatched 2026-09-28T05:50:44Z), which logged clean install
+engine `a639943d` against packaging engine `bab1ddb9`, ran with
+`AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, and rendered nine Streamlit pages against the
+installed API.
+
+**Each of those passes covers its own commit and no other.** The warning is
+about the head of `main`, not about the list above, and it is a property of the
+trigger rather than of any particular commit: **a commit for which
+`release.yml` has not been dispatched carries no clean-engine proof at all**,
+because this gate runs only on that manual dispatch -- not on push, not on
+merge, and not on a CI re-run. A green `ci.yml` on the head of `main` says
+nothing about it. So do not reason from this list to a commit that is not in it,
+and do not reason from the newest entry to a newer commit: check whether a
+release was dispatched for the exact SHA you intend to install, and read that
+release's own promotion record rather than assuming the head of `main` has been
+promoted.
 
 The `6ba3e78` smoke asserted more than liveness, but was not a deep functional
 check: it confirmed `/health` was ok, `/coverage` reported the `weather` entity had

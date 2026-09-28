@@ -444,25 +444,36 @@ adding if this is ever run often.
   Releases A and B are `f192241` and `bf4a2df`. A later commit that changes the
   migration set, the schema or the images is not covered by this drill until it
   is re-run; the fault-injection exercise in §3 lists the migrations it actually
-  ran, for exactly this reason. In particular, the current tree contains
-  migrations through `008_itinerary_as_of_optional.sql`; those later migrations
-  were not in the drilled A/B bundles. Release run `36228182265` validates a
-  clean single install on `6ba3e78`, but it does not repeat the A/B upgrade and
-  recovery drill for that commit or for a later candidate.
+  ran, for exactly this reason. In particular, the tree at `78ef8f6` contains
+  ten migrations, through `009_record_retraction.sql` and
+  `010_retraction_ledger.sql`, and `compose.yml`'s `migrate` command runs all
+  ten in order; the drilled A/B bundles carried neither. Release runs since
+  then validate a clean single install — the most recent is `36383666587` on
+  `78ef8f6` — but no release run repeats the A/B upgrade-and-recovery drill for
+  that commit or any later candidate. So the two migrations that landed with
+  the retraction ledger have a clean-install proof and no upgrade proof, which
+  is the narrower claim and the one to quote.
 - **A real transfer medium — now partly closed.** The file-size, mode-bit and
   path properties were measured in §2; as of 2026-09-26 the copy itself has
   been made onto FAT32 removable media and verified *on the medium*, with the
   out-of-band anchor enforced and `sha256(images.tar)` identical to source. See
   [EVIDENCE-physical-airgap.md §3.5.2](EVIDENCE-physical-airgap.md). What is
   still unexercised is the failure case: a torn, short or interrupted copy.
-- **The per-release clean-engine gate passed for `6ba3e78`.** Release run
+- **The per-release clean-engine gate has passed on every release since
+  `6ba3e78` introduced it.** The first was release run
   [`36228182265`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36228182265)
-  started a second Docker daemon, verified a distinct engine ID and zero images
-  and volumes, set `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, installed with
-  `--pull never`, and passed the data smoke. Earlier hosted runs used the
-  packaging daemon, whose image content could mask an incomplete archive.
-  The new daemon is still on a connected hosted runner, so this does not
-  establish a physical air gap.
+  on `6ba3e78`: it started a second Docker daemon, verified a distinct engine ID
+  and zero images and volumes, set `AOW_REQUIRE_CLEAN_IMAGE_STORE=1`, installed
+  with `--pull never`, and passed the data smoke. Seven later dispatches have
+  passed the same step — `9cea79c`, `8975403`, `fb2a1e4`, `f70c28d`, `bbee42c`,
+  `efaec14` and `78ef8f6` — the last being run
+  [`36383666587`](https://github.com/AvihaiShai/act-on-weather/actions/runs/36383666587),
+  which logged clean install engine `a639943d` against packaging engine
+  `bab1ddb9` and rendered nine Streamlit pages against the installed API.
+  Earlier hosted runs, before `6ba3e78`, used the packaging daemon, whose image
+  content could mask an incomplete archive. Every one of these daemons is still
+  on a connected hosted runner, so none of them establishes a physical air gap —
+  `release.yml` says so in its own comment.
 
 ### Branch protection checked separately
 
@@ -474,6 +485,18 @@ Force pushes and deletions were disabled, required signatures were off, and
 there were no repository rulesets. This is a dated settings read, separate
 from the earlier release workflow promotion records, whose default token
 received HTTP 403 and recorded `verified: false`.
+
+**Superseded for the context list on 2026-09-27.** A `PATCH` to
+`branches/main/protection/required_status_checks` added a fifth context,
+`ui-gate`, so the required set is now `lint`, `unit`, `guard`,
+`build-and-scan`, `ui-gate`. The read above is kept as the 2026-09-25 state
+rather than rewritten, because it is a dated settings read and back-dating one
+is how a settings claim stops being evidence. Everything else it records still
+held on a re-read of 2026-09-28: `enforce_admins` true, `strict: false`, stale
+reviews dismissed, zero approvals required, force pushes and deletions
+disabled, signatures off. The live account is
+[CICD_EVIDENCE.md §5](CICD_EVIDENCE.md), which carries the `PATCH` itself and
+the before/after responses.
 
 ### How the physical air gap would be closed — a plan, not a record
 

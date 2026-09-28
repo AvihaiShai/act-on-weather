@@ -5,7 +5,7 @@
 # Why this script exists. The drill needs a release that gets as far as touching
 # the schema and then breaks, so that an image rollback can be shown to be
 # insufficient and the dump-backed restore necessary. No such release can come
-# out of CI: `main` is branch-protected on four required jobs, so a migration
+# out of CI: `main` is branch-protected on five required jobs, so a migration
 # written to fail could never be published, and `package-offline.sh` refuses any
 # tree that is not exactly the commit named in its `images.lock`. The artifact
 # therefore has to be made here, by hand, from a bundle that *was* CI-proven.
