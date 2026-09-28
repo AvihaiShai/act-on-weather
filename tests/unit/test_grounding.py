@@ -781,6 +781,33 @@ def test_a_date_written_out_in_full_is_stamped_with_no_zone():
     assert "no dates in the question" not in stamp
 
 
+def test_a_question_that_names_no_city_is_counted_in_utc_and_says_so(monkeypatch):
+    """The one branch of the zone line that names something other than a place.
+
+    `Router.resolve` has no city to take a zone from when none was matched, so
+    it hands `dates.parse` the string "UTC" and the footer prints "means ... in
+    UTC". That is honest -- UTC is the zone the date was actually counted in --
+    but it is the only case where the stated zone is the server's convention
+    rather than a property of the city, so it is pinned rather than left to be
+    rediscovered by whoever reads the line and assumes a city is always behind
+    it. Both halves are asserted: the fallback that picks the zone, and the
+    disclosure that reports it.
+    """
+    monkeypatch.setattr(router.queries, "cities", lambda _conn: [LONDON, LISBON])
+
+    resolution = router.Router(object()).resolve("Is tomorrow good for running?")
+
+    assert resolution.city is None
+    assert resolution.window.timezone == "UTC"
+
+    # The footer half. Built by hand because `retrieval` reads `city["timezone"]`
+    # and there is no city here -- which is the whole point of the case.
+    result = router.Retrieval(resolution, COVERAGE, True)
+    result.forecast = [forecast_row(resolution.window.start)]
+
+    assert f"tomorrow means {resolution.window} in UTC" in router.footer(result)
+
+
 def test_a_where_answer_names_no_zone_either():
     """The same gate the window itself is under. A location question named no
     date and needs none, and telling its reader which zone the answer counted in
