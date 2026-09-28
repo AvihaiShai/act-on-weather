@@ -4,10 +4,9 @@ Run via ``docker compose exec -T api python - < tests/integration/event_recheck.
 
 `tests/integration/event_freshness.py` proved the freshness policy: a row
 carries the day its page was read, derives an expiry from it, and leaves the
-default read when that expiry passes. What it left open -- and what
-DEVOPS_REVIEW records as open -- is that re-checking was manual: *"Extending a
-listing's life means opening its page and patching `checked_at`, one row at a
-time."*
+default read when that expiry passes. What it left open is that re-checking was
+manual: *"Extending a listing's life means opening its page and patching
+`checked_at`, one row at a time."*
 
 `services/tools/event_recheck.py` closes that, and the interesting property is
 not that it can renew a row. It is everything it refuses to renew. The unit

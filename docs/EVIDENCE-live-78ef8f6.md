@@ -34,9 +34,9 @@ still not verified.
 | | |
 |---|---|
 | Compose project | `aow-demo` |
-| Config path | `D:\aow-pr67-fix\compose.yml` (L1 — `docker inspect aow-demo-api-1` on the `com.docker.compose.project.config_files` label) |
-| Env file | `D:\act-on-weather\.env`, passed with `--env-file`; the worktree holds no copy |
-| Source worktree | `D:\aow-pr67-fix` @ `68eacf4c147f2db8404c395fda5d7898e9255b87`, clean tree (L1 — `git -C D:/aow-pr67-fix rev-parse HEAD`, `git status --short` empty) |
+| Config path | `$WORKTREE/compose.yml` (L1 — `docker inspect aow-demo-api-1` on the `com.docker.compose.project.config_files` label) |
+| Env file | `$REPO/.env`, passed with `--env-file`; the worktree holds no copy |
+| Source worktree | `$WORKTREE` @ `68eacf4c147f2db8404c395fda5d7898e9255b87`, clean tree (L1 — `git -C "$WORKTREE" rev-parse HEAD`, `git status --short` empty) |
 | Images | `aow/services:dev`, `aow/ui:dev`, `postgres:17-alpine`, `rabbitmq:4.3-management-alpine`, `nginx:alpine`, `ghcr.io/ggml-org/llama.cpp:server` |
 | Rebuilt for this file | **nothing** |
 
@@ -47,10 +47,17 @@ they carry **the same tree**: `git rev-parse 78ef8f6^{tree}` and
 empty (L1). That is why a stack launched from that worktree is a stack running
 HEAD's tree, and why nothing here needed building.
 
+`$REPO` is this repository's primary checkout and `$WORKTREE` a second
+`git worktree` checkout of it, which is where the running stack was launched
+from. The two are named that way rather than written out because the absolute
+paths are one operator's machine and carry nothing a reader can use: what makes
+the run reproducible is the commit and the Compose project, both of which are
+above.
+
 Every Compose command below was run as
 
 ```
-docker compose -p aow-demo -f D:\aow-pr67-fix\compose.yml --env-file D:\act-on-weather\.env ...
+docker compose -p aow-demo -f "$WORKTREE/compose.yml" --env-file "$REPO/.env" ...
 ```
 
 and every `psql` as `docker exec aow-demo-postgres-1 psql -U aow -d aow`.
