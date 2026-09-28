@@ -708,6 +708,14 @@ tunnel has every route.
   reason a pond cannot be scored, which is a true sentence presented as a cause
   it is not (`rules.needs_coast`, `rules.INLAND_WATER_WORDS`, and
   `distinct_names` in `data/activities.yml`, where the collision was found).
+  **A name that says both loses the exemption**: "wild sea swimming" is wild
+  swimming *in the sea*, so it is refused inland like any other sea name
+  (`rules.EXPLICIT_SEA_WORDS`, which holds `sea`, `ocean` and `offshore` only).
+  `tide`, `tidal` and `swell` are deliberately not on that list even though they
+  are sea words, because the Thames is tidal and runs through the one inland
+  city here — a list that overrules by guesswork would bring the false coast
+  claim straight back. A word that says the activity is not in open water at all
+  — "indoor", "pool" — still beats both lists and is scored generically.
   The cap's test is a word list
   (`rules.SEA_WORDS`) rather than a property of a catalogue row, because a typed
   activity has no catalogue row; it is deliberately not exhaustive, and a word it
@@ -733,7 +741,7 @@ tunnel has every route.
 * **A user-entered activity is scored against general outdoor comfort**, not a
   rule tuned for it — under the 69 sea ceiling if its name says water, and not
   scored at all for an inland city if the name says the sea rather than fresh
-  water. Only when you request it, and the
+  water, including when it says both. Only when you request it, and the
   label is not yet on screen everywhere. Requesting one through the UI form or
   `POST /recommendations` scores that city-day with the generic measure and
   stores the caveat on the row, and `GET /recommendations/{city}` returns both

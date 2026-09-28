@@ -331,7 +331,48 @@ def names_water(slug: str) -> bool:
 # Not exhaustive, and it fails in the safe direction: a name that belongs here
 # and is missing is still coast-gated, which withholds a row rather than
 # inventing a score for one.
+#
+# These are qualifiers, not nouns: each one narrows what kind of water is meant
+# without naming a body of water at all. That is why `EXPLICIT_SEA_WORDS` below
+# can overrule them without contradicting anything -- "wild sea swimming" is
+# wild swimming IN THE SEA, and the noun decides.
 INLAND_WATER_WORDS: frozenset[str] = frozenset("wild ice".split())
+
+# Words that name the sea itself, and so overrule an inland qualifier standing
+# beside them. "wild sea swimming" is a real phrase and it names the sea twice
+# over: `wild` says the water is not a pool, and `sea` says which water it is.
+# Read in the order `INLAND_WATER_WORDS` used to be read alone, `wild` won and
+# the request was scored for London at the 69 ceiling with a caveat about waves
+# -- a capped row for a city with no coast, whose whole caveat was about a body
+# of water the city does not have.
+#
+# THE PRECEDENCE, outermost first, and each layer is here because it fails in a
+# direction the layer below it does not:
+#
+#   1. NOT_WATER_WORDS wins over everything, including these. "indoor sea
+#      swimming" and "sea swimming pool" are scored as ordinary outdoor comfort
+#      and no coast is asked for. It is the safest failure available -- a
+#      generic score, no ceiling, no refusal and no claim about a coast -- so it
+#      stays on the outside.
+#   2. These words beat INLAND_WATER_WORDS. They fail towards a REFUSAL, which
+#      is the expensive direction, so the list is kept to words that cannot
+#      mean anything but the open sea.
+#   3. INLAND_WATER_WORDS otherwise removes the coast requirement and keeps the
+#      ceiling, as before.
+#   4. Anything else is decided by `names_water`.
+#
+# Why only these three. `tide`, `tidal` and `swell` are all in `SEA_WORDS` and
+# are all deliberately NOT here: the Thames is tidal and runs through the one
+# inland city on the list, so "tidal river swimming" would be refused in London
+# with "London has no coast on record" -- exactly the fabricated causal claim
+# the split in `needs_coast` was written to stop. A word earns a place here by
+# naming the sea and nothing else.
+#
+# The same "not exhaustive, fails safe" bound applies as everywhere else in this
+# module, but note that it points the other way here: a sea word missing from
+# this list leaves the inland qualifier winning, which caps a score instead of
+# refusing a row. That is the direction this project prefers to be wrong in.
+EXPLICIT_SEA_WORDS: frozenset[str] = frozenset("sea ocean offshore".split())
 
 
 def needs_coast(slug: str) -> bool:
@@ -343,12 +384,17 @@ def needs_coast(slug: str) -> bool:
     is stored at all -- and a false yes there is not a cautious number, it is a
     refusal whose stated reason is untrue.
 
+    An inland qualifier only wins when nothing in the same name names the sea
+    outright; see `EXPLICIT_SEA_WORDS` for the full precedence and for why that
+    list is as short as it is. `names_water` still has the last word either way,
+    so `NOT_WATER_WORDS` cannot be overruled from here.
+
     Only the typed case. A catalogue activity carries `requires_coast` on its own
     row and both callers read that first; this is what they fall back to when the
     catalogue has never heard of the name.
     """
     words = set(slug.split("_"))
-    if words & INLAND_WATER_WORDS:
+    if words & INLAND_WATER_WORDS and not words & EXPLICIT_SEA_WORDS:
         return False
     return names_water(slug)
 

@@ -17,10 +17,20 @@ water?", which is what caps the score and adds the sea-state caveat.
 what refuses a row. A false yes there is not a cautious number, it is a refusal
 whose stated reason is untrue, which is the worse failure of the two.
 
+The split left one order undecided, and the last section of this file settles
+it. `wild sea swimming` carries a word from each list, `needs_coast` returned on
+the inland hit before `names_water` ever saw `sea`, and the request was stored
+for London at the 69 ceiling with a caveat about waves. A capped row is a safe
+failure, which is why it survived a release -- but the caveat was about water
+London does not have. `EXPLICIT_SEA_WORDS` decides it: a word that names the sea
+outright beats a qualifier that only says the water is not a pool, while
+`NOT_WATER_WORDS` stays outside all of it.
+
 These tests pin the gap between the two functions, the ceiling that must still
-bind for an inland-water name, and the rule that every word in
-`INLAND_WATER_WORDS` earns its place by changing an answer. Pure functions and
-one read of `data/activities.yml`; nothing here connects to anything.
+bind for an inland-water name, the rule that every word in `INLAND_WATER_WORDS`
+and `EXPLICIT_SEA_WORDS` earns its place by changing an answer, and both orders
+of the collision. Pure functions and one read of `data/activities.yml`; nothing
+here connects to anything.
 """
 
 from __future__ import annotations
@@ -66,6 +76,13 @@ WATER_TABLE = [
     ("sky_diving", False, False),
     ("river_rafting", False, False),
     ("pool_swimming", False, False),
+    # Both qualifiers at once. The inland word is present and loses, because the
+    # name also says which water outright.
+    ("wild_sea_swimming", True, True),
+    ("ice_ocean_swimming", True, True),
+    # And the outermost layer still wins over both: a pool is a pool whatever
+    # else the name says.
+    ("indoor_sea_swimming", False, False),
 ]
 
 
@@ -159,6 +176,115 @@ def test_the_two_word_lists_do_the_two_different_jobs():
     overlap = rules.INLAND_WATER_WORDS & rules.NOT_WATER_WORDS
 
     assert overlap == frozenset(), f"{sorted(overlap)} claims both jobs"
+
+
+# ------------------------------------- which token wins when both are there ---
+#
+# `wild sea swimming` is a real phrase and the two halves of it used to
+# contradict each other. `needs_coast` read `INLAND_WATER_WORDS` first and
+# returned on the hit, so `wild` short-circuited before `names_water` ever saw
+# `sea`, and the request was stored for London at the 69 ceiling with a caveat
+# about waves -- a capped row for a city with no coast, whose caveat was about
+# water the city does not have. The direction was safe, which is why it survived
+# a release; deciding which token overrules which is the change these pin.
+#
+# Both orders are asserted, not just the new one. A test that only checks the
+# sea word winning would pass if the inland list were deleted outright.
+
+BOTH_TOKENS = [
+    ("wild_sea_swimming", "wild", "sea"),
+    ("sea_wild_swimming", "wild", "sea"),
+    ("ice_ocean_swimming", "ice", "ocean"),
+    # `diving`, not `fishing`: fishing is a catalogue activity carrying
+    # `requires_coast` on its own row, so it is never on this path at all and is
+    # not in `SEA_WORDS` either -- "wild fishing" names no water to this module.
+    ("offshore_wild_diving", "wild", "offshore"),
+]
+
+
+@pytest.mark.parametrize(("slug", "inland", "sea"), BOTH_TOKENS)
+def test_a_name_carrying_both_kinds_of_word_is_decided_by_the_sea_one(slug, inland, sea):
+    """Guard the premise in the same test: both words really are present and
+    really are on their own lists, so this cannot pass by the slug quietly
+    matching neither."""
+    words = set(slug.split("_"))
+    assert inland in words and inland in rules.INLAND_WATER_WORDS
+    assert sea in words and sea in rules.EXPLICIT_SEA_WORDS
+
+    assert rules.names_water(slug) is True
+    assert rules.needs_coast(slug) is True
+
+
+@pytest.mark.parametrize(("slug", "inland", "sea"), BOTH_TOKENS)
+def test_the_inland_word_still_wins_on_its_own(slug, inland, sea):
+    """The other order, and the bound on the change. Drop the sea word from the
+    same slug and the coast requirement goes with it -- otherwise this change
+    would have re-broken the refusal that `INLAND_WATER_WORDS` exists to stop."""
+    without_sea = "_".join(word for word in slug.split("_") if word != sea)
+
+    assert rules.names_water(without_sea) is True
+    assert rules.needs_coast(without_sea) is False
+
+
+def test_a_word_that_cannot_make_the_name_water_cannot_make_it_need_a_coast():
+    """`EXPLICIT_SEA_WORDS` must be a subset of `SEA_WORDS`.
+
+    It overrules the inland list, and the layer it hands the answer to is
+    `names_water`. A word here that `names_water` does not recognise would
+    therefore overrule the inland list and then be answered `False` anyway --
+    a rule with no effect, which is worse than no rule, because the next reader
+    would believe it worked.
+    """
+    stray = rules.EXPLICIT_SEA_WORDS - rules.SEA_WORDS
+
+    assert stray == frozenset(), f"{sorted(stray)} would overrule and then decide nothing"
+
+
+def test_the_sea_words_that_overrule_claim_no_other_job():
+    """Three lists, three different consequences, and no word may claim two."""
+    inland = rules.EXPLICIT_SEA_WORDS & rules.INLAND_WATER_WORDS
+    not_water = rules.EXPLICIT_SEA_WORDS & rules.NOT_WATER_WORDS
+
+    assert inland == frozenset(), f"{sorted(inland)} both names the sea and denies it"
+    assert not_water == frozenset(), f"{sorted(not_water)} both names the sea and is not water"
+
+
+@pytest.mark.parametrize("word", sorted(rules.EXPLICIT_SEA_WORDS))
+def test_every_overruling_word_actually_overrules_something(word):
+    """The same rule the inland list is held to: a word that changes no answer
+    is a claim with nothing behind it. Each one has to turn a name the inland
+    list would have let through into one that needs a coast."""
+    for inland in sorted(rules.INLAND_WATER_WORDS):
+        assert rules.needs_coast(f"{inland}_swimming") is False
+        assert rules.needs_coast(f"{inland}_{word}_swimming") is True
+
+
+@pytest.mark.parametrize("word", sorted(rules.EXPLICIT_SEA_WORDS))
+def test_an_overruling_word_cannot_beat_the_outermost_list(word):
+    """`NOT_WATER_WORDS` stays on the outside, and this is what that means in
+    practice. "indoor sea swimming" is a pool with a view: no ceiling, no
+    caveat, no coast asked for. That is the cheapest failure available, which is
+    why it is the one layer nothing overrules."""
+    slug = f"indoor_{word}_swimming"
+
+    assert rules.names_water(slug) is False
+    assert rules.needs_coast(slug) is False
+
+
+def test_a_tidal_word_is_deliberately_not_on_the_overruling_list():
+    """The Thames is tidal and London has no coast.
+
+    `tide`, `tidal` and `swell` are all in `SEA_WORDS`, so any of them looks
+    like it belongs beside `sea` and `ocean`. Adding `tidal` would refuse
+    "wild tidal swimming" in London and give "London has no coast on record" as
+    the reason -- a true sentence offered as the cause of something it did not
+    cause, which is the exact failure `needs_coast` was split out to stop. This
+    pins the judgement so that widening the list has to argue with it first.
+    """
+    assert {"tide", "tidal", "swell"} <= rules.SEA_WORDS
+    assert not ({"tide", "tidal", "swell"} & rules.EXPLICIT_SEA_WORDS)
+    assert rules.needs_coast("wild_tidal_swimming") is False
+    assert rules.names_water("wild_tidal_swimming") is True
 
 
 # ------------------------- read from the catalogue, not from this file --------
