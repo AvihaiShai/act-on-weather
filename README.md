@@ -1049,5 +1049,6 @@ stored in demo mode only.
 | [docs/CICD_EVIDENCE.md](docs/CICD_EVIDENCE.md) | the CI/CD evidence matrix: which gate proves which claim |
 | [docs/EVIDENCE-observability-and-recovery.md](docs/EVIDENCE-observability-and-recovery.md) | executed evidence for the metrics stack and for backup and restore |
 | [docs/EVIDENCE-f9-events-and-coastal.md](docs/EVIDENCE-f9-events-and-coastal.md) | event validity mechanics and the sea-state claims |
+| [docs/EVIDENCE-live-78ef8f6.md](docs/EVIDENCE-live-78ef8f6.md) | the live reading of the shipped build: baseline counts cross-checked against the database, the two write paths (an inland coast refusal, a retraction end to end), nine UI pages in a real browser, and whether a plain `up` re-runs `migrate` |
 | [ASSIGNMENT.md](ASSIGNMENT.md) | the brief, the requirement IDs, and which choices are ours |
 | [TECHNICAL_DECISIONS.md](TECHNICAL_DECISIONS.md) | the decision record behind the choices above |
