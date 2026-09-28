@@ -3,8 +3,8 @@
 -r common/requirements.txt
 
 fastapi==0.141.1
-starlette==1.6.0
-uvicorn[standard]==0.53.0
+starlette==1.7.0
+uvicorn[standard]==0.54.0
 
 # Prometheus instrumentation (services/common/metrics.py). It lives here and
 # not in common/requirements.txt because it is a service-layer concern: the
