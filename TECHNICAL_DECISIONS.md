@@ -200,7 +200,8 @@ off-origin requests and that an as-of chip carries a timestamp;
 
 **Evidence:** `docs/EVIDENCE-observability-and-recovery.md` records executed
 evidence for the metrics stack and a destructive restore;
-`demos backup-restore` and the release-candidate `restore-drill` CI job run a
+`demos backup-restore` and the `restore-drill` CI job — a release-candidate gate
+that also runs on every push to `main` — run a
 restore after destroying every volume; `docs/RELEASE-PROOF.md` states what the
 release drills covered and what they did not.
 

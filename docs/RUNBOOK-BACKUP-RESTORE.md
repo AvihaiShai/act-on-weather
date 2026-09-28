@@ -433,12 +433,17 @@ side of a merge, on a shared development daemon, cannot attribute the
 difference, and it is not claimed as a measured cause.
 
 CI figures exist too and are deliberately not in the table above, because a
-GitHub-hosted runner is a different machine and not comparable. Two runs are on
-record, kept apart the same way, each named by its run id, its job, its backup's
-`started_at` and its commit:
+GitHub-hosted runner is a different machine and not comparable. The runs below
+are kept apart the same way, each named by its run id, its job, its backup's
+`started_at` and its commit. **They are no longer the current commit's runs:**
+`restore-drill` ran twice on `78ef8f6` and those four columns of figures live in
+[CICD_EVIDENCE.md](CICD_EVIDENCE.md) §3, beside the two run ids that produced
+them. They are deliberately not copied here, and nothing below may be read as
+describing them.
 
 * **CI run `36256406183`, job `restore-drill`, `started_at`
-  2026-09-26T16:45:31Z, commit `bbee42c`** — the current commit. RPO span
+  2026-09-26T16:45:31Z, commit `bbee42c`** — current when this was written,
+  superseded by the `78ef8f6` pair since. RPO span
   (backup start → last lost write) **15 s**; at-risk window (backup start →
   disruption) **19 s**; 2 of 2 set B records lost, which is the designed result.
   **Two RTO numbers, from two different vantage points, and not
@@ -458,7 +463,7 @@ Both are recorded in [CICD_EVIDENCE.md](CICD_EVIDENCE.md) §3.
 
 ### The backup-size breakdown and row count
 
-Transcribed from the one run recorded with them: **CI run `36256406183`, job
+Transcribed from one run, and from that run only: **CI run `36256406183`, job
 `restore-drill`, `started_at` 2026-09-26T16:45:31Z, commit `bbee42c`**. That is
 a GitHub-hosted runner, and the drill's own isolated Compose project — **not**
 the development machine of the table above, and **not** a production stack — so

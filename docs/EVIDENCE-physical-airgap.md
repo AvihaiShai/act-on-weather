@@ -685,7 +685,7 @@ Prepare on the connected staging machine:
   This gap used to be open, and the reason it had to be closed by a script
   rather than by a commit is worth stating: CI can never publish images for a
   commit whose migration is written to fail — `main` is branch-protected on
-  four required jobs — and `package-offline.sh` refuses any tree that is not
+  five required jobs — and `package-offline.sh` refuses any tree that is not
   exactly the commit named in its `images.lock`. So the artifact is derived
   locally, from a bundle that *was* CI-proven.
 

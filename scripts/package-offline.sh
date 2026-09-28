@@ -38,9 +38,17 @@ fi
 # to agree that the `sha-<commit>` tag points at exactly that digest, and only
 # the publish step of a green `main` run ever creates that tag: it runs after
 # the scans and the integration test, pull requests never get the credentials
-# to push, and `main` is branch-protected with lint, unit, guard and
-# build-and-scan all required, admins included. So a `sha-<commit>` tag that
-# resolves to this digest means those four jobs passed on this exact commit.
+# to push, and `main` is branch-protected with lint, unit, guard,
+# build-and-scan and ui-gate all required, admins included -- five contexts
+# since the 2026-09-27 PATCH that added ui-gate. So a `sha-<commit>` tag that
+# resolves to this digest means those five jobs passed on this exact commit.
+#
+# Be precise about what that does and does not cover, because this comment is
+# the whole justification for the inference. It covers the five required
+# contexts. It does not cover retraction-drill, which carries no `if:` and so
+# always reports, but is not required and therefore cannot block a merge; nor
+# restore-drill or model-grounding, which are conditional. Those three may have
+# passed on this commit -- read the run, not this tag, if you need to know.
 origin="$(git config --get remote.origin.url)"
 slug="${origin#*github.com}"
 slug="${slug#[:/]}"
