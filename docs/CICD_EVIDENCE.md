@@ -104,7 +104,8 @@ and quoting either run as covering the whole matrix would be false.
 |---|---|---|---|
 | `lint` | ruff check + format | every PR | 9s in push run `36365166408` |
 | `unit` | 2087 passed, 2 skipped, `--network none` | every PR | run `36365166408`, pytest 106.9s inside a 2m23s job |
-| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; no workflow literal disagrees with `compose.tools.yml`'s model-mirror default; README counts match the snapshot; README's and this file's job tables match `ci.yml` | every PR and push | guard run `36365166408`, 12s, gitleaks scanned 3,297,635 bytes (3.30 MB) of committed content |
+| `guard` | no hosted-LLM SDK; no committed secret; Gitleaks canary **and exact committed-tree archive scan**; every compose image, Dockerfile base and `.yml`/`.yaml` workflow action pinned by digest/SHA; `IMAGES.lock` reconciles **in both directions**; all 9 overlay combinations render; no workflow literal disagrees with `compose.tools.yml`'s model-mirror default; README counts match the snapshot | every PR and push | guard run `36365166408`, 12s, gitleaks scanned 3,297,635 bytes (3.30 MB) of committed content |
+| `guard`, one further step | README's and this file's job tables match `ci.yml`, by job set in both directions, prose counts and per-job trigger set (`scripts/check-ci-docs.py`) | every PR and push | **not `36365166408`.** That run predates the step: `scripts/check-ci-docs.py` does not exist at `78ef8f6`, and the run's `guard` log ends at "README counts match the committed snapshot". Proof is owed by the first run on the commit that adds it — filled in below once that run exists |
 | `build-and-scan` | Trivy on both images and the filesystem; then real Postgres + RabbitMQ and the enricher container, 5 traced outage drills, reconciliation audit/replay, full restart, **6 traced IDs stored exactly once** | every PR | 3m47s in run `36365166408`; enricher reported 480 pending rows |
 | `ui-gate` | real browser through `edge`: tabs render, an as-of stamp is visible, no forecast card predates the city-local today (the F6 regression), and **zero off-origin requests** | every PR | run `36365166408`, 88s: 145 same-origin requests, 0 off-origin |
 | `retraction-drill` | `scripts/retraction-drill.sh` on its own disposable Compose project: a withdrawal that arrives **before** the record it withdraws still suppresses it; the suppression survives a full rebuild from the ingestor's outbox; and a corrected withdrawal is not reverted by a second rebuild | every PR and push | run `36365166408`, 81s. Carries no `if:`, so it always reports — but it is **not** a required context, so it cannot block a merge. See §5 |
@@ -143,8 +144,12 @@ two independent drills ten minutes apart. Each took its own backup — the
 identities that keep them apart, and each corresponds to its own backup
 directory, `backups/20260928T011650Z` and `backups/20260928T012630Z`. Both began
 from the same stored state (836 ingestor outbox rows, 4 api, 0 enricher) and both
-lost both set-B records as designed, so the difference between them is scheduling
-noise on hosted runners, not a change in the system. Neither run supersedes the
+lost both set-B records as designed, so the difference between them is run-to-run
+variation, not a change in the system; **no cause was measured.** Runner CPU,
+disk and network contention would all produce a difference of this size, and this
+project has no reading that tells them apart — the same discipline the 31s → 35s
+difference in [RUNBOOK-BACKUP-RESTORE.md](RUNBOOK-BACKUP-RESTORE.md) §9 is held
+to, where a plausible mechanism is recorded as plausible and never as measured. Neither run supersedes the
 other: they are two measurements of the same commit.
 
 Two distinctions the table exists to keep:
@@ -391,13 +396,18 @@ That transcript is from the four-context era and is kept as it was recorded; the
 it is not re-asserted as current.
 
 **Current required contexts, read from the API on 2026-09-27 after the change below:**
-`lint`, `unit`, `guard`, `build-and-scan`, `ui-gate` — five contexts. A required
-context that can be skipped deadlocks merges, which is why the conditional jobs are
-not required: `publish-images` runs only on push to main, and `model-grounding` and
-`restore-drill` are skipped on an unlabelled pull request. This was measured rather
-than assumed — on PR #65's head `97fa8d9` the check runs are `lint`, `unit`, `guard`,
-`build-and-scan` and `ui-gate` `success` with `publish-images`, `model-grounding` and
-`restore-drill` `skipped`.
+`lint`, `unit`, `guard`, `build-and-scan`, `ui-gate` — five contexts. The
+merge-blocking set is deliberately limited to the jobs that run on **every pull
+request**, which is why the conditional jobs are not required: `publish-images` runs
+only on push to main, and `model-grounding` and `restore-drill` are skipped on an
+unlabelled pull request, so requiring one would add a context that reports nothing
+about the change being merged. **Not** because requiring it would deadlock the merge:
+a job-level `if:` still produces a `skipped` check run, which branch protection
+treats as satisfied, and nothing in this repository demonstrates a deadlock. The
+skipped-but-present half was measured rather than assumed — on PR #65's head
+`97fa8d9` the check runs are `lint`, `unit`, `guard`, `build-and-scan` and `ui-gate`
+`success` with `publish-images`, `model-grounding` and `restore-drill` `skipped`, and
+that pull request merged.
 
 **Those five are not all of the unconditional jobs, and this line used to say they
 were.** `ci.yml` now defines nine jobs, of which **six** carry no `if:` and therefore

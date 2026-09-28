@@ -436,7 +436,8 @@ CI figures exist too and are deliberately not in the table above, because a
 GitHub-hosted runner is a different machine and not comparable. The runs below
 are kept apart the same way, each named by its run id, its job, its backup's
 `started_at` and its commit. **They are no longer the current commit's runs:**
-`restore-drill` ran twice on `78ef8f6` and those four columns of figures live in
+`restore-drill` ran twice on `78ef8f6`, and both rows — six figure columns each,
+RPO, at-risk window, two RTO vantage points, drill body and CI job step — live in
 [CICD_EVIDENCE.md](CICD_EVIDENCE.md) §3, beside the two run ids that produced
 them. They are deliberately not copied here, and nothing below may be read as
 describing them.

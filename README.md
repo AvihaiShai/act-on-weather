@@ -526,11 +526,14 @@ failing it promises CI is not.
 `publish-images` needs `build-and-scan` only, so the browser gate and the
 retraction drill run alongside it rather than blocking it.
 
-`restore-drill` is the one conditional job that also runs on a plain push to
-`main`, and the extra trigger buys detection rather than prevention: by the time
-a push runs, the merge has already happened. It is deliberately not a required
-context, because a required check that can be skipped — as this one is on an
-unlabelled pull request — would deadlock every merge. The table above is checked
+`restore-drill` is the one release-candidate gate that also runs on a plain push
+to `main` — `publish-images` is conditional as well, and also runs on push — and
+the extra trigger buys detection rather than prevention: by the time a push runs,
+the merge has already happened. It is deliberately not a required context: the
+merge-blocking set is kept to the jobs that run on **every pull request**, and
+this one does not — on an unlabelled pull request it reports `skipped`, so
+requiring it would add a context that says nothing about the change being merged.
+The table above is checked
 against `ci.yml` by `scripts/check-ci-docs.py`, which the `guard` job runs; an
 earlier version of this row claimed `restore-drill` was release-candidate-only,
 and nothing failed.

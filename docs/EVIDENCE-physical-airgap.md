@@ -872,7 +872,7 @@ that has never held these images, with no network present.
 | Drill set (A, B, fault injection) | **prepared and verified** (§3.5.1) |
 | Clean-engine release gate | **run for this exact commit**, release run 36137483144, distinct engine, 0/0/0 store, data smoke PASS (§3.2.1) — a connected CI runner, so **not** an air-gap proof |
 | Evidence tooling | **implemented and tested**: 15 new cases for the capture script, 9 new and 1 extended in the bundle-tamper suite, all passing |
-| Procedure | **substantially fixed but not yet operator-clean**: the `.env`, `docker` group, disconnection-order, evidence-path, exit-code and destructive-drill gaps are closed; an independent read found remaining defects in §6 (see `DEVOPS_REVIEW.md`) that must be fixed before anyone follows it |
+| Procedure | **substantially fixed but not yet operator-clean**: the `.env`, `docker` group, disconnection-order, evidence-path, exit-code and destructive-drill gaps are closed. An independent read found further defects in §6 that must be fixed before anyone follows it, and the one that would stop a drill outright is stated there in place: every bundle currently staged on the transfer medium predates PR #60, so its `prove-offline.sh` aborts on Compose v5.5.1 before the proof begins (§6.4). The remaining items are minor wording and ordering points, tracked on an internal follow-up list that is not part of this submission |
 | Physical proof | **OPEN** — the media is prepared, but the second physical host and offline Docker install media are missing. The target run must also record its independent digest channel (§5) |
 
 Until that run exists, the strongest claim this project makes remains the one in
