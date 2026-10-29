@@ -2,8 +2,8 @@
 # runtime never reaches a package index.
 -r common/requirements.txt
 
-fastapi==0.141.1
-starlette==1.7.0
+fastapi==0.162.0
+starlette==1.10.0
 uvicorn[standard]==0.54.0
 
 # Prometheus instrumentation (services/common/metrics.py). It lives here and

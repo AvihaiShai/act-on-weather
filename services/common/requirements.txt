@@ -2,6 +2,6 @@
 # services/requirements.txt, which includes this file and adds the web layer.
 pika==1.4.4
 psycopg[binary]==3.3.6
-pydantic==2.13.5
+pydantic==2.14.1
 PyYAML==6.0.3
 requests==2.34.2
