@@ -111,7 +111,7 @@ jobs:
       # that store. Use the containerd store that the release proof exercised,
       # and stop before staging if the daemon did not actually switch.
       - name: Set up Docker with the containerd image store
-        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5
+        uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6 # v5
         with:
           version: v29.8.1
           daemon-config: |
